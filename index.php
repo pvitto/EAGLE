@@ -53,7 +53,7 @@ $priority_order = ['Critica' => 3, 'Alta' => 2, 'Media' => 1, 'Baja' => 0];
 usort($priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['priority']] ?? 0) <=> ($priority_order[$a['priority']] ?? 0); });
 usort($non_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['priority']] ?? 0) <=> ($priority_order[$a['priority']] ?? 0); });
 
-// 4. Cargar Tareas Completadas (Solo para Admin)
+// 4. Cargar Tareas Completadas (Solo para Admin) - ¡CONSULTA ACTUALIZADA!
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
@@ -61,12 +61,14 @@ if ($_SESSION['user_role'] === 'Admin') {
             t.id,
             COALESCE(a.title, t.title) as title,
             t.instruction,
-            u.name as completed_by,
+            u_assigned.name as assigned_to,
+            u_completed.name as completed_by,
             t.created_at,
             t.completed_at,
             TIMEDIFF(t.completed_at, t.created_at) as response_time
          FROM tasks t
-         JOIN users u ON t.assigned_to_user_id = u.id
+         LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
+         LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id
          LEFT JOIN alerts a ON t.alert_id = a.id
          WHERE t.status = 'Completada'
          ORDER BY t.completed_at DESC"
@@ -309,16 +311,29 @@ $conn->close();
                 <h2 class="text-xl font-bold text-gray-900 mb-4">Trazabilidad de Tareas Completadas</h2>
                 <div class="bg-white rounded-xl shadow-sm overflow-hidden">
                     <table class="w-full text-sm">
-                        <thead class="bg-gray-50"><tr class="text-left"><th class="px-6 py-3">Tarea</th><th class="px-6 py-3">Completada por</th><th class="px-6 py-3">Tiempo de Respuesta</th><th class="px-6 py-3">Fecha Finalización</th></tr></thead>
+                        <thead class="bg-gray-50">
+                            <tr class="text-left">
+                                <th class="px-6 py-3">Tarea</th>
+                                <th class="px-6 py-3">Descripción</th>
+                                <th class="px-6 py-3">Hora Inicio</th>
+                                <th class="px-6 py-3">Hora Fin</th>
+                                <th class="px-6 py-3">Tiempo Resp.</th>
+                                <th class="px-6 py-3">Asignado a</th>
+                                <th class="px-6 py-3">Check por</th>
+                            </tr>
+                        </thead>
                         <tbody>
                             <?php if(empty($completed_tasks)): ?>
-                                <tr><td colspan="4" class="p-6 text-center text-gray-500">Aún no hay tareas completadas.</td></tr>
+                                <tr><td colspan="7" class="p-6 text-center text-gray-500">Aún no hay tareas completadas.</td></tr>
                             <?php else: foreach($completed_tasks as $task): ?>
                             <tr class="border-b">
                                 <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($task['title']); ?></td>
-                                <td class="px-6 py-4"><?php echo htmlspecialchars($task['completed_by']); ?></td>
+                                <td class="px-6 py-4 text-xs"><?php echo htmlspecialchars($task['instruction']); ?></td>
+                                <td class="px-6 py-4"><?php echo date('d M, h:i a', strtotime($task['created_at'])); ?></td>
+                                <td class="px-6 py-4"><?php echo date('d M, h:i a', strtotime($task['completed_at'])); ?></td>
                                 <td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($task['response_time']); ?></td>
-                                <td class="px-6 py-4"><?php echo date('d M Y, h:i a', strtotime($task['completed_at'])); ?></td>
+                                <td class="px-6 py-4"><?php echo htmlspecialchars($task['assigned_to']); ?></td>
+                                <td class="px-6 py-4 font-semibold"><?php echo htmlspecialchars($task['completed_by']); ?></td>
                             </tr>
                             <?php endforeach; endif; ?>
                         </tbody>
@@ -333,8 +348,7 @@ $conn->close();
     const allUsers = <?php echo json_encode($all_users); ?>;
     const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
     
-    // --- LÓGICA DE API ---
-    // Esta constante ahora se define aquí para ser usada en todas las llamadas fetch
+    // CORRECCIÓN FINAL: La URL base de la API debe incluir la carpeta /api/
     const apiUrlBase = 'api'; 
 
     // --- LÓGICA DE LA INTERFAZ ---

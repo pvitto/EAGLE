@@ -1,5 +1,6 @@
 <?php
 session_start();
+// La ruta correcta para acceder a la conexión desde la carpeta /api/
 require '../db_connection.php';
 
 // 1. Verificar Autenticación
@@ -15,6 +16,8 @@ header('Content-Type: application/json');
 if ($method === 'POST') {
     $data = json_decode(file_get_contents('php://input'), true);
     $task_id = $data['task_id'] ?? null;
+    // Capturamos el ID del usuario que está realizando la acción desde la sesión
+    $completing_user_id = $_SESSION['user_id'];
 
     if (!$task_id) {
         http_response_code(400);
@@ -26,9 +29,9 @@ if ($method === 'POST') {
     $conn->begin_transaction();
 
     try {
-        // 1. Marcar la tarea como completada y registrar la fecha
-        $stmt_task = $conn->prepare("UPDATE tasks SET completed_at = NOW(), status = 'Completada' WHERE id = ?");
-        $stmt_task->bind_param("i", $task_id);
+        // 1. Marcar la tarea como completada, registrar la fecha y QUIÉN la completó
+        $stmt_task = $conn->prepare("UPDATE tasks SET completed_at = NOW(), status = 'Completada', completed_by_user_id = ? WHERE id = ?");
+        $stmt_task->bind_param("ii", $completing_user_id, $task_id);
         $stmt_task->execute();
 
         // 2. Averiguar si esta tarea estaba ligada a una alerta
