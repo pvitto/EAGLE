@@ -3,6 +3,9 @@ session_start();
 require 'check_session.php';
 require 'db_connection.php';
 
+// Establecer la zona horaria correcta para Colombia
+date_default_timezone_set('America/Bogota');
+
 // Cargar todos los usuarios
 $all_users = [];
 $users_result = $conn->query("SELECT id, name, role, email FROM users ORDER BY name ASC");
@@ -13,47 +16,87 @@ if ($users_result) {
 }
 $admin_users_list = ($_SESSION['user_role'] === 'Admin') ? $all_users : [];
 
-// --- LÓGICA DE SEPARACIÓN DE ITEMS PENDIENTES ---
-$priority_items = []; 
-$non_priority_items = []; 
+// --- LÓGICA DE SEPARACIÓN Y PRIORIDAD DINÁMICA ---
+$all_pending_items = []; 
 
-// 1. Cargar Alertas Pendientes (que no estén resueltas o canceladas)
-$alerts_result = $conn->query(
-    "SELECT a.*, t.id as task_id, t.status as task_status, t.assigned_to_user_id, u_assigned.name as assigned_to_name, t.type as task_type, t.instruction as task_instruction
-     FROM alerts a
-     LEFT JOIN tasks t ON t.id = (SELECT MAX(id) FROM tasks WHERE alert_id = a.id AND status != 'Cancelada')
-     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
-     WHERE a.status NOT IN ('Resuelta', 'Cancelada')"
-);
+// 1. Cargar Alertas Pendientes
+$alerts_sql = "SELECT a.*, t.id as task_id, t.status as task_status, t.assigned_to_user_id, u_assigned.name as assigned_to_name, t.type as task_type, t.instruction as task_instruction, t.start_datetime, t.end_datetime
+               FROM alerts a
+               LEFT JOIN tasks t ON t.id = (SELECT MAX(id) FROM tasks WHERE alert_id = a.id AND status != 'Cancelada')
+               LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
+               WHERE a.status NOT IN ('Resuelta', 'Cancelada')";
+$alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
         $row['item_type'] = 'alert';
-        if ($row['priority'] === 'Critica' || $row['priority'] === 'Alta') { $priority_items[] = $row; } 
-        else { $non_priority_items[] = $row; }
+        $all_pending_items[] = $row;
     }
 }
 
 // 2. Cargar Tareas Manuales Pendientes
-$manual_tasks_result = $conn->query(
-    "SELECT t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status, t.assigned_to_user_id, u.name as assigned_to_name 
-     FROM tasks t 
-     LEFT JOIN users u ON t.assigned_to_user_id = u.id 
-     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente'"
-);
+$manual_tasks_sql = "SELECT t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status, t.assigned_to_user_id, u.name as assigned_to_name, t.start_datetime, t.end_datetime 
+                     FROM tasks t 
+                     LEFT JOIN users u ON t.assigned_to_user_id = u.id 
+                     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente'";
+$manual_tasks_result = $conn->query($manual_tasks_sql);
 if ($manual_tasks_result) {
     while($row = $manual_tasks_result->fetch_assoc()) {
         $row['item_type'] = 'manual_task';
-        if ($row['priority'] === 'Alta') { $priority_items[] = $row; } 
-        else { $non_priority_items[] = $row; }
+        $all_pending_items[] = $row;
     }
 }
 
-// 3. Ordenar las listas por prioridad
-$priority_order = ['Critica' => 3, 'Alta' => 2, 'Media' => 1, 'Baja' => 0];
-usort($priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['priority']] ?? 0) <=> ($priority_order[$a['priority']] ?? 0); });
-usort($non_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['priority']] ?? 0) <=> ($priority_order[$a['priority']] ?? 0); });
+// 3. Procesar todos los items para prioridad dinámica y popular las diferentes listas
+$main_priority_items = []; 
+$main_non_priority_items = [];
+$panel_high_priority_items = [];
+$panel_medium_priority_items = [];
+$now = new DateTime();
 
-// 4. Cargar Tareas Completadas (Solo para Admin) - ¡CONSULTA ACTUALIZADA!
+foreach ($all_pending_items as $item) {
+    $original_priority = $item['priority'];
+    $current_priority = $original_priority;
+    
+    if (!empty($item['end_datetime'])) {
+        $end_time = new DateTime($item['end_datetime']);
+        $diff_minutes = ($now->getTimestamp() - $end_time->getTimestamp()) / 60;
+
+        if ($diff_minutes >= 0) { // Tarea vencida
+            $current_priority = 'Alta';
+        } elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) { // A 15 mins o menos de vencer
+            $current_priority = 'Media';
+        }
+    }
+    $item['current_priority'] = $current_priority;
+
+    // Popula las listas para la VISTA PRINCIPAL en la página (usa prioridad dinámica)
+    if ($current_priority === 'Critica' || $current_priority === 'Alta') {
+        $main_priority_items[] = $item;
+    } else {
+        $main_non_priority_items[] = $item;
+    }
+
+    // Popula las listas para los PANELES DE ICONOS
+    // Panel Bandera: Basado en la prioridad ORIGINAL
+    if ($original_priority === 'Critica' || $original_priority === 'Alta') {
+        $panel_high_priority_items[] = $item;
+    }
+    // Panel Reloj: Basado en la prioridad ACTUAL (para incluir tareas que están por vencer)
+    if ($current_priority === 'Media') {
+        $panel_medium_priority_items[] = $item;
+    }
+}
+
+
+// 4. Ordenar las listas por prioridad
+$priority_order = ['Critica' => 4, 'Alta' => 3, 'Media' => 2, 'Baja' => 1];
+usort($main_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
+usort($main_non_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
+usort($panel_high_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
+usort($panel_medium_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
+
+
+// 5. Cargar Tareas Completadas (Admin)
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
@@ -62,6 +105,8 @@ if ($_SESSION['user_role'] === 'Admin') {
             COALESCE(a.title, t.title) as title,
             t.instruction,
             t.priority,
+            t.start_datetime,
+            t.end_datetime,
             u_assigned.name as assigned_to,
             u_completed.name as completed_by,
             t.created_at,
@@ -74,10 +119,23 @@ if ($_SESSION['user_role'] === 'Admin') {
          WHERE t.status = 'Completada'
          ORDER BY t.completed_at DESC"
     );
-    if ($completed_result) { while($row = $completed_result->fetch_assoc()){ $completed_tasks[] = $row; } }
+    if ($completed_result) { 
+        while($row = $completed_result->fetch_assoc()){ 
+            $final_priority = $row['priority'];
+            if (!empty($row['end_datetime']) && !empty($row['completed_at'])) {
+                $end_time = new DateTime($row['end_datetime']);
+                $completed_time = new DateTime($row['completed_at']);
+                if ($completed_time > $end_time) {
+                    $final_priority = 'Alta';
+                }
+            }
+            $row['final_priority'] = $final_priority;
+            $completed_tasks[] = $row; 
+        } 
+    }
 }
 
-// Cargar recaudos, recordatorios y contadores
+// Cargar recaudos y recordatorios
 $recaudos = [];
 $recaudos_result = $conn->query("SELECT * FROM recaudos ORDER BY close_time_scheduled ASC");
 if ($recaudos_result) { while ($row = $recaudos_result->fetch_assoc()) { $recaudos[] = $row; } }
@@ -87,14 +145,12 @@ $current_user_id = $_SESSION['user_id'];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
 
-// Contadores para el resumen
+// Contadores para widgets y badges
 $total_alerts_count = $alerts_result ? $alerts_result->num_rows : 0;
-$priority_alerts_count = 0;
-foreach($priority_items as $item){
-    if($item['item_type'] === 'alert'){
-        $priority_alerts_count++;
-    }
-}
+$priority_summary_count = count($main_priority_items); 
+$high_priority_badge_count = count($panel_high_priority_items);
+$medium_priority_badge_count = count($panel_medium_priority_items);
+
 
 $conn->close();
 
@@ -112,13 +168,32 @@ $conn->close();
         .nav-tab { cursor: pointer; padding: 0.75rem 1.5rem; font-weight: 500; color: #4b5563; border-bottom: 2px solid transparent; transition: all 0.2s; }
         .nav-tab:hover { color: #111827; }
         .nav-tab.active { color: #2563eb; border-bottom-color: #2563eb; }
-        #user-modal-overlay, #reminders-panel { transition: opacity 0.3s ease; }
+        #user-modal-overlay, #reminders-panel, #task-notifications-panel, #medium-priority-panel { transition: opacity 0.3s ease; }
         .task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
-        .task-form.active, .cash-breakdown.active { max-height: 500px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
+        .task-form.active, .cash-breakdown.active { max-height: 600px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
         .details-row { border-top: 1px solid #e5e7eb; }
+        @keyframes fadeInOut {
+            0%, 100% { opacity: 0; transform: translateY(-20px); }
+            10%, 90% { opacity: 1; transform: translateY(0); }
+        }
+        .notification-toast {
+            animation: fadeInOut 5s ease-in-out forwards;
+        }
+        @keyframes pulse-red {
+            0%, 100% { color: #ef4444; }
+            50% { color: #7f1d1d; }
+        }
+        @keyframes pulse-yellow {
+            0%, 100% { color: #f59e0b; }
+            50% { color: #92400e; }
+        }
+        .animate-pulse-red { animation: pulse-red 1.5s infinite; }
+        .animate-pulse-yellow { animation: pulse-yellow 1.5s infinite; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
+
+    <div id="toast-container" class="fixed top-5 right-5 z-50 space-y-2"></div>
 
     <div id="user-modal-overlay" class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 hidden z-50">
         <div id="user-modal" class="bg-white rounded-xl shadow-2xl w-full max-w-md transform transition-all scale-95 opacity-0">
@@ -129,7 +204,7 @@ $conn->close();
         </div>
     </div>
     
-    <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto">
+    <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-full mx-auto">
         <header class="flex flex-col sm:flex-row justify-between sm:items-center mb-6 border-b pb-4">
              <div><h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1><p class="text-sm text-gray-500">Sistema Integrado de Operaciones y Alertas</p></div>
             <div class="text-sm text-gray-600 mt-2 sm:mt-0 flex items-center space-x-4">
@@ -138,11 +213,54 @@ $conn->close();
                     <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
                 </div>
                 <div class="relative">
-                    <button onclick="toggleReminders()" class="relative text-gray-500 hover:text-gray-700">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                        <?php if(count($user_reminders) > 0): ?>
-                        <span class="absolute top-0 right-0 block h-2 w-2 rounded-full bg-red-500 ring-2 ring-white"></span>
+                    <button id="task-notification-button" onclick="toggleTaskNotifications()" class="relative text-gray-500 hover:text-gray-700">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
+                        <?php if ($high_priority_badge_count > 0): ?>
+                        <span id="task-notification-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-red-500 text-white text-xs font-bold"><?php echo $high_priority_badge_count; ?></span>
                         <?php endif; ?>
+                    </button>
+                    <div id="task-notifications-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
+                        <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto">
+                           <?php if(empty($panel_high_priority_items)): ?>
+                                <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
+                            <?php else: foreach($panel_high_priority_items as $item): ?>
+                                <?php
+                                    $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange';
+                                ?>
+                                <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
+                                    <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title']); ?></p>
+                                    <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
+                                </div>
+                            <?php endforeach; endif; ?>
+                        </div>
+                    </div>
+                </div>
+                <div class="relative">
+                    <button id="medium-priority-button" onclick="toggleMediumPriority()" class="relative text-gray-500 hover:text-gray-700">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                        <?php if ($medium_priority_badge_count > 0): ?>
+                            <span id="medium-priority-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-yellow-500 text-white text-xs font-bold"><?php echo $medium_priority_badge_count; ?></span>
+                        <?php endif; ?>
+                    </button>
+                    <div id="medium-priority-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Prioridad Media</h4>
+                        <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto">
+                            <?php if(empty($panel_medium_priority_items)): ?>
+                                <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
+                            <?php else: foreach($panel_medium_priority_items as $item): ?>
+                                <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
+                                    <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title']); ?></p>
+                                    <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
+                                </div>
+                            <?php endforeach; endif; ?>
+                        </div>
+                    </div>
+                </div>
+                <div class="relative">
+                    <button id="reminders-button" onclick="toggleReminders()" class="relative text-gray-500 hover:text-gray-700">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                        <span id="reminders-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-blue-500 text-white text-xs font-bold hidden"></span>
                     </button>
                     <div id="reminders-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
                         <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
@@ -150,11 +268,13 @@ $conn->close();
                             <?php if(empty($user_reminders)): ?>
                                 <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
                             <?php else: foreach($user_reminders as $reminder): ?>
-                                <div class="p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
-                                    <p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p>
-                                    <div class="flex justify-between items-center mt-1">
-                                        <p class="text-xs text-gray-400"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p>
-                                        <button onclick="markReminderAsRead(<?php echo $reminder['id']; ?>, this)" class="text-xs text-blue-600 hover:underline">Marcar como leído</button>
+                                <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
+                                    <div class="flex justify-between items-start">
+                                        <div>
+                                            <p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p>
+                                            <p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p>
+                                        </div>
+                                        <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg leading-none p-1 -mt-1 -mr-1">&times;</button>
                                     </div>
                                 </div>
                             <?php endforeach; endif; ?>
@@ -181,7 +301,7 @@ $conn->close();
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Recaudos de Hoy</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">$</div></div><p class="text-3xl font-bold text-gray-900 mt-2">$197.030.000</p><p class="text-sm text-green-600 mt-2">▲ 12% vs ayer</p></div>
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Cierres Pendientes</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">🕔</div></div><p class="text-3xl font-bold text-gray-900 mt-2">3</p><p class="text-sm text-gray-500 mt-2">Programados para hoy</p></div>
-                    <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Alertas Activas</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">❗</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo $total_alerts_count; ?></p><p class="text-sm text-gray-500 mt-2"><?php echo $priority_alerts_count; ?> Prioritarias</p></div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Alertas Activas</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">❗</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo $total_alerts_count; ?></p><p class="text-sm text-gray-500 mt-2"><?php echo $priority_summary_count; ?> Prioritarias</p></div>
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Tasa de Cumplimiento</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">📈</div></div><p class="text-3xl font-bold text-gray-900 mt-2">94%</p><p class="text-sm text-green-600 mt-2">▲ 3% vs semana pasada</p></div>
                 </div>
 
@@ -189,23 +309,24 @@ $conn->close();
                     <div class="lg:col-span-2 space-y-4">
                         <h2 class="text-xl font-bold text-gray-900">Alertas y Tareas Prioritarias</h2>
                         
-                        <?php if (empty($priority_items)): ?>
+                        <?php if (empty($main_priority_items)): ?>
                             <p class="text-sm text-gray-500 bg-white p-4 rounded-lg shadow-sm">No hay items prioritarios pendientes.</p>
-                        <?php else: foreach ($priority_items as $item): ?>
+                        <?php else: foreach ($main_priority_items as $item): ?>
                             <?php
                                 $is_manual = $item['item_type'] === 'manual_task';
                                 $id = $is_manual ? $item['task_id'] : $item['id'];
                                 $is_assigned = $item['assigned_to_user_id'] !== null;
+                                $priority_to_use = $item['current_priority'];
                                 $color_map = [
                                     'Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],
                                     'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']
                                 ];
-                                $color = $color_map[$item['priority']] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
+                                $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                             ?>
-                            <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                            <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $id; ?>" data-end-time="<?php echo $item['end_datetime']; ?>" data-assigned-to="<?php echo $item['assigned_to_user_id']; ?>" data-original-priority="<?php echo $item['priority']; ?>">
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                     <div class="flex justify-between items-start">
-                                        <p class="font-semibold <?php echo $color['text']; ?> text-lg"><?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($item['priority']); ?></span></p>
+                                        <p class="font-semibold <?php echo $color['text']; ?> text-lg"><?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full priority-badge"><?php echo strtoupper($priority_to_use); ?></span></p>
                                         <?php if ($is_assigned && isset($item['task_status']) && $item['task_status'] === 'Pendiente'): ?>
                                             <button onclick="completeTask(<?php echo $item['task_id']; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada">
                                                 <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
@@ -213,6 +334,15 @@ $conn->close();
                                         <?php endif; ?>
                                     </div>
                                     <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
+                                    
+                                    <?php if ($is_manual && !empty($item['start_datetime']) && !empty($item['end_datetime'])): ?>
+                                        <div class="text-xs mt-2 p-2 bg-blue-50 border border-blue-200 rounded-md">
+                                            <p class="font-semibold text-blue-800">Programada:</p>
+                                            <p class="text-blue-700"><strong>Inicio:</strong> <?php echo date('d M, h:i A', strtotime($item['start_datetime'])); ?></p>
+                                            <p class="text-blue-700"><strong>Fin:</strong> <?php echo date('d M, h:i A', strtotime($item['end_datetime'])); ?></p>
+                                        </div>
+                                    <?php endif; ?>
+
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                         <button onclick="toggleForm('assign-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo $is_assigned ? 'Re-asignar' : 'Asignar'; ?></button>
                                         <button onclick="toggleForm('reminder-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -249,7 +379,6 @@ $conn->close();
                             </div>
                         <?php endforeach; endif; ?>
                         
-                        <!-- SECCIÓN DE RECAUDOS RESTAURADA -->
                         <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
                              <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
                              <div class="overflow-x-auto">
@@ -273,6 +402,18 @@ $conn->close();
                                 <div><label for="manual-task-title" class="text-sm font-medium">Título</label><input type="text" id="manual-task-title" required class="w-full p-2 text-sm border rounded-md mt-1"></div>
                                 <div><label for="manual-task-desc" class="text-sm font-medium">Descripción</label><textarea id="manual-task-desc" rows="3" class="w-full p-2 text-sm border rounded-md mt-1"></textarea></div>
                                 <div><label for="manual-task-priority" class="text-sm font-medium">Prioridad</label><select id="manual-task-priority" required class="w-full p-2 text-sm border rounded-md mt-1"><option value="Alta">Alta</option><option value="Media" selected>Media</option><option value="Baja">Baja</option></select></div>
+                                
+                                <div class="grid grid-cols-2 gap-4">
+                                    <div>
+                                        <label for="manual-task-start" class="text-sm font-medium">Fecha/Hora Inicio</label>
+                                        <input type="datetime-local" id="manual-task-start" class="w-full p-2 text-sm border rounded-md mt-1">
+                                    </div>
+                                    <div>
+                                        <label for="manual-task-end" class="text-sm font-medium">Fecha/Hora Fin</label>
+                                        <input type="datetime-local" id="manual-task-end" class="w-full p-2 text-sm border rounded-md mt-1">
+                                    </div>
+                                </div>
+                                
                                 <div><label for="manual-task-user" class="text-sm font-medium">Asignar a</label><select id="manual-task-user" required class="w-full p-2 text-sm border rounded-md mt-1"><option value="">Seleccionar...</option><?php foreach ($all_users as $user):?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?> (<?php echo $user['role']; ?>)</option><?php endforeach; ?></select></div>
                                 <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-md">Crear Tarea</button>
                             </form>
@@ -280,24 +421,25 @@ $conn->close();
 
                         <div class="bg-white p-6 rounded-xl shadow-sm">
                             <h2 class="text-lg font-semibold text-gray-900 mb-4">Tareas y Alertas no Prioritarias</h2>
-                            <div id="non-priority-list" class="space-y-4">
-                               <?php if (empty($non_priority_items)): ?>
+                            <div class="space-y-4">
+                               <?php if (empty($main_non_priority_items)): ?>
                                     <p class="text-sm text-gray-500">No hay items no prioritarios pendientes.</p>
-                                <?php else: foreach ($non_priority_items as $item): ?>
+                                <?php else: foreach ($main_non_priority_items as $item): ?>
                                     <?php
                                         $is_manual = $item['item_type'] === 'manual_task';
                                         $id = $is_manual ? $item['task_id'] : $item['id'];
                                         $is_assigned = $item['assigned_to_user_id'] !== null;
+                                        $priority_to_use = $item['current_priority'];
                                         $color_map = [
                                             'Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],
                                             'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']
                                         ];
-                                        $color = $color_map[$item['priority']] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
+                                        $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                                     ?>
-                                    <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $id; ?>" data-end-time="<?php echo $item['end_datetime']; ?>" data-assigned-to="<?php echo $item['assigned_to_user_id']; ?>" data-original-priority="<?php echo $item['priority']; ?>">
                                         <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                             <div class="flex justify-between items-start">
-                                                <p class="font-semibold <?php echo $color['text']; ?> text-md"><?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($item['priority']); ?></span></p>
+                                                <p class="font-semibold <?php echo $color['text']; ?> text-md"><?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full priority-badge"><?php echo strtoupper($priority_to_use); ?></span></p>
                                                 <?php if ($is_assigned && isset($item['task_status']) && $item['task_status'] === 'Pendiente'): ?>
                                                     <button onclick="completeTask(<?php echo $item['task_id']; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada">
                                                         <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
@@ -305,6 +447,15 @@ $conn->close();
                                                 <?php endif; ?>
                                             </div>
                                             <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
+                                            
+                                            <?php if ($is_manual && !empty($item['start_datetime']) && !empty($item['end_datetime'])): ?>
+                                                <div class="text-xs mt-2 p-2 bg-blue-50 border border-blue-200 rounded-md">
+                                                    <p class="font-semibold text-blue-800">Programada:</p>
+                                                    <p class="text-blue-700"><strong>Inicio:</strong> <?php echo date('d M, h:i A', strtotime($item['start_datetime'])); ?></p>
+                                                    <p class="text-blue-700"><strong>Fin:</strong> <?php echo date('d M, h:i A', strtotime($item['end_datetime'])); ?></p>
+                                                </div>
+                                            <?php endif; ?>
+
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                                 <button onclick="toggleForm('assign-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo $is_assigned ? 'Re-asignar' : 'Asignar'; ?></button>
                                                 <button onclick="toggleForm('reminder-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -362,7 +513,8 @@ $conn->close();
                                 <tr class="text-left">
                                     <th class="px-6 py-3">Tarea</th>
                                     <th class="px-6 py-3">Descripción</th>
-                                    <th class="px-6 py-3">Prioridad</th>
+                                    <th class="px-6 py-3">P. Inicial</th>
+                                    <th class="px-6 py-3">P. Final</th>
                                     <th class="px-6 py-3">Hora Inicio</th>
                                     <th class="px-6 py-3">Hora Fin</th>
                                     <th class="px-6 py-3">Tiempo Resp.</th>
@@ -372,7 +524,7 @@ $conn->close();
                             </thead>
                             <tbody>
                                 <?php if(empty($completed_tasks)): ?>
-                                    <tr><td colspan="8" class="p-6 text-center text-gray-500">Aún no hay tareas completadas.</td></tr>
+                                    <tr><td colspan="9" class="p-6 text-center text-gray-500">Aún no hay tareas completadas.</td></tr>
                                 <?php else: foreach($completed_tasks as $task): ?>
                                 <tr class="border-b">
                                     <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($task['title']); ?></td>
@@ -383,6 +535,13 @@ $conn->close();
                                             elseif ($task['priority'] === 'Media') echo 'bg-yellow-100 text-yellow-800';
                                             else echo 'bg-gray-100 text-gray-800';
                                         ?>"><?php echo htmlspecialchars($task['priority']); ?></span>
+                                    </td>
+                                    <td class="px-6 py-4">
+                                        <span class="text-xs font-medium px-2.5 py-1 rounded-full <?php 
+                                            if ($task['final_priority'] === 'Alta' || $task['final_priority'] === 'Critica') echo 'bg-red-100 text-red-800';
+                                            elseif ($task['final_priority'] === 'Media') echo 'bg-yellow-100 text-yellow-800';
+                                            else echo 'bg-gray-100 text-gray-800';
+                                        ?>"><?php echo htmlspecialchars($task['final_priority']); ?></span>
                                     </td>
                                     <td class="px-6 py-4 whitespace-nowrap"><?php echo date('d M, h:i a', strtotime($task['created_at'])); ?></td>
                                     <td class="px-6 py-4 whitespace-nowrap"><?php echo date('d M, h:i a', strtotime($task['completed_at'])); ?></td>
@@ -403,19 +562,21 @@ $conn->close();
     <script>
     const allUsers = <?php echo json_encode($all_users); ?>;
     const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
+    const currentUserId = <?php echo $_SESSION['user_id']; ?>;
     
     const apiUrlBase = 'api'; 
 
     const remindersPanel = document.getElementById('reminders-panel');
+    const taskNotificationsPanel = document.getElementById('task-notifications-panel');
+    const mediumPriorityPanel = document.getElementById('medium-priority-panel');
+
     function toggleReminders() { remindersPanel.classList.toggle('hidden'); }
+    function toggleTaskNotifications() { taskNotificationsPanel.classList.toggle('hidden'); }
+    function toggleMediumPriority() { mediumPriorityPanel.classList.toggle('hidden'); }
     
     function toggleForm(formId, button) {
         const form = document.getElementById(formId);
         const parentItem = button.closest('.bg-white.rounded-lg.shadow-md.overflow-hidden');
-        if (!parentItem) {
-            console.error("No se pudo encontrar el contenedor principal para el formulario.");
-            return;
-        }
         parentItem.querySelectorAll('.task-form').forEach(f => {
             if (f.id !== formId && f.classList.contains('active')) {
                 f.classList.remove('active');
@@ -426,18 +587,29 @@ $conn->close();
 
     function toggleBreakdown(id) { document.getElementById(`breakdown-row-${id}`).classList.toggle('hidden'); setTimeout(() => { document.getElementById(`breakdown-content-${id}`).classList.toggle('active'); }, 10); }
 
-    async function markReminderAsRead(reminderId, button) {
+    async function deleteReminder(reminderId, button) {
         try {
             const response = await fetch(`${apiUrlBase}/alerts_api.php?reminder_id=${reminderId}`, { method: 'DELETE' });
             const result = await response.json();
             if (result.success) { 
-                button.closest('.p-2').remove();
-                if (document.getElementById('reminders-list').children.length === 0) {
-                    document.querySelector('.relative button span').style.display = 'none';
-                    document.getElementById('reminders-list').innerHTML = '<p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>';
-                }
+                button.closest('.reminder-item').remove();
+                updateReminderCount();
             } else { alert('Error: ' + result.error); }
-        } catch (error) { console.error('Error marking reminder as read:', error); alert('Error de conexión.'); }
+        } catch (error) { console.error('Error deleting reminder:', error); alert('Error de conexión.'); }
+    }
+    
+    function updateReminderCount() {
+        const list = document.getElementById('reminders-list');
+        const badge = document.getElementById('reminders-badge');
+        const count = list.getElementsByClassName('reminder-item').length;
+
+        if (count > 0) {
+            badge.textContent = count;
+            badge.classList.remove('hidden');
+        } else {
+            badge.classList.add('hidden');
+            list.innerHTML = '<p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>';
+        }
     }
 
     async function completeTask(taskId) {
@@ -504,14 +676,28 @@ $conn->close();
         const instruction = document.getElementById('manual-task-desc').value;
         const userId = document.getElementById('manual-task-user').value;
         const priority = document.getElementById('manual-task-priority').value;
+        const start_datetime = document.getElementById('manual-task-start').value;
+        const end_datetime = document.getElementById('manual-task-end').value;
         
         if (!userId) { alert('Selecciona un usuario.'); return; }
+        if (start_datetime && end_datetime && start_datetime >= end_datetime) {
+            alert('La fecha de fin debe ser posterior a la fecha de inicio.');
+            return;
+        }
 
         try {
             const response = await fetch(`${apiUrlBase}/alerts_api.php`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ title: title, assign_to: userId, instruction: instruction, type: 'Manual', priority: priority })
+                body: JSON.stringify({ 
+                    title: title, 
+                    assign_to: userId, 
+                    instruction: instruction, 
+                    type: 'Manual', 
+                    priority: priority,
+                    start_datetime: start_datetime || null,
+                    end_datetime: end_datetime || null
+                })
             });
 
             if (!response.ok) { throw new Error(`Error HTTP ${response.status}`); }
@@ -608,10 +794,141 @@ $conn->close();
         });
     }
 
+    const notifiedTasks = new Set();
+    function checkTaskDeadlines() {
+        const taskCards = document.querySelectorAll('.task-card');
+        let hasOverdueTasks = false;
+        let hasUpcomingTasks = false;
+
+        taskCards.forEach(card => {
+            const taskId = card.dataset.taskId;
+            const endTimeStr = card.dataset.endTime;
+            const assignedTo = card.dataset.assignedTo;
+            const originalPriority = card.dataset.originalPriority;
+
+            if (!endTimeStr || assignedTo != currentUserId) {
+                return;
+            }
+
+            const endTime = new Date(endTimeStr);
+            const now = new Date();
+            const diffMinutes = (endTime.getTime() - now.getTime()) / (1000 * 60);
+
+            const container = card.children[0];
+            const badge = card.querySelector('.priority-badge');
+
+            if (diffMinutes <= 0) { 
+                if (badge.textContent !== 'ALTA') {
+                    container.classList.remove('bg-yellow-100', 'border-yellow-400', 'bg-gray-100', 'border-gray-400');
+                    container.classList.add('bg-orange-100', 'border-orange-500');
+                    badge.classList.remove('bg-yellow-200', 'text-yellow-800', 'bg-gray-200', 'text-gray-800');
+                    badge.classList.add('bg-orange-200', 'text-orange-800');
+                    badge.textContent = 'ALTA';
+                }
+            } else if (diffMinutes <= 15 && (originalPriority === 'Baja' || originalPriority === 'Media')) {
+                if (badge.textContent !== 'MEDIA') {
+                    container.classList.remove('bg-gray-100', 'border-gray-400');
+                    container.classList.add('bg-yellow-100', 'border-yellow-400');
+                    badge.classList.remove('bg-gray-200', 'text-gray-800');
+                    badge.classList.add('bg-yellow-200', 'text-yellow-800');
+                    badge.textContent = 'MEDIA';
+                }
+            }
+
+            const taskTitle = card.querySelector('p.font-semibold').innerText.split(/Tarea: |ALERTA: /)[1].trim();
+
+            if (diffMinutes <= 0) {
+                hasOverdueTasks = true;
+                if (!notifiedTasks.has(taskId + '-vencida')) {
+                    showToast(`¡Tarea Vencida! - "${taskTitle}"`, 'red');
+                    addNotificationToList(`¡Tarea Vencida!`, `La tarea "${taskTitle}" ha superado su fecha límite.`, 'red');
+                    notifiedTasks.add(taskId + '-vencida');
+                }
+            } else if (diffMinutes > 0 && diffMinutes <= 15) {
+                hasUpcomingTasks = true;
+                if (!notifiedTasks.has(taskId + '-por-vencer')) {
+                    showToast(`¡Tarea por Vencer! - "${taskTitle}"`, 'yellow');
+                    addNotificationToList(`¡Tarea por Vencer!`, `La tarea "${taskTitle}" está a punto de vencer.`, 'yellow');
+                    notifiedTasks.add(taskId + '-por-vencer');
+                }
+            }
+        });
+        
+        updateTaskNotificationIcon(hasOverdueTasks, hasUpcomingTasks);
+    }
+    
+    function updateTaskNotificationIcon(hasOverdue, hasUpcoming) {
+        const button = document.getElementById('task-notification-button');
+        button.classList.remove('animate-pulse-red', 'animate-pulse-yellow');
+        if (hasOverdue) {
+            button.classList.add('animate-pulse-red');
+        } else if (hasUpcoming) {
+            button.classList.add('animate-pulse-yellow');
+        }
+    }
+
+
+    function showToast(message, color) {
+        const container = document.getElementById('toast-container');
+        const toast = document.createElement('div');
+        toast.className = `notification-toast p-4 rounded-lg shadow-lg text-white bg-${color}-500`;
+        toast.textContent = message;
+        container.appendChild(toast);
+        setTimeout(() => {
+            toast.remove();
+        }, 5000);
+    }
+    
+    function addNotificationToList(title, message, color) {
+        const list = document.getElementById('task-notifications-list');
+        const emptyMessage = list.querySelector('p.text-sm.text-gray-500');
+        if (emptyMessage) {
+            emptyMessage.remove(); 
+        }
+        const notificationHTML = `
+            <div class="p-2 bg-${color}-50 rounded-md border border-${color}-200 text-sm">
+                <p class="font-bold text-${color}-800">${title}</p>
+                <p class="text-gray-700">${message}</p>
+            </div>
+        `;
+        list.insertAdjacentHTML('afterbegin', notificationHTML);
+    }
+
     document.addEventListener('DOMContentLoaded', () => {
         if (document.getElementById('user-table-body')) {
             populateUserTable(adminUsersData);
         }
+        
+        updateReminderCount(); 
+        
+        checkTaskDeadlines();
+        setInterval(checkTaskDeadlines, 60000); 
+
+        const startDateInput = document.getElementById('manual-task-start');
+        const endDateInput = document.getElementById('manual-task-end');
+
+        const getLocalISOString = (date) => {
+            const pad = (num) => num.toString().padStart(2, '0');
+            return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+        };
+
+        const now = new Date();
+        const nowString = getLocalISOString(now);
+
+        startDateInput.min = nowString;
+        endDateInput.min = nowString;
+
+        if (!startDateInput.value) startDateInput.value = nowString;
+        if (!endDateInput.value) endDateInput.value = nowString;
+
+        startDateInput.addEventListener('input', () => {
+            if (startDateInput.value) {
+                endDateInput.min = startDateInput.value;
+                if (endDateInput.value < startDateInput.value) {
+                    endDateInput.value = startDateInput.value;
+                }
+            }
+        });
     });
     </script>
 </body>

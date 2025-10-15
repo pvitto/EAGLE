@@ -9,6 +9,7 @@ error_reporting(E_ALL);
 
 // Verificar que el usuario ha iniciado sesión
 if (!isset($_SESSION['user_id'])) {
+    http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Acceso no autorizado.']);
     exit;
 }
@@ -24,28 +25,35 @@ if ($method === 'POST') {
     $alert_id = $data['alert_id'] ?? null;
     $title = $data['title'] ?? null;
     $priority = $data['priority'] ?? 'Media';
+    $start_datetime = $data['start_datetime'] ?? null;
+    $end_datetime = $data['end_datetime'] ?? null;
 
-    if (!$user_id) {
+    if ($type !== 'Recordatorio' && !$user_id) {
         echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario.']);
         exit;
     }
+     if ($type === 'Recordatorio' && !$user_id) {
+        echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario para el recordatorio.']);
+        exit;
+    }
 
-    // LÓGICA PARA CREAR RECORDATORIOS
+    $stmt = null; // Inicializar stmt
+
     if ($type === 'Recordatorio') {
         $message = '';
         if ($alert_id) {
-            $stmt = $conn->prepare("SELECT title FROM alerts WHERE id = ?");
-            $stmt->bind_param("i", $alert_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
+            $stmt_msg = $conn->prepare("SELECT title FROM alerts WHERE id = ?");
+            $stmt_msg->bind_param("i", $alert_id);
+            $stmt_msg->execute();
+            $result = $stmt_msg->get_result();
             if ($row = $result->fetch_assoc()) {
                 $message = "Recordatorio sobre la alerta: '" . $row['title'] . "'";
             }
         } elseif ($task_id) {
-            $stmt = $conn->prepare("SELECT title FROM tasks WHERE id = ?");
-            $stmt->bind_param("i", $task_id);
-            $stmt->execute();
-            $result = $stmt->get_result();
+            $stmt_msg = $conn->prepare("SELECT title FROM tasks WHERE id = ?");
+            $stmt_msg->bind_param("i", $task_id);
+            $stmt_msg->execute();
+            $result = $stmt_msg->get_result();
             if ($row = $result->fetch_assoc()) {
                 $message = "Recordatorio sobre la tarea: '" . $row['title'] . "'";
             }
@@ -54,47 +62,41 @@ if ($method === 'POST') {
         if (!empty($message)) {
             $stmt = $conn->prepare("INSERT INTO reminders (user_id, message) VALUES (?, ?)");
             $stmt->bind_param("is", $user_id, $message);
-            if ($stmt->execute()) {
-                echo json_encode(['success' => true]);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'Error al crear recordatorio: ' . $stmt->error]);
-            }
-            $stmt->close();
         } else {
             echo json_encode(['success' => false, 'error' => 'No se encontró el item para el recordatorio.']);
+            exit;
         }
-    } 
-    // LÓGICA PARA ASIGNAR/REASIGNAR/CREAR TAREAS
-    elseif ($type === 'Asignacion' || $type === 'Manual') {
+
+    } elseif ($type === 'Asignacion') {
         if ($task_id) { // Re-asignar tarea existente
             $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ? WHERE id = ?");
-            if(!$stmt) { exit(json_encode(['success' => false, 'error' => 'Prepare failed: ' . $conn->error])); }
             $stmt->bind_param("isi", $user_id, $instruction, $task_id);
-        } else { // Crear nueva tarea
-            if ($type === 'Manual' && $title) { // Tarea Manual
-                 // CORRECCIÓN FINAL: Se añade alert_id = NULL explícitamente en la consulta
-                 $stmt = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, type, alert_id) VALUES (?, ?, ?, ?, 'Manual', NULL)");
-                 if(!$stmt) { exit(json_encode(['success' => false, 'error' => 'Prepare failed: ' . $conn->error])); }
-                 $stmt->bind_param("sssi", $title, $instruction, $priority, $user_id);
-            } elseif ($alert_id) { // Tarea de Alerta
-                $stmt = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, instruction, type) VALUES (?, ?, ?, 'Asignacion')");
-                if(!$stmt) { exit(json_encode(['success' => false, 'error' => 'Prepare failed: ' . $conn->error])); }
-                $stmt->bind_param("iis", $alert_id, $user_id, $instruction);
-            }
+        } elseif ($alert_id) { // Crear nueva tarea desde una alerta
+            $stmt = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, instruction, type) VALUES (?, ?, ?, 'Asignacion')");
+            $stmt->bind_param("iis", $alert_id, $user_id, $instruction);
         }
-        
-        if (isset($stmt) && $stmt->execute()) {
+    } elseif ($type === 'Manual') {
+        if ($title) { // Crear Tarea Manual
+             $stmt = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, type, alert_id, start_datetime, end_datetime) VALUES (?, ?, ?, ?, 'Manual', NULL, ?, ?)");
+             // CORRECCIÓN APLICADA AQUÍ: Los tipos de datos y la cantidad de parámetros eran incorrectos.
+             $stmt->bind_param("sssiss", $title, $instruction, $priority, $user_id, $start_datetime, $end_datetime);
+        }
+    }
+
+    // Ejecutar la consulta si $stmt se preparó correctamente
+    if ($stmt) {
+        if ($stmt->execute()) {
             if ($type === 'Asignacion' && $alert_id) {
-                $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = $alert_id");
+                $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = " . intval($alert_id));
             }
             echo json_encode(['success' => true]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Error en la base de datos: ' . ($stmt->error ?? $conn->error)]);
+            echo json_encode(['success' => false, 'error' => 'Error al ejecutar la consulta: ' . $stmt->error]);
         }
-        if (isset($stmt)) $stmt->close();
-
+        $stmt->close();
     } else {
-        echo json_encode(['success' => false, 'error' => 'Solicitud no reconocida.']);
+        // Si $stmt es null, significa que no se cumplió ninguna condición para prepararlo
+        echo json_encode(['success' => false, 'error' => 'No se pudo preparar la consulta. Verifique los parámetros.']);
     }
 
 } elseif ($method === 'DELETE') {
