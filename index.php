@@ -61,6 +61,7 @@ if ($_SESSION['user_role'] === 'Admin') {
             t.id,
             COALESCE(a.title, t.title) as title,
             t.instruction,
+            t.priority,
             u_assigned.name as assigned_to,
             u_completed.name as completed_by,
             t.created_at,
@@ -188,7 +189,9 @@ $conn->close();
                     <div class="lg:col-span-2 space-y-4">
                         <h2 class="text-xl font-bold text-gray-900">Alertas y Tareas Prioritarias</h2>
                         
-                        <?php foreach ($priority_items as $item): ?>
+                        <?php if (empty($priority_items)): ?>
+                            <p class="text-sm text-gray-500 bg-white p-4 rounded-lg shadow-sm">No hay items prioritarios pendientes.</p>
+                        <?php else: foreach ($priority_items as $item): ?>
                             <?php
                                 $is_manual = $item['item_type'] === 'manual_task';
                                 $id = $is_manual ? $item['task_id'] : $item['id'];
@@ -244,8 +247,9 @@ $conn->close();
                                     <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $is_manual ? $id : ($item['task_id'] ?? 'null'); ?>, '<?php echo $id; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                 </div>
                             </div>
-                        <?php endforeach; ?>
+                        <?php endforeach; endif; ?>
                         
+                        <!-- SECCIÓN DE RECAUDOS RESTAURADA -->
                         <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
                              <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
                              <div class="overflow-x-auto">
@@ -276,23 +280,65 @@ $conn->close();
 
                         <div class="bg-white p-6 rounded-xl shadow-sm">
                             <h2 class="text-lg font-semibold text-gray-900 mb-4">Tareas y Alertas no Prioritarias</h2>
-                            <div id="non-priority-list" class="space-y-3">
-                               <?php if (empty($non_priority_items)): ?><p class="text-sm text-gray-500">No hay items no prioritarios.</p>
+                            <div id="non-priority-list" class="space-y-4">
+                               <?php if (empty($non_priority_items)): ?>
+                                    <p class="text-sm text-gray-500">No hay items no prioritarios pendientes.</p>
                                 <?php else: foreach ($non_priority_items as $item): ?>
-                                <?php 
-                                    $item_color_class = 'bg-gray-100 text-gray-800';
-                                    if ($item['priority'] === 'Media') $item_color_class = 'bg-yellow-100 text-yellow-800';
-                                ?>
-                                <div class="p-3 bg-gray-50 rounded-lg border">
-                                    <div class="flex justify-between items-start">
-                                        <p class="pr-2 font-medium text-sm"><?php echo htmlspecialchars($item['title']); ?></p>
-                                        <span class="text-xs font-bold px-2 py-0.5 rounded-full <?php echo $item_color_class; ?>"><?php echo htmlspecialchars($item['priority']); ?></span>
+                                    <?php
+                                        $is_manual = $item['item_type'] === 'manual_task';
+                                        $id = $is_manual ? $item['task_id'] : $item['id'];
+                                        $is_assigned = $item['assigned_to_user_id'] !== null;
+                                        $color_map = [
+                                            'Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],
+                                            'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']
+                                        ];
+                                        $color = $color_map[$item['priority']] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
+                                    ?>
+                                    <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                                        <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
+                                            <div class="flex justify-between items-start">
+                                                <p class="font-semibold <?php echo $color['text']; ?> text-md"><?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($item['priority']); ?></span></p>
+                                                <?php if ($is_assigned && isset($item['task_status']) && $item['task_status'] === 'Pendiente'): ?>
+                                                    <button onclick="completeTask(<?php echo $item['task_id']; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada">
+                                                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg>
+                                                    </button>
+                                                <?php endif; ?>
+                                            </div>
+                                            <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
+                                            <div class="mt-4 flex items-center space-x-4 border-t pt-3">
+                                                <button onclick="toggleForm('assign-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo $is_assigned ? 'Re-asignar' : 'Asignar'; ?></button>
+                                                <button onclick="toggleForm('reminder-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                                <div class="flex-grow text-right text-sm"><?php if($is_assigned): ?><span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?></span><?php endif; ?></div>
+                                            </div>
+                                        </div>
+                                        
+                                        <div id="assign-form-<?php echo $id; ?>" class="task-form bg-gray-50 px-4">
+                                            <h4 class="text-sm font-semibold mb-2"><?php echo $is_assigned ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
+                                            <select id="assign-user-<?php echo $id; ?>" class="w-full p-2 text-sm border rounded-md">
+                                                <?php
+                                                $suggested_role = !$is_manual ? ($item['suggested_role'] ?? null) : null;
+                                                foreach ($all_users as $user) {
+                                                    if (!$suggested_role || $user['role'] === $suggested_role) {
+                                                        $selected = ($user['id'] == $item['assigned_to_user_id']) ? 'selected' : '';
+                                                        echo "<option value='{$user['id']}' {$selected}>" . htmlspecialchars($user['name']) . " ({$user['role']})</option>";
+                                                    }
+                                                }
+                                                ?>
+                                            </select>
+                                            <textarea id="task-instruction-<?php echo $id; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['task_instruction'] ?? ''); ?></textarea>
+                                            <button onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $is_manual ? $id : ($item['task_id'] ?? 'null'); ?>, '<?php echo $id; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                        </div>
+
+                                        <div id="reminder-form-<?php echo $id; ?>" class="task-form bg-gray-50 px-4">
+                                            <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
+                                            <select id="reminder-user-<?php echo $id; ?>" class="w-full p-2 text-sm border rounded-md">
+                                                <?php foreach ($all_users as $user): ?>
+                                                    <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
+                                                <?php endforeach; ?>
+                                            </select>
+                                            <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $is_manual ? $id : ($item['task_id'] ?? 'null'); ?>, '<?php echo $id; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                        </div>
                                     </div>
-                                    <p class="text-xs text-gray-500 mt-1"><?php echo htmlspecialchars($item['item_type'] === 'alert' ? $item['description'] : $item['instruction']); ?></p>
-                                    <?php if(isset($item['assigned_to_name'])): ?>
-                                    <p class="text-xs text-green-700 font-semibold mt-2">Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?></p>
-                                    <?php endif; ?>
-                                </div>
                                 <?php endforeach; endif; ?>
                             </div>
                         </div>
@@ -310,34 +356,44 @@ $conn->close();
             <div id="content-trazabilidad" class="hidden">
                 <h2 class="text-xl font-bold text-gray-900 mb-4">Trazabilidad de Tareas Completadas</h2>
                 <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-                    <table class="w-full text-sm">
-                        <thead class="bg-gray-50">
-                            <tr class="text-left">
-                                <th class="px-6 py-3">Tarea</th>
-                                <th class="px-6 py-3">Descripción</th>
-                                <th class="px-6 py-3">Hora Inicio</th>
-                                <th class="px-6 py-3">Hora Fin</th>
-                                <th class="px-6 py-3">Tiempo Resp.</th>
-                                <th class="px-6 py-3">Asignado a</th>
-                                <th class="px-6 py-3">Check por</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            <?php if(empty($completed_tasks)): ?>
-                                <tr><td colspan="7" class="p-6 text-center text-gray-500">Aún no hay tareas completadas.</td></tr>
-                            <?php else: foreach($completed_tasks as $task): ?>
-                            <tr class="border-b">
-                                <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($task['title']); ?></td>
-                                <td class="px-6 py-4 text-xs"><?php echo htmlspecialchars($task['instruction']); ?></td>
-                                <td class="px-6 py-4"><?php echo date('d M, h:i a', strtotime($task['created_at'])); ?></td>
-                                <td class="px-6 py-4"><?php echo date('d M, h:i a', strtotime($task['completed_at'])); ?></td>
-                                <td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($task['response_time']); ?></td>
-                                <td class="px-6 py-4"><?php echo htmlspecialchars($task['assigned_to']); ?></td>
-                                <td class="px-6 py-4 font-semibold"><?php echo htmlspecialchars($task['completed_by']); ?></td>
-                            </tr>
-                            <?php endforeach; endif; ?>
-                        </tbody>
-                    </table>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50">
+                                <tr class="text-left">
+                                    <th class="px-6 py-3">Tarea</th>
+                                    <th class="px-6 py-3">Descripción</th>
+                                    <th class="px-6 py-3">Prioridad</th>
+                                    <th class="px-6 py-3">Hora Inicio</th>
+                                    <th class="px-6 py-3">Hora Fin</th>
+                                    <th class="px-6 py-3">Tiempo Resp.</th>
+                                    <th class="px-6 py-3">Asignado a</th>
+                                    <th class="px-6 py-3">Check por</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                <?php if(empty($completed_tasks)): ?>
+                                    <tr><td colspan="8" class="p-6 text-center text-gray-500">Aún no hay tareas completadas.</td></tr>
+                                <?php else: foreach($completed_tasks as $task): ?>
+                                <tr class="border-b">
+                                    <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($task['title']); ?></td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="<?php echo htmlspecialchars($task['instruction']); ?>"><?php echo htmlspecialchars($task['instruction']); ?></td>
+                                    <td class="px-6 py-4">
+                                        <span class="text-xs font-medium px-2.5 py-1 rounded-full <?php 
+                                            if ($task['priority'] === 'Alta' || $task['priority'] === 'Critica') echo 'bg-red-100 text-red-800';
+                                            elseif ($task['priority'] === 'Media') echo 'bg-yellow-100 text-yellow-800';
+                                            else echo 'bg-gray-100 text-gray-800';
+                                        ?>"><?php echo htmlspecialchars($task['priority']); ?></span>
+                                    </td>
+                                    <td class="px-6 py-4 whitespace-nowrap"><?php echo date('d M, h:i a', strtotime($task['created_at'])); ?></td>
+                                    <td class="px-6 py-4 whitespace-nowrap"><?php echo date('d M, h:i a', strtotime($task['completed_at'])); ?></td>
+                                    <td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($task['response_time']); ?></td>
+                                    <td class="px-6 py-4"><?php echo htmlspecialchars($task['assigned_to']); ?></td>
+                                    <td class="px-6 py-4 font-semibold"><?php echo htmlspecialchars($task['completed_by']); ?></td>
+                                </tr>
+                                <?php endforeach; endif; ?>
+                            </tbody>
+                        </table>
+                    </div>
                 </div>
             </div>
             <?php endif; ?>
@@ -348,16 +404,13 @@ $conn->close();
     const allUsers = <?php echo json_encode($all_users); ?>;
     const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
     
-    // CORRECCIÓN FINAL: La URL base de la API debe incluir la carpeta /api/
     const apiUrlBase = 'api'; 
 
-    // --- LÓGICA DE LA INTERFAZ ---
     const remindersPanel = document.getElementById('reminders-panel');
     function toggleReminders() { remindersPanel.classList.toggle('hidden'); }
     
     function toggleForm(formId, button) {
         const form = document.getElementById(formId);
-        // Selector robusto que busca el contenedor principal de la tarjeta.
         const parentItem = button.closest('.bg-white.rounded-lg.shadow-md.overflow-hidden');
         if (!parentItem) {
             console.error("No se pudo encontrar el contenedor principal para el formulario.");
@@ -472,7 +525,6 @@ $conn->close();
         }
     });
 
-    // --- LÓGICA DE GESTIÓN DE USUARIOS ---
     const modalOverlay = document.getElementById('user-modal-overlay');
     const modal = document.getElementById('user-modal');
     const modalTitle = document.getElementById('modal-title');
@@ -542,7 +594,6 @@ $conn->close();
         });
     }
     
-    // --- LÓGICA DE PESTAÑAS ---
     function switchTab(tabName) {
         const contentPanels = ['operaciones', 'roles', 'trazabilidad'];
         contentPanels.forEach(panel => {
