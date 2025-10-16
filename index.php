@@ -74,7 +74,7 @@ $manual_tasks_sql = "
     FROM tasks t
     LEFT JOIN users u ON t.assigned_to_user_id = u.id
     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente' {$user_filter}
-    GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.instruction, t.assigned_to_group), t.id)
+    GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group), t.id)
 ";
 
 $manual_tasks_result = $conn->query($manual_tasks_sql);
@@ -178,6 +178,31 @@ $total_alerts_count_for_user = count($all_pending_items);
 $priority_summary_count = count($main_priority_items);
 $high_priority_badge_count = count($panel_high_priority_items);
 $medium_priority_badge_count = count($panel_medium_priority_items);
+
+// Cargar Clientes y Rutas para los formularios
+$all_clients = [];
+$clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
+if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
+
+$all_routes = [];
+$routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
+if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
+
+// Cargar Check-ins iniciales
+$initial_checkins = [];
+$checkins_query = "
+    SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, ci.created_at, 
+           c.name as client_name, r.name as route_name, u.name as checkinero_name 
+    FROM check_ins ci 
+    JOIN clients c ON ci.client_id = c.id 
+    JOIN routes r ON ci.route_id = r.id 
+    JOIN users u ON ci.checkinero_id = u.id
+    LEFT JOIN funds f ON ci.fund_id = f.id
+    ORDER BY ci.created_at DESC LIMIT 20
+";
+$checkins_result = $conn->query($checkins_query);
+if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
+
 
 $conn->close();
 ?>
@@ -328,8 +353,15 @@ $conn->close();
             <div class="border-b border-gray-200">
                 <div class="-mb-px flex space-x-4">
                     <button id="tab-operaciones" class="nav-tab active" onclick="switchTab('operaciones')">Panel General</button>
+                    
+                    <?php if ($_SESSION['user_role'] === 'Checkinero' || $_SESSION['user_role'] === 'Admin'): ?>
+                        <button id="tab-checkinero" class="nav-tab" onclick="switchTab('checkinero')">Panel Check-in</button>
+                    <?php endif; ?>
+
                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                         <button id="tab-roles" class="nav-tab" onclick="switchTab('roles')">Gestión de Roles</button>
+                        <a href="manage_clients.php" class="nav-tab">Gestionar Clientes</a>
+                        <a href="manage_funds.php" class="nav-tab">Gestionar Fondos</a>
                         <button id="tab-trazabilidad" class="nav-tab" onclick="switchTab('trazabilidad')">Trazabilidad</button>
                     <?php endif; ?>
                 </div>
@@ -554,6 +586,78 @@ $conn->close();
                 </div>
             </div>
 
+            <div id="content-checkinero" class="hidden">
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Check-in</h2>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-4">Registrar Nuevo Check-in</h3>
+                        <form id="checkin-form" class="space-y-4">
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="invoice_number" class="block text-sm font-medium">Número de Factura/Planilla</label>
+                                    <input type="text" id="invoice_number" required class="mt-1 w-full p-2 border rounded-md">
+                                </div>
+                                <div>
+                                    <label for="seal_number" class="block text-sm font-medium">Número de Sello</label>
+                                    <input type="text" id="seal_number" required class="mt-1 w-full p-2 border rounded-md">
+                                </div>
+                            </div>
+                            <div>
+                                <label for="client_id" class="block text-sm font-medium">Cliente</label>
+                                <select id="client_id" required class="mt-1 w-full p-2 border rounded-md">
+                                    <option value="">Seleccione un cliente...</option>
+                                    <?php foreach($all_clients as $client): ?>
+                                        <option value="<?php echo $client['id']; ?>"><?php echo htmlspecialchars($client['name']) . ' (NIT: ' . htmlspecialchars($client['nit'] ?? 'N/A') . ')'; ?></option>
+                                    <?php endforeach; ?>
+                                </select>
+                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                <div>
+                                    <label for="route_id" class="block text-sm font-medium">Ruta</label>
+                                    <select id="route_id" required class="mt-1 w-full p-2 border rounded-md">
+                                        <option value="">Seleccione una ruta...</option>
+                                        <?php foreach($all_routes as $route): ?>
+                                            <option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option>
+                                        <?php endforeach; ?>
+                                    </select>
+                                </div>
+                                <div>
+                                    <label for="fund_id" class="block text-sm font-medium">Fondo</label>
+                                    <select id="fund_id" required class="mt-1 w-full p-2 border rounded-md bg-gray-200" disabled>
+                                        <option value="">Seleccione un cliente primero...</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div>
+                                <label for="declared_value" class="block text-sm font-medium">Valor Declarado</label>
+                                <input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md">
+                            </div>
+                            <button type="submit" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700 mt-4">Agregar Check-in</button>
+                        </form>
+                    </div>
+
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-4">Últimos Check-ins Registrados</h3>
+                        <div class="overflow-auto max-h-[600px]">
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th class="p-3">Sello</th>
+                                        <th class="p-3">Cliente</th>
+                                        <th class="p-3">Fondo</th>
+                                        <th class="p-3">Valor</th>
+                                        <th class="p-3">Fecha</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="checkins-table-body">
+                                    </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+
             <?php if ($_SESSION['user_role'] === 'Admin'): ?>
             <div id="content-roles" class="hidden">
                  <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold">Gestionar Usuarios</h2><button onclick="openModal()" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg">Agregar Usuario</button></div>
@@ -639,6 +743,7 @@ $conn->close();
     const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
     const currentUserId = <?php echo $_SESSION['user_id']; ?>;
     const apiUrlBase = 'api';
+    const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -869,13 +974,18 @@ $conn->close();
     }
 
     function switchTab(tabName) {
-        const contentPanels = ['operaciones', 'roles', 'trazabilidad'];
+        const contentPanels = ['operaciones', 'checkinero', 'roles', 'trazabilidad'];
+        document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+        
         contentPanels.forEach(panel => {
             const content = document.getElementById(`content-${panel}`);
-            const tab = document.getElementById(`tab-${panel}`);
-            if (content) { content.classList.toggle('hidden', panel !== tabName); }
-            if (tab) { tab.classList.toggle('active', panel !== tabName); }
+            if (content) {
+                content.classList.toggle('hidden', panel !== tabName);
+            }
         });
+        
+        const activeTab = document.getElementById(`tab-${tabName}`);
+        if(activeTab) activeTab.classList.add('active');
     }
 
     function updateCountdownTimers() {
@@ -912,6 +1022,68 @@ $conn->close();
             }
         });
     }
+
+    function formatCurrency(value) {
+        return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
+    }
+
+    function populateCheckinsTable(checkins) {
+        const tbody = document.getElementById('checkins-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!checkins || checkins.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>';
+            return;
+        }
+        checkins.forEach(ci => {
+            const row = `
+                <tr class="border-b">
+                    <td class="p-3 font-mono">${ci.seal_number}</td>
+                    <td class="p-3">${ci.client_name}</td>
+                    <td class="p-3">${ci.fund_name || 'N/A'}</td>
+                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleTimeString('es-CO')}</td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+
+    async function handleCheckinSubmit(event) {
+        event.preventDefault();
+        const payload = {
+            invoice_number: document.getElementById('invoice_number').value,
+            seal_number: document.getElementById('seal_number').value,
+            client_id: document.getElementById('client_id').value,
+            route_id: document.getElementById('route_id').value,
+            fund_id: document.getElementById('fund_id').value,
+            declared_value: document.getElementById('declared_value').value,
+        };
+
+        try {
+            const response = await fetch('api/checkin_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if (result.success) {
+                document.getElementById('checkin-form').reset();
+                document.getElementById('fund_id').innerHTML = '<option value="">Seleccione un cliente primero...</option>';
+                document.getElementById('fund_id').disabled = true;
+                document.getElementById('fund_id').classList.add('bg-gray-200');
+                
+                const freshCheckins = await (await fetch('api/checkin_api.php')).json();
+                populateCheckinsTable(freshCheckins);
+            } else {
+                alert('Error: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Error en el check-in:', error);
+            alert('Error de conexión al registrar.');
+        }
+    }
+
 
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
@@ -1018,7 +1190,6 @@ $conn->close();
         <?php if ($_SESSION['user_role'] === 'Admin'): ?>
         if(document.getElementById('trazabilidad-tbody')){
             populateTrazabilidadTable(completedTasksData);
-            // Set initial sort icon
             const defaultSortHeader = document.querySelector(`th[data-column-name="completed_at"]`);
             if (defaultSortHeader) {
                 defaultSortHeader.dataset.sortDir = 'desc';
@@ -1026,6 +1197,46 @@ $conn->close();
             }
         }
         <?php endif; ?>
+
+        if (document.getElementById('checkin-form')) {
+            populateCheckinsTable(initialCheckins);
+            document.getElementById('checkin-form').addEventListener('submit', handleCheckinSubmit);
+
+            const clientSelect = document.getElementById('client_id');
+            const fundSelect = document.getElementById('fund_id');
+
+            clientSelect.addEventListener('change', async () => {
+                const clientId = clientSelect.value;
+                fundSelect.innerHTML = '<option value="">Cargando...</option>';
+                fundSelect.disabled = true;
+                fundSelect.classList.add('bg-gray-200');
+
+                if (!clientId) {
+                    fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
+                    return;
+                }
+
+                try {
+                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
+                    const funds = await response.json();
+                    
+                    fundSelect.innerHTML = '';
+                    if (funds.length > 0) {
+                        funds.forEach(fund => {
+                            const option = new Option(fund.name, fund.id);
+                            fundSelect.add(option);
+                        });
+                        fundSelect.disabled = false;
+                        fundSelect.classList.remove('bg-gray-200');
+                    } else {
+                        fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>';
+                    }
+                } catch (error) {
+                    console.error('Error fetching funds:', error);
+                    fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>';
+                }
+            });
+        }
 
         updateReminderCount();
         updateCountdownTimers();
