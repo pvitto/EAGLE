@@ -103,8 +103,9 @@ foreach ($all_pending_items as $item) {
     }
 
     // Popula las listas para los PANELES DE ICONOS
-    // Panel Bandera: Basado en la prioridad ORIGINAL
-    if ($original_priority === 'Critica' || $original_priority === 'Alta') {
+    // ***** LÍNEA CORREGIDA *****
+    // Se cambia $original_priority por $current_priority para que las tareas vencidas también aparezcan aquí.
+    if ($current_priority === 'Critica' || $current_priority === 'Alta') {
         $panel_high_priority_items[] = $item;
     }
     // Panel Reloj: Basado en la prioridad ACTUAL (para incluir tareas que están por vencer)
@@ -812,7 +813,7 @@ $conn->close();
                 content.classList.toggle('hidden', panel !== tabName);
             }
             if (tab) {
-                tab.classList.toggle('active', panel === tabName);
+                tab.classList.toggle('active', panel !== tabName);
             }
         });
     }
@@ -903,4 +904,3 @@ $conn->close();
     </script>
 </body>
 </html>
-
