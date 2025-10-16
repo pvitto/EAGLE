@@ -361,6 +361,7 @@ $conn->close();
                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                         <button id="tab-roles" class="nav-tab" onclick="switchTab('roles')">Gestión de Roles</button>
                         <a href="manage_clients.php" class="nav-tab">Gestionar Clientes</a>
+                        <a href="manage_routes.php" class="nav-tab">Gestionar Rutas</a>
                         <a href="manage_funds.php" class="nav-tab">Gestionar Fondos</a>
                         <button id="tab-trazabilidad" class="nav-tab" onclick="switchTab('trazabilidad')">Trazabilidad</button>
                     <?php endif; ?>
@@ -642,11 +643,14 @@ $conn->close();
                             <table class="w-full text-sm text-left">
                                 <thead class="bg-gray-50 sticky top-0">
                                     <tr>
+                                        <th class="p-3">Planilla</th>
                                         <th class="p-3">Sello</th>
+                                        <th class="p-3">Declarado</th>
+                                        <th class="p-3">Ruta</th>
+                                        <th class="p-3">Fecha de Registro</th>
+                                        <th class="p-3">Checkinero</th>
                                         <th class="p-3">Cliente</th>
                                         <th class="p-3">Fondo</th>
-                                        <th class="p-3">Valor</th>
-                                        <th class="p-3">Fecha</th>
                                     </tr>
                                 </thead>
                                 <tbody id="checkins-table-body">
@@ -1032,17 +1036,20 @@ $conn->close();
         if (!tbody) return;
         tbody.innerHTML = '';
         if (!checkins || checkins.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="5" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>';
+            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>';
             return;
         }
         checkins.forEach(ci => {
             const row = `
                 <tr class="border-b">
+                    <td class="p-3 font-mono">${ci.invoice_number}</td>
                     <td class="p-3 font-mono">${ci.seal_number}</td>
+                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                    <td class="p-3">${ci.route_name}</td>
+                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                    <td class="p-3">${ci.checkinero_name}</td>
                     <td class="p-3">${ci.client_name}</td>
                     <td class="p-3">${ci.fund_name || 'N/A'}</td>
-                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
-                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleTimeString('es-CO')}</td>
                 </tr>
             `;
             tbody.innerHTML += row;

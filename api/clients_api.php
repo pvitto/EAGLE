@@ -13,7 +13,7 @@ $method = $_SERVER['REQUEST_METHOD'];
 
 switch ($method) {
     case 'GET':
-        $result = $conn->query("SELECT id, name, address, created_at FROM clients ORDER BY name ASC");
+        $result = $conn->query("SELECT id, name, nit, address, created_at FROM clients ORDER BY name ASC");
         $clients = [];
         if ($result) {
             while ($row = $result->fetch_assoc()) {
@@ -30,19 +30,25 @@ switch ($method) {
         }
         $data = json_decode(file_get_contents('php://input'), true);
         $name = $data['name'] ?? '';
+        $nit = $data['nit'] ?? '';
         $address = $data['address'] ?? null;
 
-        if (empty($name)) {
-            echo json_encode(['success' => false, 'error' => 'El nombre del cliente es requerido.']);
+        if (empty($name) || empty($nit)) {
+            echo json_encode(['success' => false, 'error' => 'El nombre del cliente y el NIT son requeridos.']);
             exit;
         }
 
-        $stmt = $conn->prepare("INSERT INTO clients (name, address) VALUES (?, ?)");
-        $stmt->bind_param("ss", $name, $address);
+        $stmt = $conn->prepare("INSERT INTO clients (name, nit, address) VALUES (?, ?, ?)");
+        $stmt->bind_param("sss", $name, $nit, $address);
         if ($stmt->execute()) {
             echo json_encode(['success' => true, 'id' => $stmt->insert_id]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Error al crear el cliente: ' . $stmt->error]);
+            // Error común: NIT duplicado
+            if ($conn->errno == 1062) {
+                 echo json_encode(['success' => false, 'error' => 'El NIT ingresado ya existe.']);
+            } else {
+                 echo json_encode(['success' => false, 'error' => 'Error al crear el cliente: ' . $stmt->error]);
+            }
         }
         $stmt->close();
         break;
