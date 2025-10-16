@@ -18,7 +18,10 @@ $method = $_SERVER['REQUEST_METHOD'];
 $data = json_decode(file_get_contents('php://input'), true);
 
 if ($method === 'POST') {
+    // Parámetros para asignación individual y grupal
     $user_id = $data['assign_to'] ?? null;
+    $assign_to_group = $data['assign_to_group'] ?? null;
+    
     $instruction = $data['instruction'] ?? '';
     $type = $data['type'] ?? '';
     $task_id = $data['task_id'] ?? null;
@@ -28,16 +31,78 @@ if ($method === 'POST') {
     $start_datetime = $data['start_datetime'] ?? null;
     $end_datetime = $data['end_datetime'] ?? null;
 
-    if ($type !== 'Recordatorio' && !$user_id) {
-        echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario.']);
+    if ($type !== 'Recordatorio' && !$user_id && !$assign_to_group) {
+        echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario o un grupo.']);
         exit;
     }
-     if ($type === 'Recordatorio' && !$user_id) {
+    if ($type === 'Recordatorio' && !$user_id) {
         echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario para el recordatorio.']);
         exit;
     }
+    
+    // ===== LÓGICA PARA ASIGNACIÓN GRUPAL =====
+    if ($assign_to_group) {
+        $conn->begin_transaction();
+        try {
+            // 1. Obtener los IDs de usuario para el grupo seleccionado
+            $userIds = [];
+            if ($assign_to_group === 'todos') {
+                $stmt_users = $conn->prepare("SELECT id FROM users");
+            } else {
+                $stmt_users = $conn->prepare("SELECT id FROM users WHERE role = ?");
+                $stmt_users->bind_param("s", $assign_to_group);
+            }
+            $stmt_users->execute();
+            $result_users = $stmt_users->get_result();
+            while ($row = $result_users->fetch_assoc()) {
+                $userIds[] = $row['id'];
+            }
+            $stmt_users->close();
 
-    $stmt = null; // Inicializar stmt
+            if (empty($userIds)) {
+                throw new Exception("No se encontraron usuarios para el grupo seleccionado.");
+            }
+
+            // 2. Preparar la consulta para insertar las tareas
+            $stmt_task = null;
+            if ($type === 'Manual') {
+                if (!$title) throw new Exception("El título es requerido para tareas manuales grupales.");
+                $stmt_task = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, type, alert_id, start_datetime, end_datetime) VALUES (?, ?, ?, ?, 'Manual', NULL, ?, ?)");
+            } elseif ($type === 'Asignacion' && $alert_id) {
+                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, instruction, type) VALUES (?, ?, ?, 'Asignacion')");
+            } else {
+                throw new Exception("Parámetros no válidos para asignación grupal.");
+            }
+
+            // 3. Iterar y crear una tarea para cada usuario del grupo
+            foreach ($userIds as $uid) {
+                if ($type === 'Manual') {
+                    $stmt_task->bind_param("sssiss", $title, $instruction, $priority, $uid, $start_datetime, $end_datetime);
+                } elseif ($type === 'Asignacion') {
+                    $stmt_task->bind_param("iis", $alert_id, $uid, $instruction);
+                }
+                $stmt_task->execute();
+            }
+            $stmt_task->close();
+
+            // 4. Actualizar el estado de la alerta si la asignación vino de una
+            if ($type === 'Asignacion' && $alert_id) {
+                $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = " . intval($alert_id));
+            }
+            
+            // 5. Si todo fue exitoso, confirmar la transacción
+            $conn->commit();
+            echo json_encode(['success' => true]);
+
+        } catch (Exception $e) {
+            $conn->rollback();
+            echo json_encode(['success' => false, 'error' => 'Error en la asignación grupal: ' . $e->getMessage()]);
+        }
+        exit; // Termina el script después de manejar la asignación grupal
+    }
+    
+    // ===== LÓGICA PARA ASIGNACIÓN INDIVIDUAL Y RECORDATORIOS (CÓDIGO EXISTENTE) =====
+    $stmt = null; 
 
     if ($type === 'Recordatorio') {
         $message = '';
@@ -46,17 +111,13 @@ if ($method === 'POST') {
             $stmt_msg->bind_param("i", $alert_id);
             $stmt_msg->execute();
             $result = $stmt_msg->get_result();
-            if ($row = $result->fetch_assoc()) {
-                $message = "Recordatorio sobre la alerta: '" . $row['title'] . "'";
-            }
+            if ($row = $result->fetch_assoc()) { $message = "Recordatorio sobre la alerta: '" . $row['title'] . "'"; }
         } elseif ($task_id) {
             $stmt_msg = $conn->prepare("SELECT title FROM tasks WHERE id = ?");
             $stmt_msg->bind_param("i", $task_id);
             $stmt_msg->execute();
             $result = $stmt_msg->get_result();
-            if ($row = $result->fetch_assoc()) {
-                $message = "Recordatorio sobre la tarea: '" . $row['title'] . "'";
-            }
+            if ($row = $result->fetch_assoc()) { $message = "Recordatorio sobre la tarea: '" . $row['title'] . "'"; }
         }
         
         if (!empty($message)) {
@@ -78,12 +139,10 @@ if ($method === 'POST') {
     } elseif ($type === 'Manual') {
         if ($title) { // Crear Tarea Manual
              $stmt = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, type, alert_id, start_datetime, end_datetime) VALUES (?, ?, ?, ?, 'Manual', NULL, ?, ?)");
-             // CORRECCIÓN APLICADA AQUÍ: Los tipos de datos y la cantidad de parámetros eran incorrectos.
              $stmt->bind_param("sssiss", $title, $instruction, $priority, $user_id, $start_datetime, $end_datetime);
         }
     }
 
-    // Ejecutar la consulta si $stmt se preparó correctamente
     if ($stmt) {
         if ($stmt->execute()) {
             if ($type === 'Asignacion' && $alert_id) {
@@ -95,7 +154,6 @@ if ($method === 'POST') {
         }
         $stmt->close();
     } else {
-        // Si $stmt es null, significa que no se cumplió ninguna condición para prepararlo
         echo json_encode(['success' => false, 'error' => 'No se pudo preparar la consulta. Verifique los parámetros.']);
     }
 
@@ -117,4 +175,3 @@ if ($method === 'POST') {
 
 $conn->close();
 ?>
-

@@ -103,8 +103,7 @@ foreach ($all_pending_items as $item) {
     }
 
     // Popula las listas para los PANELES DE ICONOS
-    // ***** LÍNEA CORREGIDA *****
-    // Se cambia $original_priority por $current_priority para que las tareas vencidas también aparezcan aquí.
+    // Panel Bandera: Basado en la prioridad ACTUAL (para incluir vencidas)
     if ($current_priority === 'Critica' || $current_priority === 'Alta') {
         $panel_high_priority_items[] = $item;
     }
@@ -257,6 +256,13 @@ $conn->close();
                                 <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
                                     <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title']); ?></p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
+                                    
+                                    <?php if ($_SESSION['user_role'] === 'Admin' && !empty($item['assigned_to_name'])): ?>
+                                        <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">
+                                            Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?>
+                                        </p>
+                                    <?php endif; ?>
+
                                     <?php if (!empty($item['end_datetime'])): ?>
                                         <div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                     <?php endif; ?>
@@ -281,6 +287,13 @@ $conn->close();
                                 <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
                                     <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title']); ?></p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
+                                    
+                                    <?php if ($_SESSION['user_role'] === 'Admin' && !empty($item['assigned_to_name'])): ?>
+                                        <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">
+                                            Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?>
+                                        </p>
+                                    <?php endif; ?>
+
                                     <?php if (!empty($item['end_datetime'])): ?>
                                         <div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                     <?php endif; ?>
@@ -319,7 +332,7 @@ $conn->close();
         <nav class="mb-8">
             <div class="border-b border-gray-200">
                 <div class="-mb-px flex space-x-4">
-                    <button id="tab-operaciones" class="nav-tab active" onclick="switchTab('operaciones')">Panel de Operaciones</button>
+                    <button id="tab-operaciones" class="nav-tab active" onclick="switchTab('operaciones')">Panel General</button>
                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                         <button id="tab-roles" class="nav-tab" onclick="switchTab('roles')">Gestión de Roles</button>
                         <button id="tab-trazabilidad" class="nav-tab" onclick="switchTab('trazabilidad')">Trazabilidad</button>
