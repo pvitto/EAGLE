@@ -19,7 +19,7 @@ $admin_users_list = ($_SESSION['user_role'] === 'Admin') ? $all_users : [];
 // --- FILTRO POR USUARIO Y LÓGICA DE PRIORIDAD ---
 $current_user_id = $_SESSION['user_id'];
 $current_user_role = $_SESSION['user_role'];
-$all_pending_items = []; 
+$all_pending_items = [];
 
 $user_filter = '';
 if ($current_user_role !== 'Admin') {
@@ -28,15 +28,15 @@ if ($current_user_role !== 'Admin') {
 
 // 1. Cargar Alertas Pendientes (Agrupadas si son asignaciones a grupos)
 $base_query_fields = "
-    a.*, 
-    t.id as task_id, 
-    t.status as task_status, 
-    t.assigned_to_user_id, 
+    a.*,
+    t.id as task_id,
+    t.status as task_status,
+    t.assigned_to_user_id,
     t.assigned_to_group,
-    u_assigned.name as assigned_to_name, 
-    t.type as task_type, 
-    t.instruction as task_instruction, 
-    t.start_datetime, 
+    u_assigned.name as assigned_to_name,
+    t.type as task_type,
+    t.instruction as task_instruction,
+    t.start_datetime,
     t.end_datetime,
     GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as group_members
 ";
@@ -66,9 +66,9 @@ if ($alerts_result) {
 
 // 2. Cargar Tareas Manuales Pendientes (Agrupadas si son a grupos)
 $manual_tasks_sql = "
-    SELECT 
-        t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status, 
-        t.assigned_to_user_id, t.assigned_to_group, u.name as assigned_to_name, 
+    SELECT
+        t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status,
+        t.assigned_to_user_id, t.assigned_to_group, u.name as assigned_to_name,
         t.start_datetime, t.end_datetime,
         GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as group_members
     FROM tasks t
@@ -95,12 +95,12 @@ $now = new DateTime();
 foreach ($all_pending_items as $item) {
     $original_priority = $item['priority'];
     $current_priority = $original_priority;
-    
+
     if (!empty($item['end_datetime'])) {
         $end_time = new DateTime($item['end_datetime']);
         $diff_minutes = ($now->getTimestamp() - $end_time->getTimestamp()) / 60;
 
-        if ($diff_minutes >= 0) { 
+        if ($diff_minutes >= 0) {
             $current_priority = 'Alta';
         } elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) {
             $current_priority = 'Media';
@@ -199,6 +199,8 @@ $conn->close();
         .task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
         .task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
         .details-row { border-top: 1px solid #e5e7eb; }
+        .sortable { transition: background-color 0.2s; }
+        .sortable:hover { background-color: #f3f4f6; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -211,7 +213,7 @@ $conn->close();
             </div>
         </div>
     </div>
-    
+
     <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-full mx-auto">
         <header class="flex flex-col sm:flex-row justify-between sm:items-center mb-6 border-b pb-4">
              <div><h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1><p class="text-sm text-gray-500">Sistema Integrado de Operaciones y Alertas</p></div>
@@ -237,7 +239,7 @@ $conn->close();
                                 <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
                                     <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title']); ?></p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
-                                    
+
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                                         <?php if (!empty($item['assigned_to_group'])): ?>
                                             <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">
@@ -274,7 +276,7 @@ $conn->close();
                                 <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
                                     <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title']); ?></p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
-                                    
+
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                                         <?php if (!empty($item['assigned_to_group'])): ?>
                                             <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">
@@ -417,7 +419,7 @@ $conn->close();
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
-                        
+
                         <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
                              <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
                              <div class="overflow-x-auto">
@@ -433,7 +435,7 @@ $conn->close();
                             </div>
                         </div>
                     </div>
-                    
+
                     <div class="space-y-8">
                         <div class="bg-white p-6 rounded-xl shadow-sm">
                             <h2 class="text-lg font-semibold text-gray-900 mb-4">Crear Tarea Manual</h2>
@@ -551,7 +553,7 @@ $conn->close();
                     </div>
                 </div>
             </div>
-            
+
             <?php if ($_SESSION['user_role'] === 'Admin'): ?>
             <div id="content-roles" class="hidden">
                  <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold">Gestionar Usuarios</h2><button onclick="openModal()" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg">Agregar Usuario</button></div>
@@ -561,7 +563,7 @@ $conn->close();
             </div>
             <div id="content-trazabilidad" class="hidden">
                 <h2 class="text-xl font-bold text-gray-900 mb-4">Trazabilidad de Tareas Completadas</h2>
-                
+
                 <div class="bg-white p-4 rounded-xl shadow-sm mb-6">
                     <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
                         <div>
@@ -611,12 +613,19 @@ $conn->close();
                         <table id="trazabilidad-table" class="w-full text-sm">
                             <thead class="bg-gray-50">
                                 <tr class="text-left">
-                                    <th class="px-6 py-3">Tarea</th><th class="px-6 py-3">Descripción</th><th class="px-6 py-3">P. Inicial</th><th class="px-6 py-3">P. Final</th><th class="px-6 py-3">Hora Inicio</th><th class="px-6 py-3">Hora Fin</th><th class="px-6 py-3">Tiempo Resp.</th><th class="px-6 py-3">Asignado a</th><th class="px-6 py-3">Check por</th>
+                                    <th class="px-6 py-3">Tarea</th>
+                                    <th class="px-6 py-3">Descripción</th>
+                                    <th class="px-6 py-3">P. Inicial</th>
+                                    <th class="px-6 py-3">P. Final</th>
+                                    <th class="px-6 py-3 sortable cursor-pointer" data-column-name="created_at" onclick="sortTableByDate('created_at')">Hora Inicio <span class="text-gray-400"></span></th>
+                                    <th class="px-6 py-3 sortable cursor-pointer" data-column-name="completed_at" onclick="sortTableByDate('completed_at')">Hora Fin <span class="text-gray-400"></span></th>
+                                    <th class="px-6 py-3">Tiempo Resp.</th>
+                                    <th class="px-6 py-3">Asignado a</th>
+                                    <th class="px-6 py-3">Check por</th>
                                 </tr>
                             </thead>
                             <tbody id="trazabilidad-tbody">
-                                <!-- Contenido generado por JavaScript -->
-                            </tbody>
+                                </tbody>
                         </table>
                     </div>
                 </div>
@@ -638,7 +647,7 @@ $conn->close();
     function toggleReminders() { remindersPanel.classList.toggle('hidden'); }
     function toggleTaskNotifications() { taskNotificationsPanel.classList.toggle('hidden'); }
     function toggleMediumPriority() { mediumPriorityPanel.classList.toggle('hidden'); }
-    
+
     function toggleForm(formId, button) {
         const form = document.getElementById(formId);
         const parentItem = button.closest('.task-card');
@@ -662,7 +671,7 @@ $conn->close();
             } else { alert('Error: ' + result.error); }
         } catch (error) { console.error('Error deleting reminder:', error); alert('Error de conexión.'); }
     }
-    
+
     function updateReminderCount() {
         const list = document.getElementById('reminders-list');
         const badge = document.getElementById('reminders-badge');
@@ -692,11 +701,11 @@ $conn->close();
             } else { alert('Error al completar la tarea: ' + result.error); }
         } catch (error) { console.error('Error completing task:', error); alert('Error de conexión.'); }
     }
-    
+
     async function submitAssignment(alertId, taskId, formIdPrefix) {
         const selectedValue = document.getElementById(`assign-user-${formIdPrefix}`).value;
         const instruction = document.getElementById(`task-instruction-${formIdPrefix}`).value;
-        
+
         let payload = {
             instruction: instruction,
             type: 'Asignacion',
@@ -709,10 +718,10 @@ $conn->close();
         } else {
             payload.assign_to = selectedValue;
         }
-        
+
         await sendTaskRequest(payload);
     }
-    
+
     async function setReminder(alertId, taskId, formIdPrefix) {
         const userId = document.getElementById(`reminder-user-${formIdPrefix}`).value;
         await sendTaskRequest({
@@ -745,7 +754,7 @@ $conn->close();
             alert('Error de conexión. Revisa la consola (F12) para más detalles.');
         }
     }
-    
+
     document.getElementById('manual-task-form').addEventListener('submit', async function(e) {
         e.preventDefault();
         const title = document.getElementById('manual-task-title').value;
@@ -754,7 +763,7 @@ $conn->close();
         const priority = document.getElementById('manual-task-priority').value;
         const start_datetime = document.getElementById('manual-task-start').value;
         const end_datetime = document.getElementById('manual-task-end').value;
-        
+
         if (!selectedValue) { alert('Selecciona un usuario o grupo.'); return; }
         if (start_datetime && end_datetime && start_datetime >= end_datetime) {
             alert('La fecha de fin debe ser posterior a la fecha de inicio.');
@@ -769,7 +778,7 @@ $conn->close();
             start_datetime: start_datetime || null,
             end_datetime: end_datetime || null
         };
-        
+
         if (selectedValue.startsWith('group-')) {
             payload.assign_to_group = selectedValue.replace('group-', '');
         } else {
@@ -858,7 +867,7 @@ $conn->close();
             tbody.innerHTML += `<tr id="user-row-${user.id}"><td class="px-6 py-4">${user.name}</td><td class="px-6 py-4">${user.email}</td><td class="px-6 py-4"><span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">${user.role}</span></td><td class="px-6 py-4 text-center"><button onclick='openModal(${userJson})' class="font-medium text-blue-600">Editar</button><button onclick="deleteUser(${user.id})" class="font-medium text-red-600 ml-4">Eliminar</button></td></tr>`;
         });
     }
-    
+
     function switchTab(tabName) {
         const contentPanels = ['operaciones', 'roles', 'trazabilidad'];
         contentPanels.forEach(panel => {
@@ -897,7 +906,7 @@ $conn->close();
                 if (hours > 0 || days > 0) timeLeft += `${hours}h `;
                 timeLeft += `${minutes}m ${seconds}s`;
                 let textColor = 'text-green-600';
-                if (days === 0 && hours < 1) { textColor = 'text-red-600'; } 
+                if (days === 0 && hours < 1) { textColor = 'text-red-600'; }
                 else if (days === 0 && hours < 24) { textColor = 'text-yellow-700'; }
                 timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
             }
@@ -906,7 +915,7 @@ $conn->close();
 
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
-    
+
     function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
         tbody.innerHTML = '';
@@ -953,12 +962,10 @@ $conn->close();
 
         let filteredTasks = completedTasksData.filter(task => {
             let isValid = true;
-            // CORREGIDO: Usar la fecha de INICIO para el filtro de Fecha Inicio.
             const taskStartDate = task.created_at.split(' ')[0];
-            const taskEndDate = task.completed_at.split(' ')[0];
 
             if (startDate && taskStartDate < startDate) isValid = false;
-            if (endDate && taskEndDate > endDate) isValid = false;
+            if (endDate && taskStartDate > endDate) isValid = false;
             if (user && task.assigned_to !== user) isValid = false;
             if (checker && task.completed_by !== checker) isValid = false;
             if (priority && task.final_priority !== priority) isValid = false;
@@ -967,7 +974,36 @@ $conn->close();
         });
         populateTrazabilidadTable(filteredTasks);
     }
-    
+
+    function sortTableByDate(column) {
+        const header = document.querySelector(`th[data-column-name="${column}"]`);
+        if (!header) return;
+
+        const currentDirection = header.dataset.sortDir || 'none';
+        const nextDirection = (currentDirection === 'desc') ? 'asc' : 'desc';
+
+        completedTasksData.sort((a, b) => {
+            const dateA = new Date(a[column]).getTime();
+            const dateB = new Date(b[column]).getTime();
+            if (isNaN(dateA)) return 1;
+            if (isNaN(dateB)) return -1;
+            return nextDirection === 'asc' ? dateA - dateB : dateB - dateA;
+        });
+
+        document.querySelectorAll('th.sortable').forEach(th => {
+            const iconSpan = th.querySelector('span');
+            if (th === header) {
+                th.dataset.sortDir = nextDirection;
+                iconSpan.textContent = nextDirection === 'asc' ? ' ▲' : ' ▼';
+            } else {
+                delete th.dataset.sortDir;
+                iconSpan.textContent = '';
+            }
+        });
+
+        applyTrazabilidadFilters();
+    }
+
     function exportToExcel() {
         const table = document.getElementById("trazabilidad-table");
         const wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" });
@@ -982,9 +1018,15 @@ $conn->close();
         <?php if ($_SESSION['user_role'] === 'Admin'): ?>
         if(document.getElementById('trazabilidad-tbody')){
             populateTrazabilidadTable(completedTasksData);
+            // Set initial sort icon
+            const defaultSortHeader = document.querySelector(`th[data-column-name="completed_at"]`);
+            if (defaultSortHeader) {
+                defaultSortHeader.dataset.sortDir = 'desc';
+                defaultSortHeader.querySelector('span').textContent = ' ▼';
+            }
         }
         <?php endif; ?>
-        
+
         updateReminderCount();
         updateCountdownTimers();
         setInterval(updateCountdownTimers, 1000);
@@ -1015,4 +1057,3 @@ $conn->close();
     </script>
 </body>
 </html>
-
