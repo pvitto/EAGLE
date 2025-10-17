@@ -196,7 +196,6 @@ $operator_history = [];
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . $_SESSION['user_id'] : "";
 
-    // CORRECCIÓN: Nueva consulta para el historial del operador.
     $history_query = "
         SELECT 
             op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
@@ -1093,27 +1092,7 @@ $conn->close();
                                 </tr>
                             </thead>
                             <tbody id="trazabilidad-tbody">
-                                <?php if (!empty($completed_tasks)): ?>
-                                    <?php foreach($completed_tasks as $task): ?>
-                                        <tr class="border-b">
-                                            <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($task['title'] ?? ''); ?></td>
-                                            <td class="px-6 py-4 text-xs max-w-xs truncate" title="<?php echo htmlspecialchars($task['instruction'] ?? ''); ?>"><?php echo htmlspecialchars($task['instruction'] ?? ''); ?></td>
-                                            <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full <?php echo getPriorityClass($task['priority']); ?>"><?php echo htmlspecialchars($task['priority'] ?? ''); ?></span></td>
-                                            <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full <?php echo getPriorityClass($task['final_priority']); ?>"><?php echo htmlspecialchars($task['final_priority'] ?? ''); ?></span></td>
-                                            <td class="px-6 py-4 whitespace-nowrap"><?php echo formatDate($task['created_at']); ?></td>
-                                            <td class="px-6 py-4 whitespace-nowrap"><?php echo formatDate($task['completed_at']); ?></td>
-                                            <td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($task['response_time'] ?? ''); ?></td>
-                                            <td class="px-6 py-4"><?php echo htmlspecialchars($task['assigned_to'] ?? ''); ?></td>
-                                            <td class="px-6 py-4 font-semibold"><?php echo htmlspecialchars($task['completed_by'] ?? ''); ?></td>
-                                            <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                                                <td class="px-6 py-4 text-center">
-                                                    <button onclick="deleteTask(<?php echo $task['id']; ?>)" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button>
-                                                </td>
-                                            <?php endif; ?>
-                                        </tr>
-                                    <?php endforeach; ?>
-                                <?php endif; ?>
-                            </tbody>
+                                </tbody>
                         </table>
                     </div>
                 </div>
@@ -1601,8 +1580,14 @@ $conn->close();
         const discrepancy = totalCounted - declaredValue;
         const discrepancyEl = document.getElementById('discrepancy');
         discrepancyEl.textContent = formatCurrency(discrepancy);
-        discrepancyEl.classList.toggle('text-red-500', discrepancy !== 0);
-        discrepancyEl.classList.toggle('text-green-500', discrepancy === 0);
+        
+        // --- CORRECCIÓN LÓGICA DE COLOR ---
+        discrepancyEl.classList.remove('text-red-500', 'text-green-500');
+        if (discrepancy < 0) {
+            discrepancyEl.classList.add('text-red-500');
+        } else if (discrepancy > 0) {
+            discrepancyEl.classList.add('text-green-500');
+        }
     }
 
     async function handleDenominationSave(event) {
@@ -1896,8 +1881,6 @@ $conn->close();
         if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); }
         if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
             populateTrazabilidadTable(completedTasksData);
-            const defaultSortHeader = document.querySelector(`th[data-column-name="completed_at"]`);
-            if (defaultSortHeader) { defaultSortHeader.dataset.sortDir = 'desc'; defaultSortHeader.querySelector('span').textContent = ' ▼'; }
         }
 
         if (document.getElementById('content-checkinero')) {
