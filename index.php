@@ -41,8 +41,8 @@ $grouping = " GROUP BY a.id, IF(t.assigned_to_group IS NOT NULL, t.assigned_to_g
 $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
 if ($current_user_role === 'Digitador') {
     $alerts_sql = "
-        SELECT {$base_query_fields} {$base_query_joins} 
-        WHERE a.status NOT IN ('Resuelta', 'Cancelada') 
+        SELECT {$base_query_fields} {$base_query_joins}
+        WHERE a.status NOT IN ('Resuelta', 'Cancelada')
         AND (t.assigned_to_user_id = {$current_user_id} OR a.suggested_role = 'Digitador')
         {$grouping}
     ";
@@ -90,7 +90,7 @@ foreach ($all_pending_items as $item) {
         $end_time = new DateTime($item['end_datetime']);
         $diff_minutes = ($now->getTimestamp() - $end_time->getTimestamp()) / 60;
 
-        if ($diff_minutes >= 0) { $current_priority = 'Alta'; } 
+        if ($diff_minutes >= 0) { $current_priority = 'Alta'; }
         elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) { $current_priority = 'Media'; }
     }
     $item['current_priority'] = $current_priority;
@@ -140,18 +140,23 @@ if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_re
 $today_collections = [];
 $today_collections_result = $conn->query("
     SELECT
-        oc.id, oc.total_counted, c.name as client_name, u.name as operator_name,
+        oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name,
         oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
         oc.created_at,
         CASE
             WHEN ci.digitador_status IS NOT NULL THEN ci.digitador_status
             ELSE 'En Revisión'
-        END AS final_status
+        END AS final_status,
+        GROUP_CONCAT(DISTINCT u_dig.name SEPARATOR ', ') as digitador_name
     FROM operator_counts oc
     JOIN check_ins ci ON oc.check_in_id = ci.id
     JOIN clients c ON ci.client_id = c.id
-    JOIN users u ON oc.operator_id = u.id
+    JOIN users u_op ON oc.operator_id = u_op.id
+    LEFT JOIN alerts al ON al.check_in_id = ci.id
+    LEFT JOIN tasks t ON t.alert_id = al.id
+    LEFT JOIN users u_dig ON t.assigned_to_user_id = u_dig.id AND u_dig.role = 'Digitador'
     WHERE DATE(oc.created_at) = CURDATE()
+    GROUP BY oc.id
     ORDER BY oc.created_at DESC
 ");
 if ($today_collections_result) {
@@ -173,34 +178,44 @@ if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes
 
 $initial_checkins = [];
 $checkins_result = $conn->query("
-    SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, 
-           ci.created_at, c.name as client_name, r.name as route_name, u.name as checkinero_name, 
-           ci.status, ci.correction_count 
-    FROM check_ins ci 
-    JOIN clients c ON ci.client_id = c.id 
-    JOIN routes r ON ci.route_id = r.id 
-    JOIN users u ON ci.checkinero_id = u.id 
-    LEFT JOIN funds f ON ci.fund_id = f.id 
-    WHERE ci.status IN ('Pendiente', 'Rechazado') 
-    ORDER BY ci.created_at DESC
+    SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.id as fund_id, f.name as fund_name,
+           ci.created_at, c.name as client_name, c.id as client_id, r.name as route_name, r.id as route_id, u.name as checkinero_name,
+           ci.status, ci.correction_count
+    FROM check_ins ci
+    JOIN clients c ON ci.client_id = c.id
+    JOIN routes r ON ci.route_id = r.id
+    JOIN users u ON ci.checkinero_id = u.id
+    LEFT JOIN funds f ON ci.fund_id = f.id
+    WHERE ci.status IN ('Pendiente', 'Rechazado', 'Procesado', 'Discrepancia')
+    ORDER BY ci.correction_count DESC, ci.created_at DESC
 ");
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
+
 
 $operator_history = [];
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . $_SESSION['user_id'] : "";
-    
+
+    // --- CORRECCIÓN CLAVE: Nueva consulta para el historial del operador ---
+    // Esta consulta ahora solo muestra el ÚLTIMO conteo de cada planilla
+    // y excluye las que todavía están en estado 'Pendiente'.
     $history_query = "
         SELECT 
             op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
             ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name
         FROM operator_counts op
+        INNER JOIN (
+            SELECT MAX(id) as max_id
+            FROM operator_counts
+            GROUP BY check_in_id
+        ) as latest_oc ON op.id = latest_oc.max_id
         JOIN check_ins ci ON op.check_in_id = ci.id
         JOIN clients c ON ci.client_id = c.id
         JOIN users u ON op.operator_id = u.id
         {$operator_id_filter}
         ORDER BY op.created_at DESC
     ";
+
     $history_result = $conn->query($history_query);
     if ($history_result) {
         while($row = $history_result->fetch_assoc()) {
@@ -211,12 +226,13 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
 
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
-    // --- INICIO DE LA CORRECCIÓN ---
-    $digitador_filter = ($current_user_role === 'Digitador') 
-        ? "WHERE ci.closed_by_digitador_id = " . $current_user_id 
-        : "WHERE ci.digitador_status IS NOT NULL";
-    // --- FIN DE LA CORRECCIÓN ---
-        
+    
+    if ($current_user_role === 'Digitador') {
+        $digitador_filter = "WHERE ci.digitador_status = 'Conforme' AND ci.closed_by_digitador_id = " . $current_user_id;
+    } else { // Admin
+        $digitador_filter = "WHERE ci.digitador_status = 'Conforme'";
+    }
+
     $closed_history_result = $conn->query("
         SELECT ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
                oc.total_counted, oc.discrepancy, u_op.name as operator_name,
@@ -245,9 +261,9 @@ $conn->close();
     <title>EAGLE 3.0 - Sistema de Alertas</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
-    <script src="js/jspdf.umd.min.js"></script>
-    <script src="js/jspdf-autotable.min.js"></script>
-    
+    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.5.23/dist/jspdf.plugin.autotable.min.js"></script>
+
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -387,7 +403,7 @@ $conn->close();
             <div class="border-b border-gray-200">
                 <div class="-mb-px flex space-x-4 overflow-x-auto">
                     <button id="tab-operaciones" class="nav-tab active" onclick="switchTab('operaciones')">Panel General</button>
-                    
+
                     <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
                         <button id="tab-checkinero" class="nav-tab" onclick="switchTab('checkinero')">Panel Check-in</button>
                     <?php endif; ?>
@@ -496,69 +512,71 @@ $conn->close();
                         <?php endforeach; endif; ?>
 
                        <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
-     <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
-     <div class="overflow-x-auto">
-        <table class="w-full text-sm text-left">
-            <thead class="text-xs text-gray-500 uppercase bg-gray-50">
-                <tr>
-                    <th class="px-6 py-3">Cliente / Tienda</th>
-                    <th class="px-6 py-3">Operador</th>
-                    <th class="px-6 py-3">Fecha/Hora Conteo</th>
-                    <th class="px-6 py-3">Monto Contado</th>
-                    <th class="px-6 py-3">Estado</th>
-                    <th class="px-6 py-3"></th>
-                </tr>
-            </thead>
-            <tbody id="recaudos-tbody">
-                <?php if (empty($today_collections)): ?>
-                    <tr><td colspan="6" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
-                <?php else: ?>
-                    <?php foreach ($today_collections as $recaudo): ?>
-                        <?php
-                            $status_badge = '';
-                            switch ($recaudo['final_status']) {
-                                case 'Conforme':
-                                    $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>';
-                                    break;
-                                case 'Rechazado':
-                                    $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>';
-                                    break;
-                                default:
-                                    $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>';
-                                    break;
-                            }
-                        ?>
-                        <tr class="border-b">
-                            <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td>
-                            <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td>
-                            <td class="px-6 py-4 text-xs"><?php echo date('d/m/y h:i a', strtotime($recaudo['created_at'])); ?></td>
-                            <td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td>
-                            <td class="px-6 py-4"><?php echo $status_badge; ?></td>
-                            <td class="px-6 py-4 text-right">
-                                <button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button>
-                            </td>
-                        </tr>
-                        <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>">
-                            <td colspan="6" class="p-0">
-                                <div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50">
-                                    <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
-                                        <span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span>
-                                        <span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span>
-                                        <span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span>
-                                        <span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span>
-                                        <span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span>
-                                        <span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span>
-                                        <span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span>
-                                    </div>
-                                </div>
-                            </td>
-                        </tr>
-                    <?php endforeach; ?>
-                <?php endif; ?>
-            </tbody>
-        </table>
-    </div>
-</div> 
+                         <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
+                         <div class="overflow-x-auto">
+                            <table class="w-full text-sm text-left">
+                                <thead class="text-xs text-gray-500 uppercase bg-gray-50">
+                                    <tr>
+                                        <th class="px-6 py-3">Cliente / Tienda</th>
+                                        <th class="px-6 py-3">Operador</th>
+                                        <th class="px-6 py-3">Digitador</th>
+                                        <th class="px-6 py-3">Fecha/Hora Conteo</th>
+                                        <th class="px-6 py-3">Monto Contado</th>
+                                        <th class="px-6 py-3">Estado</th>
+                                        <th class="px-6 py-3"></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="recaudos-tbody">
+                                    <?php if (empty($today_collections)): ?>
+                                        <tr><td colspan="7" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
+                                    <?php else: ?>
+                                        <?php foreach ($today_collections as $recaudo): ?>
+                                            <?php
+                                                $status_badge = '';
+                                                switch ($recaudo['final_status']) {
+                                                    case 'Conforme':
+                                                        $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>';
+                                                        break;
+                                                    case 'Rechazado':
+                                                        $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>';
+                                                        break;
+                                                    default:
+                                                        $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>';
+                                                        break;
+                                                }
+                                            ?>
+                                            <tr class="border-b">
+                                                <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td>
+                                                <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td>
+                                                <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['digitador_name'] ?? 'N/A'); ?></td>
+                                                <td class="px-6 py-4 text-xs"><?php echo date('d/m/y h:i a', strtotime($recaudo['created_at'])); ?></td>
+                                                <td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td>
+                                                <td class="px-6 py-4"><?php echo $status_badge; ?></td>
+                                                <td class="px-6 py-4 text-right">
+                                                    <button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button>
+                                                </td>
+                                            </tr>
+                                            <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>">
+                                                <td colspan="7" class="p-0">
+                                                    <div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50">
+                                                        <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
+                                                            <span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span>
+                                                            <span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span>
+                                                            <span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span>
+                                                            <span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span>
+                                                            <span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span>
+                                                            <span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span>
+                                                            <span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span>
+                                                        </div>
+                                                    </div>
+                                                </td>
+                                            </tr>
+                                        <?php endforeach; ?>
+                                    <?php endif; ?>
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
                     </div>
 
                     <div class="space-y-8">
@@ -683,8 +701,9 @@ $conn->close();
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Check-in</h2>
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     <div class="bg-white p-6 rounded-xl shadow-lg">
-                        <h3 class="text-xl font-semibold mb-4">Registrar Nuevo Check-in</h3>
+                        <h3 id="checkin-form-title" class="text-xl font-semibold mb-4">Registrar Nuevo Check-in</h3>
                         <form id="checkin-form" class="space-y-4">
+                             <input type="hidden" id="check_in_id_field">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
                                 <div>
                                     <label for="invoice_number" class="block text-sm font-medium">Número de Factura/Planilla</label>
@@ -725,7 +744,9 @@ $conn->close();
                                 <label for="declared_value" class="block text-sm font-medium">Valor Declarado</label>
                                 <input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md">
                             </div>
-                            <button type="submit" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700 mt-4">Agregar Check-in</button>
+                             <div id="checkin-form-buttons" class="flex space-x-4 pt-4">
+                                <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
+                            </div>
                         </form>
                     </div>
 
@@ -755,7 +776,7 @@ $conn->close();
 
             <div id="content-operador" class="hidden">
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Operador</h2>
-                
+
                 <div id="consultation-section" class="bg-white p-6 rounded-xl shadow-lg mb-8">
                      <h3 class="text-xl font-semibold mb-4">Buscar Planilla para Detallar</h3>
                      <form id="consultation-form" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
@@ -777,12 +798,12 @@ $conn->close();
                             <div><span class="block text-sm text-gray-500">Nombre del Cliente</span><strong id="display-client" class="text-lg"></strong></div>
                             <div><span class="block text-sm text-gray-500">Valor Declarado</span><strong id="display-declared" class="text-lg text-blue-600"></strong></div>
                         </div>
-                        
+
                         <h3 class="text-xl font-semibold mb-4">Detalle de Denominación</h3>
                         <form id="denomination-form">
                             <input type="hidden" id="op-checkin-id">
                             <div class="space-y-2">
-                                <?php 
+                                <?php
                                     $denominations = [100000, 50000, 20000, 10000, 5000, 2000];
                                     foreach($denominations as $value):
                                 ?>
@@ -796,7 +817,7 @@ $conn->close();
                                     <div class="text-right font-mono subtotal">$ 0</div>
                                 </div>
                                 <?php endforeach; ?>
-                                
+
                                 <div class="grid grid-cols-5 gap-4 items-center pt-2 border-t">
                                     <div class="col-span-2 font-medium text-gray-700">Monedas</div>
                                     <div class="col-span-2">
@@ -804,7 +825,7 @@ $conn->close();
                                     </div>
                                     <div class="text-right font-mono" id="coins-subtotal">$ 0</div>
                                 </div>
-                                
+
                                 <div class="grid grid-cols-5 gap-4 items-center pt-4 mt-4 border-t-2">
                                     <div class="col-span-2 font-bold text-xl">Total</div>
                                     <div class="col-span-3 text-right font-mono text-xl" id="total-counted">$ 0</div>
@@ -814,12 +835,12 @@ $conn->close();
                                     <div class="col-span-3 text-right font-mono text-xl" id="discrepancy">$ 0</div>
                                 </div>
                             </div>
-                            
+
                             <div class="mt-6">
                                 <label for="observations" class="block text-sm font-medium">Observación</label>
                                 <textarea id="observations" rows="3" class="mt-1 w-full border rounded-md p-2"></textarea>
                             </div>
-                            
+
                             <div class="mt-6 flex justify-end">
                                 <button type="submit" class="bg-green-600 text-white font-bold py-3 px-6 rounded-md hover:bg-green-700">Guardar y Cerrar</button>
                             </div>
@@ -877,16 +898,16 @@ $conn->close();
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión y Supervisión</h2>
                 </div>
-                
+
                 <hr class="my-8 border-gray-300">
 
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Supervisión de Operaciones</h2>
-                
+
                 <div id="operator-panel-digitador" class="hidden bg-blue-50 border border-blue-200 p-6 rounded-xl shadow-lg mb-8">
                 </div>
 
                 <div class="bg-white p-6 rounded-xl shadow-lg">
-                    <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados (Supervisión)</h3>
+                    <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
                     <p class="text-sm text-gray-500 mb-4">Marca la casilla de una planilla para cargar sus detalles, revisarla y aprobarla o rechazarla.</p>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
@@ -906,9 +927,9 @@ $conn->close();
                         </table>
                     </div>
                 </div>
-                
+
                 <hr class="my-8 border-gray-300">
-                
+
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre e Informes</h2>
 
                 <div class="bg-white p-2 rounded-lg shadow-md flex space-x-2 mb-6">
@@ -954,7 +975,7 @@ $conn->close();
                         </div>
                     </div>
                 </div>
-                
+
                 <div id="panel-informes" class="hidden bg-white p-6 rounded-xl shadow-lg">
                     <h3 class="text-xl font-semibold mb-4 text-gray-900">Servicios para Informar</h3>
                     <div class="flex justify-end mb-4">
@@ -1290,119 +1311,126 @@ $conn->close();
         return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
     }
 
-   function populateCheckinsTable(checkins) {
-    const tbody = document.getElementById('checkins-table-body');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-    const colspan = 10; // Aumentamos a 10 por la nueva columna
-    if (!checkins || checkins.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>`;
-        return;
-    }
-
-    // Definimos la cabecera correcta con la columna "Corrección"
-    const thead = tbody.previousElementSibling;
-    thead.innerHTML = `
-        <tr>
-            <th class="p-3">Corrección</th>
-            <th class="p-3">Estado</th>
-            <th class="p-3">Planilla</th>
-            <th class="p-3">Sello</th>
-            <th class="p-3">Declarado</th>
-            <th class="p-3">Ruta</th>
-            <th class="p-3">Fecha de Registro</th>
-            <th class="p-3">Checkinero</th>
-            <th class="p-3">Cliente</th>
-            <th class="p-3">Fondo</th>
-        </tr>
-    `;
-
-    checkins.forEach(ci => {
-        // Lógica para la insignia de corrección
-        let correctionBadge = '';
-        if (ci.correction_count > 0) {
-            correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
+    function populateCheckinsTable(checkins) {
+        const tbody = document.getElementById('checkins-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const colspan = 11;
+        if (!checkins || checkins.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>`;
+            return;
         }
 
-        // Lógica para la insignia de estado
-        let statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span>`;
-        if (ci.status === 'Rechazado') {
-             statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`;
-        }
-
-        const row = `
-            <tr class="border-b hover:bg-gray-50">
-                <td class="p-3">${correctionBadge}</td>
-                <td class="p-3">${statusBadge}</td>
-                <td class="p-3 font-mono">${ci.invoice_number}</td>
-                <td class="p-3 font-mono">${ci.seal_number}</td>
-                <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
-                <td class="p-3">${ci.route_name}</td>
-                <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                <td class="p-3">${ci.checkinero_name}</td>
-                <td class="p-3">${ci.client_name}</td>
-                <td class="p-3">${ci.fund_name || 'N/A'}</td>
+        const thead = tbody.previousElementSibling;
+        thead.innerHTML = `
+            <tr>
+                <th class="p-2 w-28">Corrección</th>
+                <th class="p-2 w-28">Estado</th>
+                <th class="p-2">Planilla</th>
+                <th class="p-2">Sello</th>
+                <th class="p-2">Declarado</th>
+                <th class="p-2">Ruta</th>
+                <th class="p-2">Fecha de Registro</th>
+                <th class="p-2">Checkinero</th>
+                <th class="p-2">Cliente</th>
+                <th class="p-2">Fondo</th>
+                <th class="p-2 w-20">Acciones</th>
             </tr>
         `;
-        tbody.innerHTML += row;
-    });
-}
-    
+
+        checkins.forEach(ci => {
+            let correctionBadge = '';
+            if (ci.correction_count > 0) {
+                correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
+            }
+
+            let statusBadge = '';
+            switch(ci.status) {
+                case 'Rechazado':
+                    statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`;
+                    break;
+                case 'Procesado':
+                    statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`;
+                    break;
+                 case 'Discrepancia':
+                    statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`;
+                    break;
+                default: // Pendiente
+                    statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
+                    break;
+            }
+
+            let actionButton = '';
+            if (ci.status === 'Rechazado') {
+                const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
+                actionButton = `<button onclick='editCheckIn(${checkinData})' class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Editar</button>`;
+            }
+
+            const row = `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="p-2">${correctionBadge}</td>
+                    <td class="p-2">${statusBadge}</td>
+                    <td class="p-2 font-mono">${ci.invoice_number}</td>
+                    <td class="p-2 font-mono">${ci.seal_number}</td>
+                    <td class="p-2 text-right">${formatCurrency(ci.declared_value)}</td>
+                    <td class="p-2">${ci.route_name}</td>
+                    <td class="p-2 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                    <td class="p-2">${ci.checkinero_name}</td>
+                    <td class="p-2">${ci.client_name}</td>
+                    <td class="p-2">${ci.fund_name || 'N/A'}</td>
+                    <td class="p-2">${actionButton}</td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+
     function populateOperatorCheckinsTable(checkins) {
-    const tbody = document.getElementById('operator-checkins-table-body');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-    
-    const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente' || ci.status === 'Rechazado');
+        const tbody = document.getElementById('operator-checkins-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
 
-    if (pendingCheckins.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="9" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
-        return;
-    }
-    
-    // Cambiamos la cabecera dinámicamente para añadir la nueva columna
-    const thead = tbody.previousElementSibling;
-    thead.innerHTML = `
-        <tr>
-            <th class="p-3">Corrección</th>
-            <th class="p-3">Planilla</th>
-            <th class="p-3">Sello</th>
-            <th class="p-3">Declarado</th>
-            <th class="p-3">Cliente</th>
-            <th class="p-3">Checkinero</th>
-            <th class="p-3">Fecha de Registro</th>
-            <th class="p-3">Estado</th>
-            <th class="p-3">Acción</th>
-        </tr>
-    `;
-    
-    pendingCheckins.forEach(ci => {
-        // --- INICIO DE LA LÓGICA DE CORRECCIÓN ---
-        let correctionBadge = '';
-        if (ci.correction_count > 0) {
-            correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
+        // CORRECCIÓN DE FLUJO: El operador solo debe ver planillas que están estrictamente 'Pendiente'.
+        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
+
+        if (pendingCheckins.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
+            return;
         }
-        // --- FIN DE LA LÓGICA ---
 
-        const row = `
-            <tr class="border-b">
-                <td class="p-3">${correctionBadge}</td>
-                <td class="p-3 font-mono">${ci.invoice_number}</td>
-                <td class="p-3 font-mono">${ci.seal_number}</td>
-                <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
-                <td class="p-3">${ci.client_name}</td>
-                <td class="p-3">${ci.checkinero_name}</td>
-                <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
-                <td class="p-3">
-                    <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
-                </td>
+        const thead = tbody.previousElementSibling;
+        thead.innerHTML = `
+            <tr>
+                <th class="p-3">Planilla</th>
+                <th class="p-3">Sello</th>
+                <th class="p-3">Declarado</th>
+                <th class="p-3">Cliente</th>
+                <th class="p-3">Checkinero</th>
+                <th class="p-3">Fecha de Registro</th>
+                <th class="p-3">Estado</th>
+                <th class="p-3">Acción</th>
             </tr>
         `;
-        tbody.innerHTML += row;
-    });
-}
-    
+
+        pendingCheckins.forEach(ci => {
+            const row = `
+                <tr class="border-b">
+                    <td class="p-3 font-mono">${ci.invoice_number}</td>
+                    <td class="p-3 font-mono">${ci.seal_number}</td>
+                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                    <td class="p-3">${ci.client_name}</td>
+                    <td class="p-3">${ci.checkinero_name}</td>
+                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                    <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
+                    <td class="p-3">
+                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
+                    </td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+
     function populateOperatorHistoryTable(historyData) {
         const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
@@ -1414,23 +1442,90 @@ $conn->close();
             tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.client_name}</td><td class="p-3 text-right">${formatCurrency(item.declared_value)}</td><td class="p-3 text-right">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>${operatorColumn}<td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td><td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td></tr>`;
         });
     }
-    
+
     function selectPlanilla(invoiceNumber) {
         document.getElementById('consult-invoice').value = invoiceNumber;
         document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
-        window.scrollTo(0, 0); 
+        window.scrollTo(0, 0);
+    }
+
+    // --- FUNCIÓN PARA EDITAR CHECK-IN ---
+    async function editCheckIn(checkinData) {
+        document.getElementById('invoice_number').value = checkinData.invoice_number;
+        document.getElementById('seal_number').value = checkinData.seal_number;
+        document.getElementById('declared_value').value = checkinData.declared_value;
+        document.getElementById('check_in_id_field').value = checkinData.id;
+
+        const clientSelect = document.getElementById('client_id');
+        clientSelect.value = checkinData.client_id;
+
+        await new Promise(resolve => {
+            clientSelect.dispatchEvent(new Event('change'));
+            setTimeout(resolve, 500);
+        });
+
+        document.getElementById('fund_id').value = checkinData.fund_id;
+        document.getElementById('route_id').value = checkinData.route_id;
+
+        document.getElementById('checkin-form-title').textContent = 'Corregir Check-in';
+        const buttonsContainer = document.getElementById('checkin-form-buttons');
+        buttonsContainer.innerHTML = `
+            <button type="submit" id="checkin-submit-button" class="w-full bg-orange-500 text-white font-bold py-3 rounded-md hover:bg-orange-600">Guardar Corrección</button>
+            <button type="button" onclick="cancelEdit()" class="w-full bg-gray-300 text-gray-800 font-bold py-3 rounded-md hover:bg-gray-400">Cancelar</button>
+        `;
+
+        document.getElementById('checkin-form-title').scrollIntoView({ behavior: 'smooth' });
+    }
+
+    function cancelEdit() {
+        document.getElementById('checkin-form').reset();
+        document.getElementById('check_in_id_field').value = '';
+        document.getElementById('checkin-form-title').textContent = 'Registrar Nuevo Check-in';
+        const buttonsContainer = document.getElementById('checkin-form-buttons');
+        buttonsContainer.innerHTML = `
+            <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
+        `;
+        const fundSelect = document.getElementById('fund_id');
+        fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
+        fundSelect.disabled = true;
+        fundSelect.classList.add('bg-gray-200');
     }
 
     async function handleCheckinSubmit(event) {
         event.preventDefault();
-        const payload = { invoice_number: document.getElementById('invoice_number').value, seal_number: document.getElementById('seal_number').value, client_id: document.getElementById('client_id').value, route_id: document.getElementById('route_id').value, fund_id: document.getElementById('fund_id').value, declared_value: document.getElementById('declared_value').value };
+        const checkInIdField = document.getElementById('check_in_id_field');
+        const payload = {
+            invoice_number: document.getElementById('invoice_number').value,
+            seal_number: document.getElementById('seal_number').value,
+            client_id: document.getElementById('client_id').value,
+            route_id: document.getElementById('route_id').value,
+            fund_id: document.getElementById('fund_id').value,
+            declared_value: document.getElementById('declared_value').value,
+        };
+
+        if (checkInIdField.value) {
+            payload.check_in_id = checkInIdField.value;
+        }
+
         try {
-            const response = await fetch('api/checkin_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+            const response = await fetch('api/checkin_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
             const result = await response.json();
-            if (result.success) { alert('Check-in registrado con éxito.'); location.reload(); }
-            else { alert('Error: ' + result.error); }
-        } catch (error) { console.error('Error en el check-in:', error); alert('Error de conexión al registrar.'); }
+            if (result.success) {
+                alert(result.message);
+                location.reload();
+            } else {
+                alert('Error: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Error en el check-in:', error);
+            alert('Error de conexión al procesar.');
+        }
     }
+
 
     async function handleConsultation(event) {
         event.preventDefault();
@@ -1548,26 +1643,48 @@ $conn->close();
         } else { panel.classList.add('hidden'); }
     }
 
+    // --- FUNCIÓN CORREGIDA Y MEJORADA ---
     async function submitDigitadorReview(checkInId, status) {
         const observations = document.getElementById('digitador-observations').value;
-        if (!observations.trim()) { alert('Las observaciones finales son requeridas para aceptar o rechazar.'); return; }
-        const confirmationText = status === 'Conforme' ? '¿Está seguro de que desea APROBAR este conteo?' : '¿Está seguro de que desea RECHAZAR este conteo? La planilla volverá al operador.';
+        if (!observations.trim()) {
+            alert('Las observaciones finales son requeridas para aceptar o rechazar.');
+            return;
+        }
+        const confirmationText = status === 'Conforme' ? '¿Está seguro de que desea APROBAR este conteo?' : '¿Está seguro de que desea RECHAZAR este conteo? La planilla volverá al Checkinero para corrección.';
         if (!confirm(confirmationText)) return;
+
         try {
             const response = await fetch(`${apiUrlBase}/digitador_review_api.php`, {
-                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ check_in_id: checkInId, status: status, observations: observations })
             });
+
             const result = await response.json();
-            if (result.success) { alert(result.message); location.reload(); }
-            else { alert('Error: ' + result.error); }
-        } catch (error) { console.error('Error al enviar la revisión:', error); alert('Error de conexión.'); }
+
+            if (response.ok && result.success) {
+                alert(result.message);
+            } else {
+                alert('Error: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Error al enviar la revisión:', error);
+            alert('Error de conexión.');
+        } finally {
+            // Siempre recargamos la página para asegurar que la UI esté sincronizada con la BD.
+            location.reload();
+        }
     }
+
 
     function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
-        const pendingReview = history.filter(item => { const checkin = initialCheckins.find(ci => ci.id == item.check_in_id); return checkin && checkin.status !== 'Pendiente'; });
+        const pendingReview = history.filter(item => {
+            const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
+            return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia');
+        });
+
         const tbody = document.getElementById('operator-history-table-body-digitador');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -1578,6 +1695,7 @@ $conn->close();
             tbody.innerHTML += `<tr class="border-b hover:bg-gray-50"><td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.client_name}</td><td class="p-3 text-right">${formatCurrency(item.declared_value)}</td><td class="p-3 text-right">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td><td class="p-3">${item.operator_name}</td><td class="p-3 text-xs">${new Date(item.count_date).toLocaleString('es-CO')}</td></tr>`;
         });
     }
+
 
    function populateDigitadorClosedHistory(history) {
     const tbody = document.getElementById('digitador-closed-history-body');
@@ -1750,14 +1868,14 @@ $conn->close();
                 } catch (error) { console.error('Error fetching funds:', error); fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>'; }
             });
         }
-        
+
         if (document.getElementById('content-operador')) {
             populateOperatorCheckinsTable(initialCheckins);
             populateOperatorHistoryTable(operatorHistoryData);
             document.getElementById('consultation-form').addEventListener('submit', handleConsultation);
             document.getElementById('denomination-form').addEventListener('submit', handleDenominationSave);
         }
-        
+
         if (document.getElementById('content-digitador')) {
             loadLlegadas();
             populateOperatorHistoryForDigitador(operatorHistoryData);
