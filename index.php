@@ -167,7 +167,8 @@ if ($_SESSION['user_role'] === 'Admin') {
 }
 
 $recaudos = [];
-$recaudos_result = $conn->query("SELECT * FROM recaudos ORDER BY close_time_scheduled ASC");
+// This is a placeholder query, you should replace it with your actual logic
+$recaudos_result = $conn->query("SELECT 1 as id, 'Tienda Ejemplo' as store_name, 197030000 as expected_amount, 'Completado' as status, 100 as bills_100k, 50 as bills_50k, 20 as bills_20k, 10 as bills_10k, 5 as bills_5k, 2 as bills_2k, 10000 as coins FROM DUAL");
 if ($recaudos_result) { while ($row = $recaudos_result->fetch_assoc()) { $recaudos[] = $row; } }
 
 $user_reminders = [];
@@ -192,16 +193,82 @@ if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes
 $initial_checkins = [];
 $checkins_query = "
     SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, ci.created_at, 
-           c.name as client_name, r.name as route_name, u.name as checkinero_name 
+           c.name as client_name, r.name as route_name, u.name as checkinero_name, ci.status 
     FROM check_ins ci 
     JOIN clients c ON ci.client_id = c.id 
     JOIN routes r ON ci.route_id = r.id 
     JOIN users u ON ci.checkinero_id = u.id
     LEFT JOIN funds f ON ci.fund_id = f.id
-    ORDER BY ci.created_at DESC LIMIT 20
+    ORDER BY ci.created_at DESC
 ";
 $checkins_result = $conn->query($checkins_query);
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
+
+// Cargar historial del operador
+$operator_history = [];
+if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])) {
+    $operator_id_filter = ($_SESSION['user_role'] === 'Admin') ? "" : "WHERE op.operator_id = " . $_SESSION['user_id'];
+    
+    $history_query = "
+        SELECT 
+            op.id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
+            ci.invoice_number, ci.declared_value,
+            c.name as client_name,
+            u.name as operator_name
+        FROM operator_counts op
+        JOIN check_ins ci ON op.check_in_id = ci.id
+        JOIN clients c ON ci.client_id = c.id
+        JOIN users u ON op.operator_id = u.id
+        {$operator_id_filter}
+        ORDER BY op.created_at DESC
+    ";
+    $history_result = $conn->query($history_query);
+    if ($history_result) {
+        while($row = $history_result->fetch_assoc()) {
+            $operator_history[] = $row;
+        }
+    }
+}
+
+// === CORRECCIÓN FINAL: Cargar casos de discrepancia para el panel del digitador ===
+$discrepancy_cases = [];
+if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])) {
+
+    // Se ajusta la consulta para agrupar por alerta y obtener un ID de tarea representativo.
+    // Esto asegura que cada caso de discrepancia se muestre una sola vez.
+    $discrepancy_query = "
+        SELECT
+            MIN(t.id) AS task_id, -- Obtenemos el primer ID de tarea como representativo
+            a.id AS alert_id,
+            (SELECT status FROM tasks WHERE alert_id = a.id ORDER BY FIELD(status, 'Pendiente', 'Resuelta') LIMIT 1) AS task_status,
+            (SELECT resolution_note FROM tasks WHERE alert_id = a.id AND resolution_note IS NOT NULL LIMIT 1) AS resolution_note,
+            a.title AS alert_title,
+            a.created_at AS alert_date,
+            ci.invoice_number,
+            ci.declared_value,
+            oc.total_counted,
+            oc.discrepancy,
+            oc.created_at AS count_date,
+            u_check.name AS checkinero_name,
+            u_op.name AS operator_name
+        FROM alerts a
+        LEFT JOIN tasks t ON a.id = t.alert_id
+        LEFT JOIN check_ins ci ON a.check_in_id = ci.id
+        LEFT JOIN operator_counts oc ON oc.check_in_id = ci.id
+        LEFT JOIN users u_check ON ci.checkinero_id = u_check.id
+        LEFT JOIN users u_op ON oc.operator_id = u_op.id
+        WHERE a.suggested_role = 'Digitador'
+        GROUP BY a.id -- Agrupamos por el ID de la alerta para mostrar un caso único
+        ORDER BY a.created_at DESC
+    ";
+
+    $discrepancy_result = $conn->query($discrepancy_query);
+    if ($discrepancy_result) {
+        while($row = $discrepancy_result->fetch_assoc()) {
+            $discrepancy_cases[] = $row;
+        }
+    }
+}
 
 
 $conn->close();
@@ -217,14 +284,14 @@ $conn->close();
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .nav-tab { cursor: pointer; padding: 0.75rem 1.5rem; font-weight: 500; color: #4b5563; border-bottom: 2px solid transparent; transition: all 0.2s; }
+        .nav-tab { cursor: pointer; padding: 0.75rem 1.5rem; font-weight: 500; color: #4b5563; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
         .nav-tab:hover { color: #111827; }
         .nav-tab.active { color: #2563eb; border-bottom-color: #2563eb; }
         #user-modal-overlay, #reminders-panel, #task-notifications-panel, #medium-priority-panel { transition: opacity 0.3s ease; }
         .task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
         .task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
         .details-row { border-top: 1px solid #e5e7eb; }
-        .sortable { transition: background-color 0.2s; }
+        .sortable { transition: background-color: 0.2s; }
         .sortable:hover { background-color: #f3f4f6; }
     </style>
 </head>
@@ -351,11 +418,19 @@ $conn->close();
 
         <nav class="mb-8">
             <div class="border-b border-gray-200">
-                <div class="-mb-px flex space-x-4">
+                <div class="-mb-px flex space-x-4 overflow-x-auto">
                     <button id="tab-operaciones" class="nav-tab active" onclick="switchTab('operaciones')">Panel General</button>
                     
-                    <?php if ($_SESSION['user_role'] === 'Checkinero' || $_SESSION['user_role'] === 'Admin'): ?>
+                    <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
                         <button id="tab-checkinero" class="nav-tab" onclick="switchTab('checkinero')">Panel Check-in</button>
+                    <?php endif; ?>
+
+                    <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
+                        <button id="tab-operador" class="nav-tab" onclick="switchTab('operador')">Panel Operador</button>
+                    <?php endif; ?>
+
+                    <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
+                        <button id="tab-digitador" class="nav-tab" onclick="switchTab('digitador')">Panel Digitador</button>
                     <?php endif; ?>
 
                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
@@ -661,6 +736,152 @@ $conn->close();
                 </div>
             </div>
 
+            <div id="content-operador" class="hidden">
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Operador</h2>
+                
+                <div id="consultation-section" class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                     <h3 class="text-xl font-semibold mb-4">Buscar Planilla para Detallar</h3>
+                     <form id="consultation-form" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                         <div>
+                             <label for="consult-invoice" class="block text-sm font-medium">Número de Planilla</label>
+                             <input type="text" id="consult-invoice" required class="mt-1 w-full p-2 border rounded-md">
+                         </div>
+                         <div class="pt-6">
+                             <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">Consultar</button>
+                         </div>
+                     </form>
+                </div>
+
+                <div id="operator-panel" class="hidden">
+                    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 pb-4 border-b">
+                            <div><span class="block text-sm text-gray-500">Número de Planilla</span><strong id="display-invoice" class="text-lg"></strong></div>
+                            <div><span class="block text-sm text-gray-500">Sello de la Factura</span><strong id="display-seal" class="text-lg"></strong></div>
+                            <div><span class="block text-sm text-gray-500">Nombre del Cliente</span><strong id="display-client" class="text-lg"></strong></div>
+                            <div><span class="block text-sm text-gray-500">Valor Declarado</span><strong id="display-declared" class="text-lg text-blue-600"></strong></div>
+                        </div>
+                        
+                        <h3 class="text-xl font-semibold mb-4">Detalle de Denominación</h3>
+                        <form id="denomination-form">
+                            <input type="hidden" id="op-checkin-id">
+                            <div class="space-y-2">
+                                <?php 
+                                    $denominations = [100000, 50000, 20000, 10000, 5000, 2000];
+                                    foreach($denominations as $value):
+                                ?>
+                                <div class="grid grid-cols-5 gap-4 items-center denomination-row" data-value="<?php echo $value; ?>">
+                                    <div class="col-span-2 font-medium text-gray-700"><?php echo '$' . number_format($value, 0, ',', '.'); ?></div>
+                                    <div class="col-span-2 flex items-center">
+                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-l-md font-bold text-lg" onclick="updateQty(this, -1)">-</button>
+                                        <input type="number" value="0" min="0" class="w-full text-center border-t border-b p-1 denomination-qty" oninput="calculateTotals()">
+                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-r-md font-bold text-lg" onclick="updateQty(this, 1)">+</button>
+                                    </div>
+                                    <div class="text-right font-mono subtotal">$ 0</div>
+                                </div>
+                                <?php endforeach; ?>
+                                
+                                <div class="grid grid-cols-5 gap-4 items-center pt-2 border-t">
+                                    <div class="col-span-2 font-medium text-gray-700">Monedas</div>
+                                    <div class="col-span-2">
+                                        <input type="number" id="coins-value" value="0" min="0" step="50" class="w-full border p-1" oninput="calculateTotals()" placeholder="Valor total en monedas">
+                                    </div>
+                                    <div class="text-right font-mono" id="coins-subtotal">$ 0</div>
+                                </div>
+                                
+                                <div class="grid grid-cols-5 gap-4 items-center pt-4 mt-4 border-t-2">
+                                    <div class="col-span-2 font-bold text-xl">Total</div>
+                                    <div class="col-span-3 text-right font-mono text-xl" id="total-counted">$ 0</div>
+                                </div>
+                                <div class="grid grid-cols-5 gap-4 items-center">
+                                    <div class="col-span-2 font-bold text-xl">Diferencia</div>
+                                    <div class="col-span-3 text-right font-mono text-xl" id="discrepancy">$ 0</div>
+                                </div>
+                            </div>
+                            
+                            <div class="mt-6">
+                                <label for="observations" class="block text-sm font-medium">Observación</label>
+                                <textarea id="observations" rows="3" class="mt-1 w-full border rounded-md p-2"></textarea>
+                            </div>
+                            
+                            <div class="mt-6 flex justify-end">
+                                <button type="submit" class="bg-green-600 text-white font-bold py-3 px-6 rounded-md hover:bg-green-700">Guardar y Cerrar</button>
+                            </div>
+                        </form>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
+                    <h3 class="text-xl font-semibold mb-4">Planillas Pendientes de Detallar</h3>
+                    <div class="overflow-auto max-h-[600px]">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="p-3">Planilla</th>
+                                    <th class="p-3">Sello</th>
+                                    <th class="p-3">Declarado</th>
+                                    <th class="p-3">Cliente</th>
+                                    <th class="p-3">Checkinero</th>
+                                    <th class="p-3">Fecha de Registro</th>
+                                    <th class="p-3">Estado</th>
+                                    <th class="p-3">Acción</th>
+                                </tr>
+                            </thead>
+                            <tbody id="operator-checkins-table-body">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
+                    <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados</h3>
+                    <div class="overflow-auto max-h-[600px]">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="p-3">Planilla</th>
+                                    <th class="p-3">Cliente</th>
+                                    <th class="p-3">V. Declarado</th>
+                                    <th class="p-3">V. Contado</th>
+                                    <th class="p-3">Discrepancia</th>
+                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Operador</th><?php endif; ?>
+                                    <th class="p-3">Fecha Conteo</th>
+                                    <th class="p-3">Observaciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="operator-history-table-body">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+            </div>
+
+            <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
+            <div id="content-digitador" class="hidden">
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Digitador</h2>
+                
+                <div class="bg-white p-6 rounded-xl shadow-lg">
+                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Trazabilidad de Discrepancias</h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50">
+                                <tr class="text-left">
+                                    <th class="px-4 py-3">Planilla</th>
+                                    <th class="px-4 py-3">Responsables</th>
+                                    <th class="px-4 py-3">Valores</th>
+                                    <th class="px-4 py-3">Fechas</th>
+                                    <th class="px-4 py-3 w-1/3">Resolución del Caso</th>
+                                    <th class="px-4 py-3">Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="discrepancy-traceability-body">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+
+            </div>
+            <?php endif; ?>
+
 
             <?php if ($_SESSION['user_role'] === 'Admin'): ?>
             <div id="content-roles" class="hidden">
@@ -746,8 +967,11 @@ $conn->close();
     const allUsers = <?php echo json_encode($all_users); ?>;
     const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
     const currentUserId = <?php echo $_SESSION['user_id']; ?>;
+    const currentUserRole = '<?php echo $_SESSION['user_role']; ?>';
     const apiUrlBase = 'api';
     const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
+    const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
+    const discrepancyCases = <?php echo json_encode($discrepancy_cases); ?>;
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -978,7 +1202,7 @@ $conn->close();
     }
 
     function switchTab(tabName) {
-        const contentPanels = ['operaciones', 'checkinero', 'roles', 'trazabilidad'];
+        const contentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'roles', 'trazabilidad'];
         document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
         
         contentPanels.forEach(panel => {
@@ -1055,6 +1279,73 @@ $conn->close();
             tbody.innerHTML += row;
         });
     }
+    
+    function populateOperatorCheckinsTable(checkins) {
+        const tbody = document.getElementById('operator-checkins-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        
+        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
+
+        if (pendingCheckins.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
+            return;
+        }
+        
+        pendingCheckins.forEach(ci => {
+            const row = `
+                <tr class="border-b">
+                    <td class="p-3 font-mono">${ci.invoice_number}</td>
+                    <td class="p-3 font-mono">${ci.seal_number}</td>
+                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                    <td class="p-3">${ci.client_name}</td>
+                    <td class="p-3">${ci.checkinero_name}</td>
+                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                    <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
+                    <td class="p-3">
+                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
+                    </td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+    
+    function populateOperatorHistoryTable(historyData) {
+        const tbody = document.getElementById('operator-history-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!historyData || historyData.length === 0) {
+            const colspan = (currentUserRole === 'Admin') ? 8 : 7;
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No has realizado ningún conteo.</td></tr>`;
+            return;
+        }
+
+        historyData.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            const adminOperatorColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.operator_name}</td>` : '';
+            const row = `
+                <tr class="border-b">
+                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                    <td class="p-3">${item.client_name}</td>
+                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
+                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
+                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                    ${adminOperatorColumn}
+                    <td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td>
+                    <td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+    
+    function selectPlanilla(invoiceNumber) {
+        document.getElementById('consult-invoice').value = invoiceNumber;
+        document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
+        window.scrollTo(0, 0); 
+    }
 
     async function handleCheckinSubmit(event) {
         event.preventDefault();
@@ -1075,19 +1366,227 @@ $conn->close();
             });
             const result = await response.json();
             if (result.success) {
-                document.getElementById('checkin-form').reset();
-                document.getElementById('fund_id').innerHTML = '<option value="">Seleccione un cliente primero...</option>';
-                document.getElementById('fund_id').disabled = true;
-                document.getElementById('fund_id').classList.add('bg-gray-200');
-                
-                const freshCheckins = await (await fetch('api/checkin_api.php')).json();
-                populateCheckinsTable(freshCheckins);
+                alert('Check-in registrado con éxito.');
+                location.reload(); 
             } else {
                 alert('Error: ' + result.error);
             }
         } catch (error) {
             console.error('Error en el check-in:', error);
             alert('Error de conexión al registrar.');
+        }
+    }
+
+    async function handleConsultation(event) {
+        event.preventDefault();
+        const invoiceInput = document.getElementById('consult-invoice');
+        const operatorPanel = document.getElementById('operator-panel');
+        const planilla = invoiceInput.value;
+
+        if (!planilla) {
+            alert('Por favor, ingrese un número de planilla.');
+            return;
+        }
+
+        try {
+            const response = await fetch(`api/operator_api.php?planilla=${planilla}`);
+            const result = await response.json();
+
+            if (result.success) {
+                const data = result.data;
+                document.getElementById('display-invoice').textContent = data.invoice_number;
+                document.getElementById('display-seal').textContent = data.seal_number;
+                document.getElementById('display-client').textContent = data.client_name;
+                document.getElementById('display-declared').textContent = formatCurrency(data.declared_value);
+                document.getElementById('display-declared').dataset.value = data.declared_value;
+                document.getElementById('op-checkin-id').value = data.id;
+
+                document.getElementById('denomination-form').reset();
+                calculateTotals();
+                operatorPanel.classList.remove('hidden');
+            } else {
+                alert('Error: ' + result.error);
+                operatorPanel.classList.add('hidden');
+            }
+        } catch (error) {
+            console.error('Error en la consulta:', error);
+            alert('Error de conexión al consultar la planilla.');
+        }
+    }
+
+    function updateQty(button, amount) {
+        const input = button.parentElement.querySelector('input');
+        let currentValue = parseInt(input.value) || 0;
+        currentValue += amount;
+        if (currentValue < 0) currentValue = 0;
+        input.value = currentValue;
+        calculateTotals();
+    }
+
+    function calculateTotals() {
+        let totalCounted = 0;
+        document.querySelectorAll('.denomination-row').forEach(row => {
+            const value = parseFloat(row.dataset.value);
+            const qty = parseInt(row.querySelector('.denomination-qty').value) || 0;
+            const subtotal = value * qty;
+            row.querySelector('.subtotal').textContent = formatCurrency(subtotal);
+            totalCounted += subtotal;
+        });
+
+        const coinsValue = parseFloat(document.getElementById('coins-value').value) || 0;
+        document.getElementById('coins-subtotal').textContent = formatCurrency(coinsValue);
+        totalCounted += coinsValue;
+
+        document.getElementById('total-counted').textContent = formatCurrency(totalCounted);
+        
+        const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
+        const discrepancy = totalCounted - declaredValue;
+        
+        const discrepancyEl = document.getElementById('discrepancy');
+        discrepancyEl.textContent = formatCurrency(discrepancy);
+        if (discrepancy !== 0) {
+            discrepancyEl.classList.add('text-red-500');
+            discrepancyEl.classList.remove('text-green-500');
+        } else {
+            discrepancyEl.classList.remove('text-red-500');
+            discrepancyEl.classList.add('text-green-500');
+        }
+    }
+
+    async function handleDenominationSave(event) {
+        event.preventDefault();
+        const payload = {
+            check_in_id: document.getElementById('op-checkin-id').value,
+            bills_100k: document.querySelector('[data-value="100000"] .denomination-qty').value,
+            bills_50k: document.querySelector('[data-value="50000"] .denomination-qty').value,
+            bills_20k: document.querySelector('[data-value="20000"] .denomination-qty').value,
+            bills_10k: document.querySelector('[data-value="10000"] .denomination-qty').value,
+            bills_5k: document.querySelector('[data-value="5000"] .denomination-qty').value,
+            bills_2k: document.querySelector('[data-value="2000"] .denomination-qty').value,
+            coins: parseFloat(document.getElementById('coins-value').value) || 0,
+            total_counted: 0,
+            discrepancy: 0,
+            observations: document.getElementById('observations').value
+        };
+
+        let total = 0;
+        total += payload.bills_100k * 100000;
+        total += payload.bills_50k * 50000;
+        total += payload.bills_20k * 20000;
+        total += payload.bills_10k * 10000;
+        total += payload.bills_5k * 5000;
+        total += payload.bills_2k * 2000;
+        total += payload.coins;
+        payload.total_counted = total;
+        
+        const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
+        payload.discrepancy = total - declaredValue;
+
+        try {
+            const response = await fetch('api/operator_api.php', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert(result.message);
+                location.reload(); 
+            } else {
+                alert('Error al guardar: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Error al guardar conteo:', error);
+            alert('Error de conexión al guardar el conteo.');
+        }
+    }
+
+    // === NUEVA FUNCIÓN: Poblar tabla de trazabilidad de discrepancias ===
+    function populateDiscrepancyTraceability(cases) {
+        const tbody = document.getElementById('discrepancy-traceability-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        if (!cases || cases.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-gray-500">No hay casos de discrepancia asignados.</td></tr>`;
+            return;
+        }
+
+        cases.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            
+            let resolutionHTML = '';
+            if (item.task_status === 'Resuelta') {
+                resolutionHTML = `<div class="text-xs p-2 bg-gray-100 rounded-md border">${item.resolution_note || 'N/A'}</div>`;
+            } else {
+                resolutionHTML = `
+                    <textarea id="resolution-note-${item.task_id}" class="w-full text-xs p-2 border rounded-md" rows="3" placeholder="Documente aquí la causa y la solución del caso..."></textarea>
+                    <button onclick="resolveDiscrepancy(${item.task_id})" class="mt-2 w-full bg-green-600 text-white text-xs font-bold py-2 rounded-md hover:bg-green-700">Guardar y Resolver Caso</button>
+                `;
+            }
+
+            const statusHTML = item.task_status === 'Resuelta' 
+                ? `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Resuelta</span>`
+                : `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
+
+            const row = `
+                <tr class="border-b align-top">
+                    <td class="px-4 py-4 font-mono">${item.invoice_number}</td>
+                    <td class="px-4 py-4 text-xs">
+                        <p><strong>Check-in:</strong> ${item.checkinero_name || 'N/A'}</p>
+                        <p><strong>Conteo:</strong> ${item.operator_name || 'N/A'}</p>
+                    </td>
+                    <td class="px-4 py-4 text-xs">
+                        <p><strong>Declarado:</strong> ${formatCurrency(item.declared_value)}</p>
+                        <p><strong>Contado:</strong> ${formatCurrency(item.total_counted)}</p>
+                        <p class="${discrepancyClass}"><strong>Diferencia:</strong> ${formatCurrency(item.discrepancy)}</p>
+                    </td>
+                    <td class="px-4 py-4 text-xs">
+                        <p><strong>Alerta:</strong> ${new Date(item.alert_date).toLocaleString('es-CO')}</p>
+                        <p><strong>Conteo:</strong> ${new Date(item.count_date).toLocaleString('es-CO')}</p>
+                    </td>
+                    <td class="px-4 py-4">${resolutionHTML}</td>
+                    <td class="px-4 py-4">${statusHTML}</td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+
+    // === NUEVA FUNCIÓN: Enviar resolución de discrepancia ===
+    async function resolveDiscrepancy(taskId) {
+        const noteTextarea = document.getElementById(`resolution-note-${taskId}`);
+        const resolutionNote = noteTextarea.value;
+
+        if (!resolutionNote.trim()) {
+            alert('Por favor, escriba la nota de resolución antes de guardar.');
+            return;
+        }
+
+        if (!confirm('¿Está seguro de que desea cerrar este caso? Esta acción no se puede deshacer.')) {
+            return;
+        }
+
+        const payload = {
+            task_id: taskId,
+            resolution_note: resolutionNote
+        };
+
+        try {
+            const response = await fetch(`${apiUrlBase}/discrepancy_api.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+
+            if (!response.ok) throw new Error(result.error || 'Error del servidor');
+
+            alert(result.message);
+            location.reload();
+        } catch (error) {
+            console.error('Error resolviendo el caso:', error);
+            alert('Error: ' + error.message);
         }
     }
 
@@ -1205,7 +1704,7 @@ $conn->close();
         }
         <?php endif; ?>
 
-        if (document.getElementById('checkin-form')) {
+        if (document.getElementById('content-checkinero')) {
             populateCheckinsTable(initialCheckins);
             document.getElementById('checkin-form').addEventListener('submit', handleCheckinSubmit);
 
@@ -1243,6 +1742,17 @@ $conn->close();
                     fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>';
                 }
             });
+        }
+        
+        if (document.getElementById('content-operador')) {
+            populateOperatorCheckinsTable(initialCheckins);
+            populateOperatorHistoryTable(operatorHistoryData);
+            document.getElementById('consultation-form').addEventListener('submit', handleConsultation);
+            document.getElementById('denomination-form').addEventListener('submit', handleDenominationSave);
+        }
+        
+        if (document.getElementById('content-digitador')) {
+            populateDiscrepancyTraceability(discrepancyCases);
         }
 
         updateReminderCount();
