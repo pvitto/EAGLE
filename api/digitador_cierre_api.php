@@ -9,9 +9,10 @@ if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_role'], ['Digitado
     exit;
 }
 
-$action = $_GET['action'] ?? 'list_funds';
+$action = $_GET['action'] ?? '';
+$method = $_SERVER['REQUEST_METHOD'];
 
-if ($action === 'list_funds') {
+if ($method === 'GET' && $action === 'list_funds') {
     // Lista todos los fondos que tienen servicios activos pendientes de cierre.
     $query = "
         SELECT DISTINCT f.id, f.name, c.name as client_name
@@ -30,7 +31,7 @@ if ($action === 'list_funds') {
     }
     echo json_encode($funds);
 
-} elseif ($action === 'get_services' && isset($_GET['fund_id'])) {
+} elseif ($method === 'GET' && $action === 'get_services' && isset($_GET['fund_id'])) {
     $fund_id = intval($_GET['fund_id']);
     // Obtiene los servicios activos para un fondo específico.
     $stmt = $conn->prepare("
@@ -50,23 +51,31 @@ if ($action === 'list_funds') {
     echo json_encode($services);
     $stmt->close();
     
-} elseif ($_SERVER['REQUEST_METHOD'] === 'POST' && $action === 'close_service') {
+} elseif ($method === 'POST' && $action === 'close_service') {
     // Marca un servicio como cerrado por el digitador.
     $data = json_decode(file_get_contents('php://input'), true);
     $service_id = $data['service_id'] ?? null;
+
     if ($service_id) {
         $stmt = $conn->prepare("UPDATE check_ins SET digitador_status = 'Cerrado', closed_by_digitador_at = NOW() WHERE id = ?");
         $stmt->bind_param("i", $service_id);
         if ($stmt->execute()) {
-            echo json_encode(['success' => true]);
+            if ($stmt->affected_rows > 0) {
+                echo json_encode(['success' => true]);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'No se encontró el servicio para cerrar o ya estaba cerrado.']);
+            }
         } else {
-            echo json_encode(['success' => false, 'error' => 'Error al cerrar el servicio.']);
+            echo json_encode(['success' => false, 'error' => 'Error al ejecutar la actualización del servicio.']);
         }
         $stmt->close();
     } else {
         http_response_code(400);
         echo json_encode(['success' => false, 'error' => 'ID de servicio no proporcionado.']);
     }
+} else {
+    http_response_code(404);
+    echo json_encode(['success' => false, 'error' => 'Acción no válida.']);
 }
 
 $conn->close();

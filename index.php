@@ -50,15 +50,27 @@ $base_query_joins = "
 // Agrupa por grupo si existe, si no, por ID de tarea individual
 $grouping = " GROUP BY a.id, IF(t.assigned_to_group IS NOT NULL, t.assigned_to_group, t.id)";
 
-if($current_user_role !== 'Admin') {
-     $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') AND t.assigned_to_user_id = {$current_user_id} {$grouping}";
-} else {
-    $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$grouping}";
+// Lógica de consulta por defecto
+$alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
+
+// Lógica especial para el Digitador: debe ver sus tareas asignadas Y todas las alertas de discrepancia
+if ($current_user_role === 'Digitador') {
+    $alerts_sql = "
+        SELECT {$base_query_fields} {$base_query_joins} 
+        WHERE a.status NOT IN ('Resuelta', 'Cancelada') 
+        AND (t.assigned_to_user_id = {$current_user_id} OR a.suggested_role = 'Digitador')
+        {$grouping}
+    ";
 }
+
 
 $alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
+        // Evitar duplicados si una alerta se asigna a un grupo y también individualmente (caso borde)
+        $unique_key = $row['id'] . '-' . ($row['assigned_to_group'] ?? $row['task_id']);
+        $processed_keys[$unique_key] = true;
+        
         $row['item_type'] = 'alert';
         $all_pending_items[] = $row;
     }
@@ -167,7 +179,6 @@ if ($_SESSION['user_role'] === 'Admin') {
 }
 
 $recaudos = [];
-// This is a placeholder query, you should replace it with your actual logic
 $recaudos_result = $conn->query("SELECT 1 as id, 'Tienda Ejemplo' as store_name, 197030000 as expected_amount, 'Completado' as status, 100 as bills_100k, 50 as bills_50k, 20 as bills_20k, 10 as bills_10k, 5 as bills_5k, 2 as bills_2k, 10000 as coins FROM DUAL");
 if ($recaudos_result) { while ($row = $recaudos_result->fetch_assoc()) { $recaudos[] = $row; } }
 
@@ -189,7 +200,7 @@ $all_routes = [];
 $routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
 if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
-// Cargar Check-ins iniciales
+// Cargar Check-ins iniciales (NO CERRADOS POR DIGITADOR)
 $initial_checkins = [];
 $checkins_query = "
     SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, ci.created_at, 
@@ -199,6 +210,7 @@ $checkins_query = "
     JOIN routes r ON ci.route_id = r.id 
     JOIN users u ON ci.checkinero_id = u.id
     LEFT JOIN funds f ON ci.fund_id = f.id
+    WHERE ci.digitador_status IS NULL
     ORDER BY ci.created_at DESC
 ";
 $checkins_result = $conn->query($checkins_query);
@@ -230,17 +242,14 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])) {
     }
 }
 
-// === CORRECCIÓN FINAL: Cargar casos de discrepancia para el panel del digitador ===
+// === Cargar casos de discrepancia para el panel del digitador ===
 $discrepancy_cases = [];
 if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])) {
-
-    // Se ajusta la consulta para agrupar por alerta y obtener un ID de tarea representativo.
-    // Esto asegura que cada caso de discrepancia se muestre una sola vez.
     $discrepancy_query = "
         SELECT
-            MIN(t.id) AS task_id, -- Obtenemos el primer ID de tarea como representativo
+            MIN(t.id) AS task_id,
             a.id AS alert_id,
-            (SELECT status FROM tasks WHERE alert_id = a.id ORDER BY FIELD(status, 'Pendiente', 'Resuelta') LIMIT 1) AS task_status,
+            (SELECT status FROM tasks WHERE alert_id = a.id AND assigned_to_user_id = {$current_user_id} ORDER BY FIELD(status, 'Pendiente', 'Resuelta') LIMIT 1) AS task_status,
             (SELECT resolution_note FROM tasks WHERE alert_id = a.id AND resolution_note IS NOT NULL LIMIT 1) AS resolution_note,
             a.title AS alert_title,
             a.created_at AS alert_date,
@@ -253,15 +262,14 @@ if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])) {
             u_op.name AS operator_name
         FROM alerts a
         LEFT JOIN tasks t ON a.id = t.alert_id
-        LEFT JOIN check_ins ci ON a.check_in_id = ci.id
-        LEFT JOIN operator_counts oc ON oc.check_in_id = ci.id
-        LEFT JOIN users u_check ON ci.checkinero_id = u_check.id
-        LEFT JOIN users u_op ON oc.operator_id = u_op.id
+        JOIN check_ins ci ON a.check_in_id = ci.id
+        JOIN operator_counts oc ON oc.check_in_id = ci.id
+        JOIN users u_check ON ci.checkinero_id = u_check.id
+        JOIN users u_op ON oc.operator_id = u_op.id
         WHERE a.suggested_role = 'Digitador'
-        GROUP BY a.id -- Agrupamos por el ID de la alerta para mostrar un caso único
+        GROUP BY a.id
         ORDER BY a.created_at DESC
     ";
-
     $discrepancy_result = $conn->query($discrepancy_query);
     if ($discrepancy_result) {
         while($row = $discrepancy_result->fetch_assoc()) {
@@ -269,7 +277,6 @@ if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])) {
         }
     }
 }
-
 
 $conn->close();
 ?>
@@ -280,7 +287,8 @@ $conn->close();
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EAGLE 3.0 - Sistema de Alertas</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script> <script src="js/jspdf.umd.min.js"></script> <script src="js/jspdf-autotable.min.js"></script> ```
+    
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
@@ -857,31 +865,92 @@ $conn->close();
 
             <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
             <div id="content-digitador" class="hidden">
-                <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Digitador</h2>
-                
-                <div class="bg-white p-6 rounded-xl shadow-lg">
-                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Trazabilidad de Discrepancias</h3>
+                <div class="flex justify-between items-center mb-6">
+                    <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión de Procesos</h2>
+                    <div class="bg-white p-2 rounded-lg shadow-md flex space-x-2">
+                        <button id="btn-llegadas" class="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
+                            Abrir Llegadas
+                        </button>
+                        <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
+                            Abrir Proceso de Cierre
+                        </button>
+                        <button id="btn-informes" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
+                            Abrir Menú PDFs
+                        </button>
+                    </div>
+                </div>
+
+                <div id="panel-llegadas" class="bg-white p-6 rounded-xl shadow-lg">
+                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Check-ins (Llegadas)</h3>
                     <div class="overflow-x-auto">
                         <table class="w-full text-sm">
                             <thead class="bg-gray-50">
-                                <tr class="text-left">
-                                    <th class="px-4 py-3">Planilla</th>
-                                    <th class="px-4 py-3">Responsables</th>
-                                    <th class="px-4 py-3">Valores</th>
-                                    <th class="px-4 py-3">Fechas</th>
-                                    <th class="px-4 py-3 w-1/3">Resolución del Caso</th>
-                                    <th class="px-4 py-3">Estado</th>
+                                <tr>
+                                    <th class="p-3">Planilla</th> <th class="p-3">Sello</th> <th class="p-3">Declarado</th>
+                                    <th class="p-3">Ruta</th> <th class="p-3">Fecha Registro</th> <th class="p-3">Checkinero</th>
+                                    <th class="p-3">Cliente</th> <th class="p-3">Fondo</th>
                                 </tr>
                             </thead>
-                            <tbody id="discrepancy-traceability-body">
+                            <tbody id="llegadas-table-body">
                                 </tbody>
                         </table>
                     </div>
                 </div>
 
+                <div id="panel-cierre" class="hidden bg-white p-6 rounded-xl shadow-lg">
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+                        <div>
+                            <h3 class="text-xl font-semibold mb-4 text-gray-900">Listado de Fondos</h3>
+                            <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto">
+                                </div>
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-semibold mb-4 text-gray-900">Servicios Activos</h3>
+                            <div id="services-list-container" class="space-y-3">
+                                <p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>
+                                </div>
+                        </div>
+                    </div>
+                </div>
+                
+                <div id="panel-informes" class="hidden bg-white p-6 rounded-xl shadow-lg">
+                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Servicios para Informar</h3>
+                    <div class="flex justify-end mb-4">
+                        <button onclick="generatePDF()" class="bg-green-600 text-white font-bold py-2 px-4 rounded-md hover:bg-green-700">
+                            Generar PDF (<span id="selected-informe-count">0</span> seleccionados)
+                        </button>
+                    </div>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="p-3 w-10"><input type="checkbox" id="select-all-informes"></th>
+                                    <th class="p-3">Planilla</th> <th class="p-3">Sello</th> <th class="p-3">Total</th>
+                                    <th class="p-3">Fondo</th> <th class="p-3">Cliente</th>
+                                </tr>
+                            </thead>
+                            <tbody id="informes-table-body">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                 <div class="mt-8 bg-white p-6 rounded-xl shadow-lg">
+                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Trazabilidad de Discrepancias</h3>
+                     <div class="overflow-x-auto">
+                        <table class="w-full text-sm">
+                            <thead class="bg-gray-50">
+                                <tr>
+                                    <th class="px-4 py-3">Planilla</th> <th class="px-4 py-3">Responsables</th> <th class="px-4 py-3">Valores</th>
+                                    <th class="px-4 py-3">Fechas</th> <th class="px-4 py-3 w-1/3">Resolución del Caso</th> <th class="px-4 py-3">Estado</th>
+                                </tr>
+                            </thead>
+                            <tbody id="discrepancy-traceability-body"></tbody>
+                        </table>
+                    </div>
+                </div>
             </div>
             <?php endif; ?>
-
 
             <?php if ($_SESSION['user_role'] === 'Admin'): ?>
             <div id="content-roles" class="hidden">
@@ -1252,6 +1321,7 @@ $conn->close();
     }
 
     function formatCurrency(value) {
+        if (value === null || value === undefined) return '$ 0';
         return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
     }
 
@@ -1501,7 +1571,6 @@ $conn->close();
         }
     }
 
-    // === NUEVA FUNCIÓN: Poblar tabla de trazabilidad de discrepancias ===
     function populateDiscrepancyTraceability(cases) {
         const tbody = document.getElementById('discrepancy-traceability-body');
         if (!tbody) return;
@@ -1552,8 +1621,7 @@ $conn->close();
             tbody.innerHTML += row;
         });
     }
-
-    // === NUEVA FUNCIÓN: Enviar resolución de discrepancia ===
+    
     async function resolveDiscrepancy(taskId) {
         const noteTextarea = document.getElementById(`resolution-note-${taskId}`);
         const resolutionNote = noteTextarea.value;
@@ -1589,7 +1657,6 @@ $conn->close();
             alert('Error: ' + error.message);
         }
     }
-
 
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
@@ -1665,7 +1732,7 @@ $conn->close();
             const dateB = new Date(b[column]).getTime();
             if (isNaN(dateA)) return 1;
             if (isNaN(dateB)) return -1;
-            return nextDirection === 'asc' ? dateA - dateB : dateB - dateA;
+            return nextDirection === 'asc' ? dateA - dateB : dateB - a[column];
         });
 
         document.querySelectorAll('th.sortable').forEach(th => {
@@ -1688,6 +1755,265 @@ $conn->close();
         XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx");
     }
     <?php endif; ?>
+
+    // === SCRIPT PARA EL PANEL DEL DIGITADOR ===
+    const btnLlegadas = document.getElementById('btn-llegadas');
+    const btnCierre = document.getElementById('btn-cierre');
+    const btnInformes = document.getElementById('btn-informes');
+    
+    const panelLlegadas = document.getElementById('panel-llegadas');
+    const panelCierre = document.getElementById('panel-cierre');
+    const panelInformes = document.getElementById('panel-informes');
+
+    const setActiveButton = (activeBtn) => {
+        if (!activeBtn) return;
+        [btnLlegadas, btnCierre, btnInformes].forEach(btn => {
+            if(btn) {
+                btn.classList.remove('bg-blue-600', 'text-white');
+                btn.classList.add('bg-gray-200', 'text-gray-700');
+            }
+        });
+        activeBtn.classList.add('bg-blue-600', 'text-white');
+        activeBtn.classList.remove('bg-gray-200', 'text-gray-700');
+    };
+
+    const showPanel = (activePanel) => {
+        if (!activePanel) return;
+        [panelLlegadas, panelCierre, panelInformes].forEach(panel => {
+            if(panel) panel.classList.add('hidden');
+        });
+        activePanel.classList.remove('hidden');
+    };
+
+    if (btnLlegadas) {
+        btnLlegadas.addEventListener('click', () => {
+            setActiveButton(btnLlegadas);
+            showPanel(panelLlegadas);
+            loadLlegadas();
+        });
+    }
+
+    if (btnCierre) {
+        btnCierre.addEventListener('click', () => {
+            setActiveButton(btnCierre);
+            showPanel(panelCierre);
+            loadFundsForCierre();
+        });
+    }
+
+    if (btnInformes) {
+        btnInformes.addEventListener('click', () => {
+            setActiveButton(btnInformes);
+            showPanel(panelInformes);
+            loadInformes();
+        });
+    }
+
+    async function loadLlegadas() {
+        const tbody = document.getElementById('llegadas-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center">Cargando...</td></tr>';
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_llegadas_api.php`);
+            const llegadas = await response.json();
+            tbody.innerHTML = '';
+            if (llegadas.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay llegadas pendientes.</td></tr>';
+                return;
+            }
+            llegadas.forEach(item => {
+                const row = `
+                    <tr class="border-b">
+                        <td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td>
+                        <td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td>
+                        <td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td>
+                        <td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td>
+                    </tr>`;
+                tbody.innerHTML += row;
+            });
+        } catch (error) {
+            console.error('Error cargando llegadas:', error);
+            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>';
+        }
+    }
+
+    async function loadFundsForCierre() {
+        const container = document.getElementById('funds-list-container');
+        if (!container) return;
+        container.innerHTML = '<p class="text-center">Cargando fondos...</p>';
+        document.getElementById('services-list-container').innerHTML = '<p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>';
+        
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=list_funds`);
+            const funds = await response.json();
+            container.innerHTML = '';
+            if (funds.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-center">No hay fondos con servicios activos.</p>';
+                return;
+            }
+            funds.forEach(fund => {
+                const fundElement = `
+                    <div class="p-3 border rounded-lg cursor-pointer hover:bg-gray-100" onclick="loadServicesForFund(${fund.id}, this)">
+                        <div class="flex justify-between items-center">
+                            <p class="font-semibold">${fund.name}</p>
+                            <span class="text-xs text-gray-500">${fund.client_name}</span>
+                        </div>
+                    </div>`;
+                container.innerHTML += fundElement;
+            });
+        } catch (error) {
+            console.error('Error cargando fondos:', error);
+            container.innerHTML = '<p class="text-center text-red-500">Error al cargar fondos.</p>';
+        }
+    }
+    
+    async function loadServicesForFund(fundId, element) {
+        document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400'));
+        element.classList.add('bg-blue-100', 'border-blue-400');
+        
+        const container = document.getElementById('services-list-container');
+        if (!container) return;
+        container.innerHTML = '<p class="text-center">Cargando servicios...</p>';
+        
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=get_services&fund_id=${fundId}`);
+            const services = await response.json();
+            container.innerHTML = '';
+            if (services.length === 0) {
+                container.innerHTML = '<p class="text-gray-500">Este fondo no tiene servicios activos.</p>';
+                return;
+            }
+            services.forEach(service => {
+                const serviceElement = `
+                    <div class="p-3 border rounded-lg flex justify-between items-center">
+                        <div>
+                            <p class="font-mono"><strong>Planilla:</strong> ${service.invoice_number}</p>
+                            <p class="text-xs text-gray-500">${service.client_name} - ${formatCurrency(service.declared_value)}</p>
+                        </div>
+                        <button onclick="closeService(${service.id})" class="bg-teal-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-teal-600">
+                            Cerrar Servicio
+                        </button>
+                    </div>`;
+                container.innerHTML += serviceElement;
+            });
+        } catch (error) {
+            console.error('Error cargando servicios:', error);
+            container.innerHTML = '<p class="text-center text-red-500">Error al cargar servicios.</p>';
+        }
+    }
+    
+    async function closeService(serviceId) {
+        if (!confirm('¿Está seguro de que desea cerrar este servicio? Esta acción hará que desaparezca de las listas de pendientes del Checkinero y Operador.')) return;
+        
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_service`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ service_id: serviceId })
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert('Servicio cerrado exitosamente.');
+                // Recargar toda la página para que los cambios se reflejen en todas las vistas
+                location.reload(); 
+            } else {
+                alert('Error: ' + (result.error || 'No se pudo cerrar el servicio.'));
+            }
+        } catch (error) {
+            console.error('Error al cerrar servicio:', error);
+            alert('Error de conexión.');
+        }
+    }
+    
+    async function loadInformes() {
+        const tbody = document.getElementById('informes-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center">Cargando...</td></tr>';
+        document.getElementById('select-all-informes').checked = false;
+        updateInformeCount();
+        
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_informes_api.php`);
+            const servicios = await response.json();
+            tbody.innerHTML = '';
+            if (servicios.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-gray-500">No hay servicios cerrados para informar.</td></tr>';
+                return;
+            }
+            servicios.forEach(item => {
+                const row = `
+                    <tr class="border-b">
+                        <td class="p-3"><input type="checkbox" class="informe-checkbox" data-planilla="${item.planilla}" data-sello="${item.sello}" data-total="${item.total}" data-cliente="${item.cliente}"></td>
+                        <td class="p-3 font-mono">${item.planilla}</td> <td class="p-3 font-mono">${item.sello}</td>
+                        <td class="p-3">${formatCurrency(item.total)}</td> <td class="p-3">${item.fondo || 'N/A'}</td> <td class="p-3">${item.cliente}</td>
+                    </tr>`;
+                tbody.innerHTML += row;
+            });
+            
+            document.querySelectorAll('.informe-checkbox').forEach(cb => cb.addEventListener('change', updateInformeCount));
+            document.getElementById('select-all-informes').addEventListener('change', (e) => {
+                document.querySelectorAll('.informe-checkbox').forEach(cb => cb.checked = e.target.checked);
+                updateInformeCount();
+            });
+
+        } catch (error) {
+            console.error('Error cargando informes:', error);
+            tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>';
+        }
+    }
+
+    function updateInformeCount() {
+        const count = document.querySelectorAll('.informe-checkbox:checked').length;
+        document.getElementById('selected-informe-count').textContent = count;
+    }
+
+    function generatePDF() {
+        // VERIFICACIÓN MEJORADA
+        if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
+            alert('Error: La librería jsPDF principal no se cargó. Revise su conexión a internet y la consola (F12).');
+            return;
+        }
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF();
+        if (typeof doc.autoTable === 'undefined') {
+            alert('Error: La extensión autoTable para generar PDF no se cargó. Revise la conexión y la consola (F12).');
+            return;
+        }
+
+        const selectedRows = [];
+        document.querySelectorAll('.informe-checkbox:checked').forEach(checkbox => {
+            const ds = checkbox.dataset;
+            selectedRows.push([
+                ds.planilla,
+                ds.sello,
+                formatCurrency(ds.total),
+                ds.cliente
+            ]);
+        });
+
+        if (selectedRows.length === 0) {
+            alert('Por favor, seleccione al menos un servicio para generar el informe.');
+            return;
+        }
+
+        doc.setFontSize(18);
+        doc.text("Informe de Servicios Cerrados", 14, 22);
+        
+        doc.autoTable({
+            head: [['Planilla', 'Sello', 'Total Contado', 'Cliente']],
+            body: selectedRows,
+            startY: 30,
+        });
+
+        const pageCount = doc.internal.getNumberOfPages();
+        for(let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(10);
+            doc.text(`Generado por EAGLE 3.0 - ${new Date().toLocaleDateString('es-CO')}`, 14, doc.internal.pageSize.height - 10);
+        }
+
+        doc.save("informe-servicios.pdf");
+    }
 
     document.addEventListener('DOMContentLoaded', () => {
         if (document.getElementById('user-table-body')) {
@@ -1752,6 +2078,9 @@ $conn->close();
         }
         
         if (document.getElementById('content-digitador')) {
+            // Cargar la vista inicial del digitador
+            loadLlegadas();
+            // Cargar también el panel de discrepancias
             populateDiscrepancyTraceability(discrepancyCases);
         }
 
