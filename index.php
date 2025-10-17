@@ -196,9 +196,7 @@ $operator_history = [];
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . $_SESSION['user_id'] : "";
 
-    // --- CORRECCIÓN CLAVE: Nueva consulta para el historial del operador ---
-    // Esta consulta ahora solo muestra el ÚLTIMO conteo de cada planilla
-    // y excluye las que todavía están en estado 'Pendiente'.
+    // CORRECCIÓN: Nueva consulta para el historial del operador.
     $history_query = "
         SELECT 
             op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
@@ -884,6 +882,7 @@ $conn->close();
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Operador</th><?php endif; ?>
                                     <th class="p-3">Fecha Conteo</th>
                                     <th class="p-3">Observaciones</th>
+                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Acciones</th><?php endif; ?>
                                 </tr>
                             </thead>
                             <tbody id="operator-history-table-body">
@@ -1090,10 +1089,31 @@ $conn->close();
                                     <th class="px-6 py-3">Tiempo Resp.</th>
                                     <th class="px-6 py-3">Asignado a</th>
                                     <th class="px-6 py-3">Check por</th>
+                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="px-6 py-3">Acciones</th><?php endif; ?>
                                 </tr>
                             </thead>
                             <tbody id="trazabilidad-tbody">
-                                </tbody>
+                                <?php if (!empty($completed_tasks)): ?>
+                                    <?php foreach($completed_tasks as $task): ?>
+                                        <tr class="border-b">
+                                            <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($task['title'] ?? ''); ?></td>
+                                            <td class="px-6 py-4 text-xs max-w-xs truncate" title="<?php echo htmlspecialchars($task['instruction'] ?? ''); ?>"><?php echo htmlspecialchars($task['instruction'] ?? ''); ?></td>
+                                            <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full <?php echo getPriorityClass($task['priority']); ?>"><?php echo htmlspecialchars($task['priority'] ?? ''); ?></span></td>
+                                            <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full <?php echo getPriorityClass($task['final_priority']); ?>"><?php echo htmlspecialchars($task['final_priority'] ?? ''); ?></span></td>
+                                            <td class="px-6 py-4 whitespace-nowrap"><?php echo formatDate($task['created_at']); ?></td>
+                                            <td class="px-6 py-4 whitespace-nowrap"><?php echo formatDate($task['completed_at']); ?></td>
+                                            <td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($task['response_time'] ?? ''); ?></td>
+                                            <td class="px-6 py-4"><?php echo htmlspecialchars($task['assigned_to'] ?? ''); ?></td>
+                                            <td class="px-6 py-4 font-semibold"><?php echo htmlspecialchars($task['completed_by'] ?? ''); ?></td>
+                                            <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+                                                <td class="px-6 py-4 text-center">
+                                                    <button onclick="deleteTask(<?php echo $task['id']; ?>)" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button>
+                                                </td>
+                                            <?php endif; ?>
+                                        </tr>
+                                    <?php endforeach; ?>
+                                <?php endif; ?>
+                            </tbody>
                         </table>
                     </div>
                 </div>
@@ -1111,6 +1131,7 @@ $conn->close();
     const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
     const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
+    const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -1315,7 +1336,7 @@ $conn->close();
         const tbody = document.getElementById('checkins-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        const colspan = 11;
+        const colspan = currentUserRole === 'Admin' ? 12 : 11;
         if (!checkins || checkins.length === 0) {
             tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>`;
             return;
@@ -1335,6 +1356,7 @@ $conn->close();
                 <th class="p-2">Cliente</th>
                 <th class="p-2">Fondo</th>
                 <th class="p-2 w-20">Acciones</th>
+                ${currentUserRole === 'Admin' ? '<th class="p-2 w-20">Admin</th>' : ''}
             </tr>
         `;
 
@@ -1346,18 +1368,10 @@ $conn->close();
 
             let statusBadge = '';
             switch(ci.status) {
-                case 'Rechazado':
-                    statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`;
-                    break;
-                case 'Procesado':
-                    statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`;
-                    break;
-                 case 'Discrepancia':
-                    statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`;
-                    break;
-                default: // Pendiente
-                    statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
-                    break;
+                case 'Rechazado': statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; break;
+                case 'Procesado': statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`; break;
+                case 'Discrepancia': statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`; break;
+                default: statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`; break;
             }
 
             let actionButton = '';
@@ -1365,6 +1379,8 @@ $conn->close();
                 const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
                 actionButton = `<button onclick='editCheckIn(${checkinData})' class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Editar</button>`;
             }
+
+            const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-2"><button onclick="deleteCheckIn(${ci.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
 
             const row = `
                 <tr class="border-b hover:bg-gray-50">
@@ -1379,6 +1395,7 @@ $conn->close();
                     <td class="p-2">${ci.client_name}</td>
                     <td class="p-2">${ci.fund_name || 'N/A'}</td>
                     <td class="p-2">${actionButton}</td>
+                    ${adminDeleteButton}
                 </tr>
             `;
             tbody.innerHTML += row;
@@ -1390,7 +1407,6 @@ $conn->close();
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        // CORRECCIÓN DE FLUJO: El operador solo debe ver planillas que están estrictamente 'Pendiente'.
         const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
 
         if (pendingCheckins.length === 0) {
@@ -1401,14 +1417,9 @@ $conn->close();
         const thead = tbody.previousElementSibling;
         thead.innerHTML = `
             <tr>
-                <th class="p-3">Planilla</th>
-                <th class="p-3">Sello</th>
-                <th class="p-3">Declarado</th>
-                <th class="p-3">Cliente</th>
-                <th class="p-3">Checkinero</th>
-                <th class="p-3">Fecha de Registro</th>
-                <th class="p-3">Estado</th>
-                <th class="p-3">Acción</th>
+                <th class="p-3">Planilla</th><th class="p-3">Sello</th><th class="p-3">Declarado</th>
+                <th class="p-3">Cliente</th><th class="p-3">Checkinero</th><th class="p-3">Fecha de Registro</th>
+                <th class="p-3">Estado</th><th class="p-3">Acción</th>
             </tr>
         `;
 
@@ -1435,11 +1446,27 @@ $conn->close();
         const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!historyData || historyData.length === 0) { const colspan = (currentUserRole === 'Admin') ? 8 : 7; tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return; }
+        const colspan = (currentUserRole === 'Admin') ? 9 : 8;
+        if (!historyData || historyData.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return; 
+        }
+
         historyData.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
             const operatorColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.operator_name}</td>` : '';
-            tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.client_name}</td><td class="p-3 text-right">${formatCurrency(item.declared_value)}</td><td class="p-3 text-right">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>${operatorColumn}<td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td><td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td></tr>`;
+            const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-3 text-center"><button onclick="deleteCheckIn(${item.check_in_id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
+
+            tbody.innerHTML += `<tr class="border-b">
+                                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                                    <td class="p-3">${item.client_name}</td>
+                                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
+                                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
+                                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                                    ${operatorColumn}
+                                    <td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td>
+                                    <td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td>
+                                    ${adminDeleteButton}
+                               </tr>`;
         });
     }
 
@@ -1449,7 +1476,6 @@ $conn->close();
         window.scrollTo(0, 0);
     }
 
-    // --- FUNCIÓN PARA EDITAR CHECK-IN ---
     async function editCheckIn(checkinData) {
         document.getElementById('invoice_number').value = checkinData.invoice_number;
         document.getElementById('seal_number').value = checkinData.seal_number;
@@ -1602,15 +1628,16 @@ $conn->close();
     }
 
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-    const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
+    
     function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
         tbody.innerHTML = '';
-        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="9" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
+        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="10" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
         tasks.forEach(task => {
-            tbody.innerHTML += `<tr class="border-b"><td class="px-6 py-4 font-medium">${task.title || ''}</td><td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td><td class="px-6 py-4 font-mono">${task.response_time || ''}</td><td class="px-6 py-4">${task.assigned_to || ''}</td><td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td></tr>`;
+            tbody.innerHTML += `<tr class="border-b"><td class="px-6 py-4 font-medium">${task.title || ''}</td><td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td><td class="px-6 py-4 font-mono">${task.response_time || ''}</td><td class="px-6 py-4">${task.assigned_to || ''}</td><td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td><td class="px-6 py-4 text-center"><button onclick="deleteTask(${task.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td></tr>`;
         });
     }
+
     function getPriorityClass(priority) { if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800'; if (priority === 'Media') return 'bg-yellow-100 text-yellow-800'; return 'bg-gray-100 text-gray-800'; }
     function formatDate(dateString) { if (!dateString) return ''; const date = new Date(dateString); return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true }); }
     function applyTrazabilidadFilters() {
@@ -1643,7 +1670,6 @@ $conn->close();
         } else { panel.classList.add('hidden'); }
     }
 
-    // --- FUNCIÓN CORREGIDA Y MEJORADA ---
     async function submitDigitadorReview(checkInId, status) {
         const observations = document.getElementById('digitador-observations').value;
         if (!observations.trim()) {
@@ -1671,7 +1697,6 @@ $conn->close();
             console.error('Error al enviar la revisión:', error);
             alert('Error de conexión.');
         } finally {
-            // Siempre recargamos la página para asegurar que la UI esté sincronizada con la BD.
             location.reload();
         }
     }
@@ -1713,13 +1738,12 @@ $conn->close();
             adminColumns = `
                 <td class="p-3">${item.digitador_name || 'N/A'}</td>
                 <td class="p-3 text-center">
-                    <button onclick="deleteClosedCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button>
+                    <button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button>
                 </td>
             `;
         }
         let statusBadge = '';
         if (item.digitador_status === 'Conforme') { statusBadge = `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Conforme</span>`; }
-        else if (item.digitador_status === 'Rechazado') { statusBadge = `<span class="bg-red-100 text-red-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; }
         else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
 
         const row = `
@@ -1737,6 +1761,54 @@ $conn->close();
         tbody.innerHTML += row;
     });
 }
+
+    // --- NUEVAS FUNCIONES DE ELIMINACIÓN PARA ADMIN ---
+    async function deleteCheckIn(checkInId) {
+        if (!confirm('¿Está seguro de que desea eliminar permanentemente esta planilla y todos sus registros asociados (conteo, alertas, etc.)? Esta acción no se puede deshacer.')) {
+            return;
+        }
+        try {
+            const response = await fetch(`${apiUrlBase}/delete_checkin_api.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ check_in_id: checkInId })
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert(result.message);
+                location.reload();
+            } else {
+                alert('Error al eliminar: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Error de conexión al eliminar la planilla:', error);
+            alert('Error de conexión. No se pudo completar la solicitud.');
+        }
+    }
+
+    async function deleteTask(taskId) {
+        if (!confirm('¿Está seguro de que desea eliminar este registro de tarea del historial de trazabilidad?')) {
+            return;
+        }
+        try {
+            const response = await fetch(`${apiUrlBase}/delete_task_api.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ task_id: taskId })
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert(result.message);
+                location.reload();
+            } else {
+                alert('Error al eliminar la tarea: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Error de conexión al eliminar la tarea:', error);
+            alert('Error de conexión.');
+        }
+    }
+
 
     const btnLlegadas = document.getElementById('btn-llegadas'), btnCierre = document.getElementById('btn-cierre'), btnInformes = document.getElementById('btn-informes');
     const panelLlegadas = document.getElementById('panel-llegadas'), panelCierre = document.getElementById('panel-cierre'), panelInformes = document.getElementById('panel-informes');
@@ -1765,31 +1837,7 @@ $conn->close();
             llegadas.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td><td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td><td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td><td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td></tr>`; });
         } catch (error) { console.error('Error cargando llegadas:', error); tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
     }
-    async function deleteClosedCheckIn(checkInId) {
-    if (!confirm('¿Está seguro de que desea eliminar permanentemente esta planilla y todos sus registros asociados (conteo, alertas, etc.)? Esta acción no se puede deshacer.')) {
-        return;
-    }
 
-    try {
-        const response = await fetch(`${apiUrlBase}/delete_checkin_api.php`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ check_in_id: checkInId })
-        });
-
-        const result = await response.json();
-
-        if (result.success) {
-            alert(result.message);
-            location.reload(); // Recargar la página para ver los cambios
-        } else {
-            alert('Error al eliminar: ' + result.error);
-        }
-    } catch (error) {
-        console.error('Error de conexión al eliminar la planilla:', error);
-        alert('Error de conexión. No se pudo completar la solicitud.');
-    }
-}
     async function loadFundsForCierre() {
         const container = document.getElementById('funds-list-container'); if (!container) return; container.innerHTML = '<p class="text-center">Cargando fondos...</p>'; document.getElementById('services-list-container').innerHTML = '<p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>';
         try {
@@ -1846,13 +1894,11 @@ $conn->close();
 
     document.addEventListener('DOMContentLoaded', () => {
         if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); }
-        <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-        if(document.getElementById('trazabilidad-tbody')){
+        if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
             populateTrazabilidadTable(completedTasksData);
             const defaultSortHeader = document.querySelector(`th[data-column-name="completed_at"]`);
             if (defaultSortHeader) { defaultSortHeader.dataset.sortDir = 'desc'; defaultSortHeader.querySelector('span').textContent = ' ▼'; }
         }
-        <?php endif; ?>
 
         if (document.getElementById('content-checkinero')) {
             populateCheckinsTable(initialCheckins);
