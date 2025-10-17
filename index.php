@@ -200,6 +200,27 @@ if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])) {
     }
 }
 
+// NUEVA FUNCIONALIDAD: Cargar historial de planillas cerradas por el digitador.
+$digitador_closed_history = [];
+if (in_array($current_user_role, ['Digitador', 'Admin'])) {
+    $digitador_filter = ($current_user_role === 'Digitador') ? "WHERE ci.closed_by_digitador_id = " . $current_user_id : "WHERE ci.digitador_status = 'Cerrado'";
+    $closed_history_result = $conn->query("
+        SELECT ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
+               oc.total_counted, oc.discrepancy, u_op.name as operator_name,
+               ci.closed_by_digitador_at, u_digitador.name as digitador_name
+        FROM check_ins ci
+        LEFT JOIN clients c ON ci.client_id = c.id
+        LEFT JOIN users u_check ON ci.checkinero_id = u_check.id
+        LEFT JOIN operator_counts oc ON oc.check_in_id = ci.id
+        LEFT JOIN users u_op ON oc.operator_id = u_op.id
+        LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id
+        {$digitador_filter}
+        ORDER BY ci.closed_by_digitador_at DESC"
+    );
+    if($closed_history_result){ while($row = $closed_history_result->fetch_assoc()){ $digitador_closed_history[] = $row; } }
+}
+
+
 $conn->close();
 ?>
 <!DOCTYPE html>
@@ -797,104 +818,17 @@ $conn->close();
 
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Supervisión de Operaciones</h2>
                 
-                <div id="consultation-section-digitador" class="bg-white p-6 rounded-xl shadow-lg mb-8">
-                     <h3 class="text-xl font-semibold mb-4">Buscar Planilla para Detallar y Supervisar</h3>
-                     <form id="consultation-form-digitador" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-                         <div>
-                             <label for="consult-invoice-digitador" class="block text-sm font-medium">Número de Planilla</label>
-                             <input type="text" id="consult-invoice-digitador" required class="mt-1 w-full p-2 border rounded-md">
-                         </div>
-                         <div class="pt-6">
-                             <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">Consultar</button>
-                         </div>
-                     </form>
-                </div>
-
-                <div id="operator-panel-digitador" class="hidden">
-                    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
-                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 pb-4 border-b">
-                            <div><span class="block text-sm text-gray-500">Número de Planilla</span><strong id="display-invoice-digitador" class="text-lg"></strong></div>
-                            <div><span class="block text-sm text-gray-500">Sello de la Factura</span><strong id="display-seal-digitador" class="text-lg"></strong></div>
-                            <div><span class="block text-sm text-gray-500">Nombre del Cliente</span><strong id="display-client-digitador" class="text-lg"></strong></div>
-                            <div><span class="block text-sm text-gray-500">Valor Declarado</span><strong id="display-declared-digitador" class="text-lg text-blue-600"></strong></div>
-                        </div>
-                        
-                        <h3 class="text-xl font-semibold mb-4">Detalle de Denominación</h3>
-                        <form id="denomination-form-digitador">
-                            <input type="hidden" id="op-checkin-id-digitador">
-                            <div class="space-y-2">
-                                <?php 
-                                    foreach($denominations as $value):
-                                ?>
-                                <div class="grid grid-cols-5 gap-4 items-center denomination-row" data-value="<?php echo $value; ?>">
-                                    <div class="col-span-2 font-medium text-gray-700"><?php echo '$' . number_format($value, 0, ',', '.'); ?></div>
-                                    <div class="col-span-2 flex items-center">
-                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-l-md font-bold text-lg" onclick="updateQty(this, -1)">-</button>
-                                        <input type="number" value="0" min="0" class="w-full text-center border-t border-b p-1 denomination-qty" oninput="calculateTotals('digitador')">
-                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-r-md font-bold text-lg" onclick="updateQty(this, 1)">+</button>
-                                    </div>
-                                    <div class="text-right font-mono subtotal">$ 0</div>
-                                </div>
-                                <?php endforeach; ?>
-                                
-                                <div class="grid grid-cols-5 gap-4 items-center pt-2 border-t">
-                                    <div class="col-span-2 font-medium text-gray-700">Monedas</div>
-                                    <div class="col-span-2">
-                                        <input type="number" id="coins-value-digitador" value="0" min="0" step="50" class="w-full border p-1" oninput="calculateTotals('digitador')" placeholder="Valor total en monedas">
-                                    </div>
-                                    <div class="text-right font-mono" id="coins-subtotal-digitador">$ 0</div>
-                                </div>
-                                
-                                <div class="grid grid-cols-5 gap-4 items-center pt-4 mt-4 border-t-2">
-                                    <div class="col-span-2 font-bold text-xl">Total</div>
-                                    <div class="col-span-3 text-right font-mono text-xl" id="total-counted-digitador">$ 0</div>
-                                </div>
-                                <div class="grid grid-cols-5 gap-4 items-center">
-                                    <div class="col-span-2 font-bold text-xl">Diferencia</div>
-                                    <div class="col-span-3 text-right font-mono text-xl" id="discrepancy-digitador">$ 0</div>
-                                </div>
-                            </div>
-                            
-                            <div class="mt-6">
-                                <label for="observations-digitador" class="block text-sm font-medium">Observación</label>
-                                <textarea id="observations-digitador" rows="3" class="mt-1 w-full border rounded-md p-2"></textarea>
-                            </div>
-                            
-                            <div class="mt-6 flex justify-end">
-                                <button type="submit" class="bg-gray-400 text-white font-bold py-3 px-6 rounded-md cursor-not-allowed" disabled>Guardar Conteo (Solo Operador)</button>
-                            </div>
-                        </form>
+                <div id="operator-panel-digitador" class="hidden bg-blue-50 border border-blue-200 p-6 rounded-xl shadow-lg mb-8">
                     </div>
-                </div>
 
-                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
-                    <h3 class="text-xl font-semibold mb-4">Planillas Pendientes de Detallar (Supervisión)</h3>
-                    <div class="overflow-auto max-h-[600px]">
-                        <table class="w-full text-sm text-left">
-                            <thead class="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th class="p-3">Planilla</th>
-                                    <th class="p-3">Sello</th>
-                                    <th class="p-3">Declarado</th>
-                                    <th class="p-3">Cliente</th>
-                                    <th class="p-3">Checkinero</th>
-                                    <th class="p-3">Fecha de Registro</th>
-                                    <th class="p-3">Estado</th>
-                                    <th class="p-3">Acción</th>
-                                </tr>
-                            </thead>
-                            <tbody id="operator-checkins-table-body-digitador">
-                                </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
+                <div class="bg-white p-6 rounded-xl shadow-lg">
                     <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados (Supervisión)</h3>
+                    <p class="text-sm text-gray-500 mb-4">Marca la casilla de una planilla para cargar sus detalles y revisarla.</p>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
                                 <tr>
+                                    <th class="p-3">Revisar</th>
                                     <th class="p-3">Planilla</th>
                                     <th class="p-3">Cliente</th>
                                     <th class="p-3">V. Declarado</th>
@@ -902,11 +836,9 @@ $conn->close();
                                     <th class="p-3">Discrepancia</th>
                                     <th class="p-3">Operador</th>
                                     <th class="p-3">Fecha Conteo</th>
-                                    <th class="p-3">Observaciones</th>
                                 </tr>
                             </thead>
-                            <tbody id="operator-history-table-body-digitador">
-                                </tbody>
+                            <tbody id="operator-history-table-body-digitador"></tbody>
                         </table>
                     </div>
                 </div>
@@ -991,6 +923,23 @@ $conn->close();
                                 </tr>
                             </thead>
                             <tbody id="discrepancy-traceability-body"></tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
+                    <h3 class="text-xl font-semibold mb-4">Historial de Planillas Cerradas</h3>
+                    <div class="overflow-auto max-h-[700px]">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="p-3">Planilla</th>
+                                    <th class="p-3">Cierre</th>
+                                    <th class="p-3">Discrepancia</th>
+                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Cerrada por</th><?php endif; ?>
+                                </tr>
+                            </thead>
+                            <tbody id="digitador-closed-history-body"></tbody>
                         </table>
                     </div>
                 </div>
@@ -1085,6 +1034,8 @@ $conn->close();
     const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
     const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
     const discrepancyCases = <?php echo json_encode($discrepancy_cases); ?>;
+    const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
+
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -1394,10 +1345,8 @@ $conn->close();
         });
     }
     
-    // MODIFICADO: Ahora hay dos tablas de pendientes, una para cada rol
-    function populateOperatorCheckinsTable(checkins, context = 'operador') {
-        const tableId = (context === 'digitador') ? 'operator-checkins-table-body-digitador' : 'operator-checkins-table-body';
-        const tbody = document.getElementById(tableId);
+    function populateOperatorCheckinsTable(checkins) {
+        const tbody = document.getElementById('operator-checkins-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
         
@@ -1409,8 +1358,6 @@ $conn->close();
         }
         
         pendingCheckins.forEach(ci => {
-            // MODIFICADO: La función llamada ahora sabe desde qué contexto se llama
-            const buttonFunction = (context === 'digitador') ? `selectPlanillaForDigitador` : `selectPlanilla`;
             const row = `
                 <tr class="border-b">
                     <td class="p-3 font-mono">${ci.invoice_number}</td>
@@ -1421,7 +1368,7 @@ $conn->close();
                     <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
                     <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
                     <td class="p-3">
-                        <button onclick="${buttonFunction}('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
+                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
                     </td>
                 </tr>
             `;
@@ -1429,23 +1376,20 @@ $conn->close();
         });
     }
     
-    // MODIFICADO: Ahora hay dos tablas de historial, una para cada rol
-    function populateOperatorHistoryTable(historyData, context = 'operador') {
-        const tableId = (context === 'digitador') ? 'operator-history-table-body-digitador' : 'operator-history-table-body';
-        const tbody = document.getElementById(tableId);
+    function populateOperatorHistoryTable(historyData) {
+        const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
 
         if (!historyData || historyData.length === 0) {
-            const colspan = (currentUserRole === 'Admin' || context === 'digitador') ? 8 : 7;
+            const colspan = (currentUserRole === 'Admin') ? 8 : 7;
             tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`;
             return;
         }
 
         historyData.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            // Para el admin o el digitador, siempre mostramos la columna del operador
-            const operatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador') ? `<td class="p-3">${item.operator_name}</td>` : '';
+            const operatorColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.operator_name}</td>` : '';
             const row = `
                 <tr class="border-b">
                     <td class="p-3 font-mono">${item.invoice_number}</td>
@@ -1465,13 +1409,6 @@ $conn->close();
     function selectPlanilla(invoiceNumber) {
         document.getElementById('consult-invoice').value = invoiceNumber;
         document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
-        window.scrollTo(0, 0); 
-    }
-    
-    // NUEVA FUNCIÓN: Específica para el panel de supervisión del digitador
-    function selectPlanillaForDigitador(invoiceNumber) {
-        document.getElementById('consult-invoice-digitador').value = invoiceNumber;
-        document.getElementById('consultation-form-digitador').dispatchEvent(new Event('submit'));
         window.scrollTo(0, 0); 
     }
 
@@ -1505,13 +1442,11 @@ $conn->close();
         }
     }
 
-    // MODIFICADO: Función genérica para manejar la consulta de ambos roles
-    async function handleConsultation(event, context = 'operador') {
+    async function handleConsultation(event) {
         event.preventDefault();
-        const prefix = (context === 'digitador') ? '-digitador' : '';
         
-        const invoiceInput = document.getElementById(`consult-invoice${prefix}`);
-        const operatorPanel = document.getElementById(`operator-panel${prefix}`);
+        const invoiceInput = document.getElementById('consult-invoice');
+        const operatorPanel = document.getElementById('operator-panel');
         const planilla = invoiceInput.value;
 
         if (!planilla) {
@@ -1525,15 +1460,15 @@ $conn->close();
 
             if (result.success) {
                 const data = result.data;
-                document.getElementById(`display-invoice${prefix}`).textContent = data.invoice_number;
-                document.getElementById(`display-seal${prefix}`).textContent = data.seal_number;
-                document.getElementById(`display-client${prefix}`).textContent = data.client_name;
-                document.getElementById(`display-declared${prefix}`).textContent = formatCurrency(data.declared_value);
-                document.getElementById(`display-declared${prefix}`).dataset.value = data.declared_value;
-                document.getElementById(`op-checkin-id${prefix}`).value = data.id;
+                document.getElementById('display-invoice').textContent = data.invoice_number;
+                document.getElementById('display-seal').textContent = data.seal_number;
+                document.getElementById('display-client').textContent = data.client_name;
+                document.getElementById('display-declared').textContent = formatCurrency(data.declared_value);
+                document.getElementById('display-declared').dataset.value = data.declared_value;
+                document.getElementById('op-checkin-id').value = data.id;
 
-                document.getElementById(`denomination-form${prefix}`).reset();
-                calculateTotals(context);
+                document.getElementById('denomination-form').reset();
+                calculateTotals();
                 operatorPanel.classList.remove('hidden');
             } else {
                 alert('Error: ' + result.error);
@@ -1551,16 +1486,11 @@ $conn->close();
         currentValue += amount;
         if (currentValue < 0) currentValue = 0;
         input.value = currentValue;
-
-        // Determinar el contexto (operador o digitador) para recalcular
-        const context = button.closest('#content-digitador') ? 'digitador' : 'operador';
-        calculateTotals(context);
+        calculateTotals();
     }
 
-    // MODIFICADO: Función genérica para calcular totales en ambos paneles
-    function calculateTotals(context = 'operador') {
-        const prefix = (context === 'digitador') ? '-digitador' : '';
-        const form = document.getElementById(`denomination-form${prefix}`);
+    function calculateTotals() {
+        const form = document.getElementById('denomination-form');
         if (!form) return;
 
         let totalCounted = 0;
@@ -1572,16 +1502,16 @@ $conn->close();
             totalCounted += subtotal;
         });
 
-        const coinsValue = parseFloat(document.getElementById(`coins-value${prefix}`).value) || 0;
-        document.getElementById(`coins-subtotal${prefix}`).textContent = formatCurrency(coinsValue);
+        const coinsValue = parseFloat(document.getElementById('coins-value').value) || 0;
+        document.getElementById('coins-subtotal').textContent = formatCurrency(coinsValue);
         totalCounted += coinsValue;
 
-        document.getElementById(`total-counted${prefix}`).textContent = formatCurrency(totalCounted);
+        document.getElementById('total-counted').textContent = formatCurrency(totalCounted);
         
-        const declaredValue = parseFloat(document.getElementById(`display-declared${prefix}`).dataset.value) || 0;
+        const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
         const discrepancy = totalCounted - declaredValue;
         
-        const discrepancyEl = document.getElementById(`discrepancy${prefix}`);
+        const discrepancyEl = document.getElementById('discrepancy');
         discrepancyEl.textContent = formatCurrency(discrepancy);
         if (discrepancy !== 0) {
             discrepancyEl.classList.add('text-red-500');
@@ -1825,7 +1755,96 @@ $conn->close();
     }
     <?php endif; ?>
 
-    // === SCRIPT PARA EL PANEL DEL DIGITADOR ===
+    // --- NUEVAS FUNCIONES PARA PANEL DIGITADOR (DE ARCHIVO 2) ---
+
+    function flagForReview(checkbox) {
+        const panel = document.getElementById('operator-panel-digitador');
+        // Desmarcar otros checkboxes
+        document.querySelectorAll('.review-checkbox').forEach(cb => {
+            if (cb !== checkbox) cb.checked = false;
+        });
+
+        if (checkbox.checked) {
+            const data = JSON.parse(checkbox.dataset.info);
+            const discrepancyClass = data.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            panel.innerHTML = `
+                <div class="flex justify-between items-start">
+                    <h3 class="text-xl font-semibold mb-4 text-blue-800">Planilla en Revisión: ${data.invoice_number}</h3>
+                    <button onclick="closeReviewPanel()" class="text-gray-500 hover:text-red-600 font-bold text-2xl">&times;</button>
+                </div>
+                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm border-t pt-4 mt-2">
+                    <p><strong>Cliente:</strong><br>${data.client_name}</p>
+                    <p><strong>Operador:</strong><br>${data.operator_name}</p>
+                    <p><strong>V. Declarado:</strong><br>${formatCurrency(data.declared_value)}</p>
+                    <p><strong>V. Contado:</strong><br>${formatCurrency(data.total_counted)}</p>
+                    <p><strong class="${discrepancyClass}">Discrepancia:</strong><br><span class="${discrepancyClass}">${formatCurrency(data.discrepancy)}</span></p>
+                    <p class="col-span-2 lg:col-span-3"><strong>Observaciones:</strong><br>${data.observations || 'Sin observaciones'}</p>
+                </div>
+            `;
+            panel.classList.remove('hidden');
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else {
+            panel.classList.add('hidden');
+        }
+    }
+
+    function closeReviewPanel() {
+        document.getElementById('operator-panel-digitador').classList.add('hidden');
+        document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false);
+    }
+
+    function populateOperatorHistoryForDigitador(history) {
+        const tbody = document.getElementById('operator-history-table-body-digitador');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!history || history.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos para supervisar.</td></tr>`;
+            return;
+        }
+        history.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
+            const row = `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td>
+                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                    <td class="p-3">${item.client_name}</td>
+                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
+                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
+                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                    <td class="p-3">${item.operator_name}</td>
+                    <td class="p-3 text-xs">${new Date(item.count_date).toLocaleString('es-CO')}</td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+
+    function populateDigitadorClosedHistory(history) {
+        const tbody = document.getElementById('digitador-closed-history-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!history || history.length === 0) {
+            const colspan = (currentUserRole === 'Admin') ? 4 : 3;
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`;
+            return;
+        }
+        history.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            const adminColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.digitador_name || 'N/A'}</td>` : '';
+            const row = `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                    <td class="p-3 text-xs">${new Date(item.closed_by_digitador_at).toLocaleString('es-CO')}</td>
+                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                    ${adminColumn}
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+
+    // === SCRIPT PARA EL PANEL DEL DIGITADOR (CIERRE E INFORMES) ===
     const btnLlegadas = document.getElementById('btn-llegadas');
     const btnCierre = document.getElementById('btn-cierre');
     const btnInformes = document.getElementById('btn-informes');
@@ -1983,7 +2002,6 @@ $conn->close();
             const result = await response.json();
             if (result.success) {
                 alert('Servicio cerrado exitosamente.');
-                // Recargar toda la página para que los cambios se reflejen en todas las vistas
                 location.reload(); 
             } else {
                 alert('Error: ' + (result.error || 'No se pudo cerrar el servicio.'));
@@ -2139,21 +2157,19 @@ $conn->close();
         }
         
         if (document.getElementById('content-operador')) {
-            populateOperatorCheckinsTable(initialCheckins, 'operador');
-            populateOperatorHistoryTable(operatorHistoryData, 'operador');
+            populateOperatorCheckinsTable(initialCheckins);
+            populateOperatorHistoryTable(operatorHistoryData);
             document.getElementById('consultation-form').addEventListener('submit', handleConsultation);
             document.getElementById('denomination-form').addEventListener('submit', handleDenominationSave);
         }
         
         if (document.getElementById('content-digitador')) {
-            // Cargar datos para el panel de supervisión
-            populateOperatorCheckinsTable(initialCheckins, 'digitador');
-            populateOperatorHistoryTable(operatorHistoryData, 'digitador');
-            document.getElementById('consultation-form-digitador').addEventListener('submit', (e) => handleConsultation(e, 'digitador'));
-            
             // Cargar datos para las herramientas propias del digitador
             loadLlegadas();
             populateDiscrepancyTraceability(discrepancyCases);
+            // Funcionalidad de supervisión y historial del digitador
+            populateOperatorHistoryForDigitador(operatorHistoryData);
+            populateDigitadorClosedHistory(digitadorClosedHistory);
         }
 
         updateReminderCount();
