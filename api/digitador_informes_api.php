@@ -18,7 +18,7 @@ $query = "
     JOIN operator_counts oc ON ci.id = oc.check_in_id
     JOIN clients c ON ci.client_id = c.id
     LEFT JOIN funds f ON ci.fund_id = f.id
-    WHERE ci.digitador_status = 'Cerrado'
+    WHERE ci.digitador_status IN ('Cerrado', 'Conforme')
     ORDER BY ci.closed_by_digitador_at DESC
 ";
 

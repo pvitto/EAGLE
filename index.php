@@ -16,7 +16,7 @@ if ($users_result) {
 }
 $admin_users_list = ($_SESSION['user_role'] === 'Admin') ? $all_users : [];
 
-// --- FILTRO POR USUARIO Y LÓGICA DE PRIORIDAD ---
+// --- LÓGICA DE ALERTAS Y TAREAS PENDIENTES ---
 $current_user_id = $_SESSION['user_id'];
 $current_user_role = $_SESSION['user_role'];
 $all_pending_items = [];
@@ -26,7 +26,7 @@ if ($current_user_role !== 'Admin') {
     $user_filter = " AND t.assigned_to_user_id = {$current_user_id}";
 }
 
-// 1. Cargar Alertas Pendientes (Agrupadas si son asignaciones a grupos)
+// 1. Cargar Alertas Pendientes
 $base_query_fields = "
     a.*, t.id as task_id, t.status as task_status, t.assigned_to_user_id, t.assigned_to_group,
     u_assigned.name as assigned_to_name, t.type as task_type, t.instruction as task_instruction,
@@ -38,9 +38,7 @@ $base_query_joins = "
     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
 ";
 $grouping = " GROUP BY a.id, IF(t.assigned_to_group IS NOT NULL, t.assigned_to_group, t.id)";
-
 $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
-
 if ($current_user_role === 'Digitador') {
     $alerts_sql = "
         SELECT {$base_query_fields} {$base_query_joins} 
@@ -49,7 +47,6 @@ if ($current_user_role === 'Digitador') {
         {$grouping}
     ";
 }
-
 $alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
@@ -78,7 +75,7 @@ if ($manual_tasks_result) {
     }
 }
 
-// 3. Procesar y ordenar items
+// 3. Procesar y ordenar items, calculando prioridad actual
 $main_priority_items = [];
 $main_non_priority_items = [];
 $panel_high_priority_items = [];
@@ -115,20 +112,51 @@ usort($main_non_priority_items, function($a, $b) use ($priority_order) { return 
 usort($panel_high_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 usort($panel_medium_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 
-// Resto de las consultas
+// --- OTRAS CONSULTAS DE DATOS ---
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
         "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' ORDER BY t.completed_at DESC"
     );
-    if ($completed_result) { while($row = $completed_result->fetch_assoc()){ $completed_tasks[] = $row; } }
+    if ($completed_result) {
+        while($row = $completed_result->fetch_assoc()){
+            // Lógica para agregar la Prioridad Final a las tareas completadas
+            $original_priority = $row['priority'];
+            $final_priority = $original_priority;
+            if (!empty($row['end_datetime'])) {
+                $end_time = new DateTime($row['end_datetime']);
+                $completed_time = new DateTime($row['completed_at']);
+                $diff_minutes = ($completed_time->getTimestamp() - $end_time->getTimestamp()) / 60;
+                if ($diff_minutes >= 0) { $final_priority = 'Alta'; }
+            }
+            $row['final_priority'] = $final_priority;
+            $completed_tasks[] = $row;
+        }
+    }
 }
-$recaudos = [];
-$recaudos_result = $conn->query("SELECT 1 as id, 'Tienda Ejemplo' as store_name, 197030000 as expected_amount, 'Completado' as status, 100 as bills_100k, 50 as bills_50k, 20 as bills_20k, 10 as bills_10k, 5 as bills_5k, 2 as bills_2k, 10000 as coins FROM DUAL");
-if ($recaudos_result) { while ($row = $recaudos_result->fetch_assoc()) { $recaudos[] = $row; } }
 $user_reminders = [];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
+
+// Cargar los recaudos del día basados en los conteos de los operadores
+$today_collections = [];
+$today_collections_result = $conn->query("
+    SELECT
+        oc.id, oc.total_counted, c.name as client_name, u.name as operator_name, ci.status,
+        oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins
+    FROM operator_counts oc
+    JOIN check_ins ci ON oc.check_in_id = ci.id
+    JOIN clients c ON ci.client_id = c.id
+    JOIN users u ON oc.operator_id = u.id
+    WHERE DATE(oc.created_at) = CURDATE()
+    ORDER BY oc.created_at DESC
+");
+if ($today_collections_result) {
+    while ($row = $today_collections_result->fetch_assoc()) {
+        $today_collections[] = $row;
+    }
+}
+
 $total_alerts_count_for_user = count($all_pending_items);
 $priority_summary_count = count($main_priority_items);
 $high_priority_badge_count = count($panel_high_priority_items);
@@ -140,21 +168,17 @@ $all_routes = [];
 $routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
 if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
-// Cargar Check-ins iniciales (SOLO los que NO han sido cerrados por el digitador)
 $initial_checkins = [];
 $checkins_result = $conn->query("SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, ci.created_at, c.name as client_name, r.name as route_name, u.name as checkinero_name, ci.status FROM check_ins ci JOIN clients c ON ci.client_id = c.id JOIN routes r ON ci.route_id = r.id JOIN users u ON ci.checkinero_id = u.id LEFT JOIN funds f ON ci.fund_id = f.id WHERE ci.digitador_status IS NULL ORDER BY ci.created_at DESC");
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
 
-// Cargar historial del operador
 $operator_history = [];
-// CORRECCIÓN: El digitador también debe poder ver el historial de todos
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
-    // El filtro solo se aplica si el rol es Operador. Para Admin y Digitador se muestra todo.
     $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . $_SESSION['user_id'] : "";
     
     $history_query = "
         SELECT 
-            op.id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
+            op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
             ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name
         FROM operator_counts op
         JOIN check_ins ci ON op.check_in_id = ci.id
@@ -171,55 +195,29 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     }
 }
 
-// Cargar casos de discrepancia para el panel del digitador
-$discrepancy_cases = [];
-if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])) {
-    $discrepancy_query = "
-        SELECT
-            MIN(t.id) AS task_id, a.id AS alert_id,
-            (SELECT status FROM tasks WHERE alert_id = a.id AND assigned_to_user_id = {$current_user_id} ORDER BY FIELD(status, 'Pendiente', 'Resuelta') LIMIT 1) AS task_status,
-            (SELECT resolution_note FROM tasks WHERE alert_id = a.id AND resolution_note IS NOT NULL LIMIT 1) AS resolution_note,
-            a.title AS alert_title, a.created_at AS alert_date,
-            ci.invoice_number, ci.declared_value, oc.total_counted, oc.discrepancy, oc.created_at AS count_date,
-            u_check.name AS checkinero_name, u_op.name AS operator_name
-        FROM alerts a
-        LEFT JOIN tasks t ON a.id = t.alert_id
-        JOIN check_ins ci ON a.check_in_id = ci.id
-        JOIN operator_counts oc ON oc.check_in_id = ci.id
-        JOIN users u_check ON ci.checkinero_id = u_check.id
-        JOIN users u_op ON oc.operator_id = u_op.id
-        WHERE a.suggested_role = 'Digitador'
-        GROUP BY a.id
-        ORDER BY a.created_at DESC
-    ";
-    $discrepancy_result = $conn->query($discrepancy_query);
-    if ($discrepancy_result) {
-        while($row = $discrepancy_result->fetch_assoc()) {
-            $discrepancy_cases[] = $row;
-        }
-    }
-}
-
-// NUEVA FUNCIONALIDAD: Cargar historial de planillas cerradas por el digitador.
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
-    $digitador_filter = ($current_user_role === 'Digitador') ? "WHERE ci.closed_by_digitador_id = " . $current_user_id : "WHERE ci.digitador_status = 'Cerrado'";
+    $digitador_filter = ($current_user_role === 'Digitador') 
+        ? "WHERE ci.closed_by_digitador_id = " . $current_user_id 
+        : "WHERE ci.digitador_status IS NOT NULL";
+        
     $closed_history_result = $conn->query("
         SELECT ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
                oc.total_counted, oc.discrepancy, u_op.name as operator_name,
-               ci.closed_by_digitador_at, u_digitador.name as digitador_name
+               ci.closed_by_digitador_at, u_digitador.name as digitador_name,
+               ci.digitador_status, ci.digitador_observations, f.name as fund_name
         FROM check_ins ci
         LEFT JOIN clients c ON ci.client_id = c.id
         LEFT JOIN users u_check ON ci.checkinero_id = u_check.id
         LEFT JOIN operator_counts oc ON oc.check_in_id = ci.id
         LEFT JOIN users u_op ON oc.operator_id = u_op.id
         LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id
+        LEFT JOIN funds f ON ci.fund_id = f.id
         {$digitador_filter}
         ORDER BY ci.closed_by_digitador_at DESC"
     );
     if($closed_history_result){ while($row = $closed_history_result->fetch_assoc()){ $digitador_closed_history[] = $row; } }
 }
-
 
 $conn->close();
 ?>
@@ -485,12 +483,48 @@ $conn->close();
                              <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
                              <div class="overflow-x-auto">
                                 <table class="w-full text-sm text-left">
-                                    <thead class="text-xs text-gray-500 uppercase bg-gray-50"><tr><th class="px-6 py-3">Tienda</th><th class="px-6 py-3">Monto</th><th class="px-6 py-3">Estado</th><th class="px-6 py-3"></th></tr></thead>
+                                    <thead class="text-xs text-gray-500 uppercase bg-gray-50">
+                                        <tr>
+                                            <th class="px-6 py-3">Cliente / Tienda</th>
+                                            <th class="px-6 py-3">Operador</th>
+                                            <th class="px-6 py-3">Monto Contado</th>
+                                            <th class="px-6 py-3">Estado</th>
+                                            <th class="px-6 py-3"></th>
+                                        </tr>
+                                    </thead>
                                     <tbody id="recaudos-tbody">
-                                        <?php foreach ($recaudos as $recaudo): ?>
-                                        <tr class="border-b"><td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['store_name']); ?></td><td class="px-6 py-4 font-mono">$<?php echo number_format($recaudo['expected_amount'], 0, ',', '.'); ?></td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full <?php echo $recaudo['status'] === 'Completado' ? 'bg-green-100 text-green-800' : ($recaudo['status'] === 'En Progreso' ? 'bg-yellow-100 text-yellow-800' : 'bg-gray-100 text-gray-800'); ?>"><?php echo $recaudo['status']; ?></span></td><td class="px-6 py-4 text-right"><?php if ($recaudo['status'] === 'Completado'): ?><button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button><?php endif; ?></td></tr>
-                                        <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>"><td colspan="4" class="p-0"><div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50"><div class="p-4 grid grid-cols-3 gap-x-8 gap-y-2 text-xs"><span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span><span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span><span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span><span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span><span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span><span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span><span class="col-span-3"><strong>Monedas:</strong> $<?php echo number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span></div></div></td></tr>
-                                        <?php endforeach; ?>
+                                        <?php if (empty($today_collections)): ?>
+                                            <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
+                                        <?php else: ?>
+                                            <?php foreach ($today_collections as $recaudo): ?>
+                                                <tr class="border-b">
+                                                    <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td>
+                                                    <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td>
+                                                    <td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td>
+                                                    <td class="px-6 py-4">
+                                                        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Completado</span>
+                                                    </td>
+                                                    <td class="px-6 py-4 text-right">
+                                                        <button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button>
+                                                    </td>
+                                                </tr>
+                                                <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>">
+                                                    <td colspan="5" class="p-0">
+                                                        <div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50">
+                                                            <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
+                                                                <span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span>
+                                                                <span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span>
+                                                                <span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span>
+                                                                <span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span>
+                                                                <span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span>
+                                                                <span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span>
+                                                                <span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span>
+                                                            </div>
+                                                        </div>
+                                                    </td>
+                                                </tr>
+                                            <?php endforeach; ?>
+                                        <?php endif; ?>
                                     </tbody>
                                 </table>
                             </div>
@@ -819,11 +853,11 @@ $conn->close();
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Supervisión de Operaciones</h2>
                 
                 <div id="operator-panel-digitador" class="hidden bg-blue-50 border border-blue-200 p-6 rounded-xl shadow-lg mb-8">
-                    </div>
+                </div>
 
                 <div class="bg-white p-6 rounded-xl shadow-lg">
                     <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados (Supervisión)</h3>
-                    <p class="text-sm text-gray-500 mb-4">Marca la casilla de una planilla para cargar sus detalles y revisarla.</p>
+                    <p class="text-sm text-gray-500 mb-4">Marca la casilla de una planilla para cargar sus detalles, revisarla y aprobarla o rechazarla.</p>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
@@ -912,21 +946,6 @@ $conn->close();
                     </div>
                 </div>
 
-                 <div class="mt-8 bg-white p-6 rounded-xl shadow-lg">
-                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Trazabilidad de Discrepancias</h3>
-                     <div class="overflow-x-auto">
-                        <table class="w-full text-sm">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="px-4 py-3">Planilla</th> <th class="px-4 py-3">Responsables</th> <th class="px-4 py-3">Valores</th>
-                                    <th class="px-4 py-3">Fechas</th> <th class="px-4 py-3 w-1/3">Resolución del Caso</th> <th class="px-4 py-3">Estado</th>
-                                </tr>
-                            </thead>
-                            <tbody id="discrepancy-traceability-body"></tbody>
-                        </table>
-                    </div>
-                </div>
-
                 <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
                     <h3 class="text-xl font-semibold mb-4">Historial de Planillas Cerradas</h3>
                     <div class="overflow-auto max-h-[700px]">
@@ -934,8 +953,12 @@ $conn->close();
                             <thead class="bg-gray-50 sticky top-0">
                                 <tr>
                                     <th class="p-3">Planilla</th>
+                                    <th class="p-3">Fondo</th>
                                     <th class="p-3">Cierre</th>
+                                    <th class="p-3">Total Recaudado</th>
                                     <th class="p-3">Discrepancia</th>
+                                    <th class="p-3">Estado Final</th>
+                                    <th class="p-3">Observaciones</th>
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Cerrada por</th><?php endif; ?>
                                 </tr>
                             </thead>
@@ -1033,9 +1056,7 @@ $conn->close();
     const apiUrlBase = 'api';
     const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
     const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
-    const discrepancyCases = <?php echo json_encode($discrepancy_cases); ?>;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
-
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -1102,32 +1123,15 @@ $conn->close();
     async function submitAssignment(alertId, taskId, formIdPrefix) {
         const selectedValue = document.getElementById(`assign-user-${formIdPrefix}`).value;
         const instruction = document.getElementById(`task-instruction-${formIdPrefix}`).value;
-
-        let payload = {
-            instruction: instruction,
-            type: 'Asignacion',
-            task_id: taskId,
-            alert_id: alertId
-        };
-
-        if (selectedValue.startsWith('group-')) {
-            payload.assign_to_group = selectedValue.replace('group-', '');
-        } else {
-            payload.assign_to = selectedValue;
-        }
-
+        let payload = { instruction: instruction, type: 'Asignacion', task_id: taskId, alert_id: alertId };
+        if (selectedValue.startsWith('group-')) { payload.assign_to_group = selectedValue.replace('group-', ''); }
+        else { payload.assign_to = selectedValue; }
         await sendTaskRequest(payload);
     }
 
     async function setReminder(alertId, taskId, formIdPrefix) {
         const userId = document.getElementById(`reminder-user-${formIdPrefix}`).value;
-        await sendTaskRequest({
-            assign_to: userId,
-            instruction: 'Recordatorio para revisar',
-            type: 'Recordatorio',
-            task_id: taskId,
-            alert_id: alertId
-        });
+        await sendTaskRequest({ assign_to: userId, type: 'Recordatorio', task_id: taskId, alert_id: alertId });
     }
 
     async function sendTaskRequest(payload) {
@@ -1146,10 +1150,7 @@ $conn->close();
             } else {
                 alert('Error desde la API: ' + result.error);
             }
-        } catch (error) {
-            console.error('Error en sendTaskRequest:', error);
-            alert('Error de conexión. Revisa la consola (F12) para más detalles.');
-        }
+        } catch (error) { console.error('Error en sendTaskRequest:', error); alert('Error de conexión.'); }
     }
 
     document.getElementById('manual-task-form').addEventListener('submit', async function(e) {
@@ -1162,25 +1163,11 @@ $conn->close();
         const end_datetime = document.getElementById('manual-task-end').value;
 
         if (!selectedValue) { alert('Selecciona un usuario o grupo.'); return; }
-        if (start_datetime && end_datetime && start_datetime >= end_datetime) {
-            alert('La fecha de fin debe ser posterior a la fecha de inicio.');
-            return;
-        }
+        if (start_datetime && end_datetime && start_datetime >= end_datetime) { alert('La fecha de fin debe ser posterior a la fecha de inicio.'); return; }
 
-        let payload = {
-            title: title,
-            instruction: instruction,
-            type: 'Manual',
-            priority: priority,
-            start_datetime: start_datetime || null,
-            end_datetime: end_datetime || null
-        };
-
-        if (selectedValue.startsWith('group-')) {
-            payload.assign_to_group = selectedValue.replace('group-', '');
-        } else {
-            payload.assign_to = selectedValue;
-        }
+        let payload = { title, instruction, type: 'Manual', priority, start_datetime: start_datetime || null, end_datetime: end_datetime || null };
+        if (selectedValue.startsWith('group-')) { payload.assign_to_group = selectedValue.replace('group-', ''); }
+        else { payload.assign_to = selectedValue; }
 
         try {
             const response = await fetch(`${apiUrlBase}/alerts_api.php`, {
@@ -1188,19 +1175,14 @@ $conn->close();
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-
             if (!response.ok) { throw new Error(`Error HTTP ${response.status}`); }
             const result = await response.json();
             if (result.success) { alert('Tarea(s) creada(s).'); location.reload(); }
             else { alert('Error desde la API: ' + result.error); }
-        } catch (error) {
-            console.error('Error creando tarea manual:', error);
-            alert('Error de conexión. Revisa la consola (F12) para más detalles.');
-        }
+        } catch (error) { console.error('Error creando tarea manual:', error); alert('Error de conexión.'); }
     });
 
     const modalOverlay = document.getElementById('user-modal-overlay');
-    const modal = document.getElementById('user-modal');
     const modalTitle = document.getElementById('modal-title');
     const userForm = document.getElementById('user-form');
     const userIdInput = document.getElementById('user-id');
@@ -1226,15 +1208,12 @@ $conn->close();
         modalOverlay.classList.remove('hidden');
     }
 
-    function closeModal() {
-        modalOverlay.classList.add('hidden');
-    }
+    function closeModal() { modalOverlay.classList.add('hidden'); }
 
     userForm.addEventListener('submit', async function(event) {
         event.preventDefault();
-        const formData = new FormData(userForm);
         try {
-            const response = await fetch(`${apiUrlBase}/users_api.php`, { method: 'POST', body: formData });
+            const response = await fetch(`${apiUrlBase}/users_api.php`, { method: 'POST', body: new FormData(userForm) });
             const result = await response.json();
             if (result.success) { closeModal(); location.reload(); }
             else { alert('Error: ' + result.error); }
@@ -1255,10 +1234,7 @@ $conn->close();
         const tbody = document.getElementById('user-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!users || users.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="4" class="p-6 text-center">No hay usuarios.</td></tr>';
-            return;
-        }
+        if (!users || users.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="p-6 text-center">No hay usuarios.</td></tr>'; return; }
         users.forEach(user => {
             const userJson = JSON.stringify({id: user.id, name: user.name, email: user.email, role: user.role}).replace(/'/g, "&apos;");
             tbody.innerHTML += `<tr id="user-row-${user.id}"><td class="px-6 py-4">${user.name}</td><td class="px-6 py-4">${user.email}</td><td class="px-6 py-4"><span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">${user.role}</span></td><td class="px-6 py-4 text-center"><button onclick='openModal(${userJson})' class="font-medium text-blue-600">Editar</button><button onclick="deleteUser(${user.id})" class="font-medium text-red-600 ml-4">Eliminar</button></td></tr>`;
@@ -1268,51 +1244,12 @@ $conn->close();
     function switchTab(tabName) {
         const contentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'roles', 'trazabilidad'];
         document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-        
         contentPanels.forEach(panel => {
             const content = document.getElementById(`content-${panel}`);
-            if (content) {
-                content.classList.toggle('hidden', panel !== tabName);
-            }
+            if (content) content.classList.toggle('hidden', panel !== tabName);
         });
-        
         const activeTab = document.getElementById(`tab-${tabName}`);
         if(activeTab) activeTab.classList.add('active');
-    }
-
-    function updateCountdownTimers() {
-        document.querySelectorAll('.countdown-timer').forEach(timerEl => {
-            const endTime = new Date(timerEl.dataset.endTime).getTime();
-            if (isNaN(endTime)) return;
-            const now = new Date().getTime();
-            const distance = endTime - now;
-
-            if (distance < 0) {
-                const elapsed = now - endTime;
-                const days = Math.floor(elapsed / (1000 * 60 * 60 * 24));
-                const hours = Math.floor((elapsed % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                const minutes = Math.floor((elapsed % (1000 * 60 * 60)) / (1000 * 60));
-                const seconds = Math.floor((elapsed % (1000 * 60)) / 1000);
-                let elapsedTime = '';
-                if (days > 0) elapsedTime += `${days}d `;
-                if (hours > 0 || days > 0) elapsedTime += `${hours}h `;
-                elapsedTime += `${minutes}m ${seconds}s`;
-                timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`;
-            } else {
-                const days = Math.floor(distance / (1000 * 60 * 60 * 24));
-                const hours = Math.floor((distance % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
-                const minutes = Math.floor((distance % (1000 * 60 * 60)) / (1000 * 60));
-                const seconds = Math.floor((distance % (1000 * 60)) / 1000);
-                let timeLeft = '';
-                if (days > 0) timeLeft += `${days}d `;
-                if (hours > 0 || days > 0) timeLeft += `${hours}h `;
-                timeLeft += `${minutes}m ${seconds}s`;
-                let textColor = 'text-green-600';
-                if (days === 0 && hours < 1) { textColor = 'text-red-600'; }
-                else if (days === 0 && hours < 24) { textColor = 'text-yellow-700'; }
-                timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
-            }
-        });
     }
 
     function formatCurrency(value) {
@@ -1324,24 +1261,9 @@ $conn->close();
         const tbody = document.getElementById('checkins-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!checkins || checkins.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>';
-            return;
-        }
+        if (!checkins || checkins.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>'; return; }
         checkins.forEach(ci => {
-            const row = `
-                <tr class="border-b">
-                    <td class="p-3 font-mono">${ci.invoice_number}</td>
-                    <td class="p-3 font-mono">${ci.seal_number}</td>
-                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
-                    <td class="p-3">${ci.route_name}</td>
-                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                    <td class="p-3">${ci.checkinero_name}</td>
-                    <td class="p-3">${ci.client_name}</td>
-                    <td class="p-3">${ci.fund_name || 'N/A'}</td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
+            tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${ci.invoice_number}</td><td class="p-3 font-mono">${ci.seal_number}</td><td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td><td class="p-3">${ci.route_name}</td><td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td><td class="p-3">${ci.checkinero_name}</td><td class="p-3">${ci.client_name}</td><td class="p-3">${ci.fund_name || 'N/A'}</td></tr>`;
         });
     }
     
@@ -1349,30 +1271,10 @@ $conn->close();
         const tbody = document.getElementById('operator-checkins-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        
         const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
-
-        if (pendingCheckins.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
-            return;
-        }
-        
+        if (pendingCheckins.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>'; return; }
         pendingCheckins.forEach(ci => {
-            const row = `
-                <tr class="border-b">
-                    <td class="p-3 font-mono">${ci.invoice_number}</td>
-                    <td class="p-3 font-mono">${ci.seal_number}</td>
-                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
-                    <td class="p-3">${ci.client_name}</td>
-                    <td class="p-3">${ci.checkinero_name}</td>
-                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                    <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
-                    <td class="p-3">
-                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
-                    </td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
+            tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${ci.invoice_number}</td><td class="p-3 font-mono">${ci.seal_number}</td><td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td><td class="p-3">${ci.client_name}</td><td class="p-3">${ci.checkinero_name}</td><td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td><td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td><td class="p-3"><button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button></td></tr>`;
         });
     }
     
@@ -1380,29 +1282,11 @@ $conn->close();
         const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-
-        if (!historyData || historyData.length === 0) {
-            const colspan = (currentUserRole === 'Admin') ? 8 : 7;
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`;
-            return;
-        }
-
+        if (!historyData || historyData.length === 0) { const colspan = (currentUserRole === 'Admin') ? 8 : 7; tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return; }
         historyData.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
             const operatorColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.operator_name}</td>` : '';
-            const row = `
-                <tr class="border-b">
-                    <td class="p-3 font-mono">${item.invoice_number}</td>
-                    <td class="p-3">${item.client_name}</td>
-                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
-                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
-                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                    ${operatorColumn}
-                    <td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td>
-                    <td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
+            tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.client_name}</td><td class="p-3 text-right">${formatCurrency(item.declared_value)}</td><td class="p-3 text-right">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>${operatorColumn}<td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td><td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td></tr>`;
         });
     }
     
@@ -1414,50 +1298,23 @@ $conn->close();
 
     async function handleCheckinSubmit(event) {
         event.preventDefault();
-        const payload = {
-            invoice_number: document.getElementById('invoice_number').value,
-            seal_number: document.getElementById('seal_number').value,
-            client_id: document.getElementById('client_id').value,
-            route_id: document.getElementById('route_id').value,
-            fund_id: document.getElementById('fund_id').value,
-            declared_value: document.getElementById('declared_value').value,
-        };
-
+        const payload = { invoice_number: document.getElementById('invoice_number').value, seal_number: document.getElementById('seal_number').value, client_id: document.getElementById('client_id').value, route_id: document.getElementById('route_id').value, fund_id: document.getElementById('fund_id').value, declared_value: document.getElementById('declared_value').value };
         try {
-            const response = await fetch('api/checkin_api.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            const response = await fetch('api/checkin_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
-            if (result.success) {
-                alert('Check-in registrado con éxito.');
-                location.reload(); 
-            } else {
-                alert('Error: ' + result.error);
-            }
-        } catch (error) {
-            console.error('Error en el check-in:', error);
-            alert('Error de conexión al registrar.');
-        }
+            if (result.success) { alert('Check-in registrado con éxito.'); location.reload(); }
+            else { alert('Error: ' + result.error); }
+        } catch (error) { console.error('Error en el check-in:', error); alert('Error de conexión al registrar.'); }
     }
 
     async function handleConsultation(event) {
         event.preventDefault();
-        
         const invoiceInput = document.getElementById('consult-invoice');
         const operatorPanel = document.getElementById('operator-panel');
-        const planilla = invoiceInput.value;
-
-        if (!planilla) {
-            alert('Por favor, ingrese un número de planilla.');
-            return;
-        }
-
+        if (!invoiceInput.value) { alert('Por favor, ingrese un número de planilla.'); return; }
         try {
-            const response = await fetch(`api/operator_api.php?planilla=${planilla}`);
+            const response = await fetch(`api/operator_api.php?planilla=${invoiceInput.value}`);
             const result = await response.json();
-
             if (result.success) {
                 const data = result.data;
                 document.getElementById('display-invoice').textContent = data.invoice_number;
@@ -1466,18 +1323,11 @@ $conn->close();
                 document.getElementById('display-declared').textContent = formatCurrency(data.declared_value);
                 document.getElementById('display-declared').dataset.value = data.declared_value;
                 document.getElementById('op-checkin-id').value = data.id;
-
                 document.getElementById('denomination-form').reset();
                 calculateTotals();
                 operatorPanel.classList.remove('hidden');
-            } else {
-                alert('Error: ' + result.error);
-                operatorPanel.classList.add('hidden');
-            }
-        } catch (error) {
-            console.error('Error en la consulta:', error);
-            alert('Error de conexión al consultar la planilla.');
-        }
+            } else { alert('Error: ' + result.error); operatorPanel.classList.add('hidden'); }
+        } catch (error) { console.error('Error en la consulta:', error); alert('Error de conexión.'); }
     }
 
     function updateQty(button, amount) {
@@ -1492,331 +1342,115 @@ $conn->close();
     function calculateTotals() {
         const form = document.getElementById('denomination-form');
         if (!form) return;
-
         let totalCounted = 0;
         form.querySelectorAll('.denomination-row').forEach(row => {
-            const value = parseFloat(row.dataset.value);
-            const qty = parseInt(row.querySelector('.denomination-qty').value) || 0;
-            const subtotal = value * qty;
-            row.querySelector('.subtotal').textContent = formatCurrency(subtotal);
-            totalCounted += subtotal;
+            totalCounted += (parseInt(row.querySelector('.denomination-qty').value) || 0) * parseFloat(row.dataset.value);
+            row.querySelector('.subtotal').textContent = formatCurrency((parseInt(row.querySelector('.denomination-qty').value) || 0) * parseFloat(row.dataset.value));
         });
-
         const coinsValue = parseFloat(document.getElementById('coins-value').value) || 0;
         document.getElementById('coins-subtotal').textContent = formatCurrency(coinsValue);
         totalCounted += coinsValue;
-
         document.getElementById('total-counted').textContent = formatCurrency(totalCounted);
-        
         const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
         const discrepancy = totalCounted - declaredValue;
-        
         const discrepancyEl = document.getElementById('discrepancy');
         discrepancyEl.textContent = formatCurrency(discrepancy);
-        if (discrepancy !== 0) {
-            discrepancyEl.classList.add('text-red-500');
-            discrepancyEl.classList.remove('text-green-500');
-        } else {
-            discrepancyEl.classList.remove('text-red-500');
-            discrepancyEl.classList.add('text-green-500');
-        }
+        discrepancyEl.classList.toggle('text-red-500', discrepancy !== 0);
+        discrepancyEl.classList.toggle('text-green-500', discrepancy === 0);
     }
 
     async function handleDenominationSave(event) {
         event.preventDefault();
         const payload = {
             check_in_id: document.getElementById('op-checkin-id').value,
-            bills_100k: document.querySelector('#denomination-form [data-value="100000"] .denomination-qty').value,
-            bills_50k: document.querySelector('#denomination-form [data-value="50000"] .denomination-qty').value,
-            bills_20k: document.querySelector('#denomination-form [data-value="20000"] .denomination-qty').value,
-            bills_10k: document.querySelector('#denomination-form [data-value="10000"] .denomination-qty').value,
-            bills_5k: document.querySelector('#denomination-form [data-value="5000"] .denomination-qty').value,
-            bills_2k: document.querySelector('#denomination-form [data-value="2000"] .denomination-qty').value,
+            bills_100k: document.querySelector('#denomination-form [data-value="100000"] .denomination-qty').value, bills_50k: document.querySelector('#denomination-form [data-value="50000"] .denomination-qty').value,
+            bills_20k: document.querySelector('#denomination-form [data-value="20000"] .denomination-qty').value, bills_10k: document.querySelector('#denomination-form [data-value="10000"] .denomination-qty').value,
+            bills_5k: document.querySelector('#denomination-form [data-value="5000"] .denomination-qty').value, bills_2k: document.querySelector('#denomination-form [data-value="2000"] .denomination-qty').value,
             coins: parseFloat(document.getElementById('coins-value').value) || 0,
-            total_counted: 0,
-            discrepancy: 0,
-            observations: document.getElementById('observations').value
+            total_counted: 0, discrepancy: 0, observations: document.getElementById('observations').value
         };
-
-        let total = 0;
-        total += payload.bills_100k * 100000;
-        total += payload.bills_50k * 50000;
-        total += payload.bills_20k * 20000;
-        total += payload.bills_10k * 10000;
-        total += payload.bills_5k * 5000;
-        total += payload.bills_2k * 2000;
-        total += payload.coins;
+        let total = (payload.bills_100k * 100000) + (payload.bills_50k * 50000) + (payload.bills_20k * 20000) + (payload.bills_10k * 10000) + (payload.bills_5k * 5000) + (payload.bills_2k * 2000) + payload.coins;
         payload.total_counted = total;
-        
-        const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
-        payload.discrepancy = total - declaredValue;
+        payload.discrepancy = total - (parseFloat(document.getElementById('display-declared').dataset.value) || 0);
 
         try {
-            const response = await fetch('api/operator_api.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            const response = await fetch('api/operator_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
-            if (result.success) {
-                alert(result.message);
-                location.reload(); 
-            } else {
-                alert('Error al guardar: ' + result.error);
-            }
-        } catch (error) {
-            console.error('Error al guardar conteo:', error);
-            alert('Error de conexión al guardar el conteo.');
-        }
-    }
-
-    function populateDiscrepancyTraceability(cases) {
-        const tbody = document.getElementById('discrepancy-traceability-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-
-        if (!cases || cases.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="6" class="p-6 text-center text-gray-500">No hay casos de discrepancia asignados.</td></tr>`;
-            return;
-        }
-
-        cases.forEach(item => {
-            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            
-            let resolutionHTML = '';
-            if (item.task_status === 'Resuelta') {
-                resolutionHTML = `<div class="text-xs p-2 bg-gray-100 rounded-md border">${item.resolution_note || 'N/A'}</div>`;
-            } else {
-                resolutionHTML = `
-                    <textarea id="resolution-note-${item.task_id}" class="w-full text-xs p-2 border rounded-md" rows="3" placeholder="Documente aquí la causa y la solución del caso..."></textarea>
-                    <button onclick="resolveDiscrepancy(${item.task_id})" class="mt-2 w-full bg-green-600 text-white text-xs font-bold py-2 rounded-md hover:bg-green-700">Guardar y Resolver Caso</button>
-                `;
-            }
-
-            const statusHTML = item.task_status === 'Resuelta' 
-                ? `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Resuelta</span>`
-                : `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
-
-            const row = `
-                <tr class="border-b align-top">
-                    <td class="px-4 py-4 font-mono">${item.invoice_number}</td>
-                    <td class="px-4 py-4 text-xs">
-                        <p><strong>Check-in:</strong> ${item.checkinero_name || 'N/A'}</p>
-                        <p><strong>Conteo:</strong> ${item.operator_name || 'N/A'}</p>
-                    </td>
-                    <td class="px-4 py-4 text-xs">
-                        <p><strong>Declarado:</strong> ${formatCurrency(item.declared_value)}</p>
-                        <p><strong>Contado:</strong> ${formatCurrency(item.total_counted)}</p>
-                        <p class="${discrepancyClass}"><strong>Diferencia:</strong> ${formatCurrency(item.discrepancy)}</p>
-                    </td>
-                    <td class="px-4 py-4 text-xs">
-                        <p><strong>Alerta:</strong> ${new Date(item.alert_date).toLocaleString('es-CO')}</p>
-                        <p><strong>Conteo:</strong> ${new Date(item.count_date).toLocaleString('es-CO')}</p>
-                    </td>
-                    <td class="px-4 py-4">${resolutionHTML}</td>
-                    <td class="px-4 py-4">${statusHTML}</td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
-        });
-    }
-    
-    async function resolveDiscrepancy(taskId) {
-        const noteTextarea = document.getElementById(`resolution-note-${taskId}`);
-        const resolutionNote = noteTextarea.value;
-
-        if (!resolutionNote.trim()) {
-            alert('Por favor, escriba la nota de resolución antes de guardar.');
-            return;
-        }
-
-        if (!confirm('¿Está seguro de que desea cerrar este caso? Esta acción no se puede deshacer.')) {
-            return;
-        }
-
-        const payload = {
-            task_id: taskId,
-            resolution_note: resolutionNote
-        };
-
-        try {
-            const response = await fetch(`${apiUrlBase}/discrepancy_api.php`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            const result = await response.json();
-
-            if (!response.ok) throw new Error(result.error || 'Error del servidor');
-
-            alert(result.message);
-            location.reload();
-        } catch (error) {
-            console.error('Error resolviendo el caso:', error);
-            alert('Error: ' + error.message);
-        }
+            if (result.success) { alert(result.message); location.reload(); }
+            else { alert('Error al guardar: ' + result.error); }
+        } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
     }
 
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
-
     function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
         tbody.innerHTML = '';
-        if (!tasks || tasks.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="9" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>';
-            return;
-        }
+        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="9" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
         tasks.forEach(task => {
-            const row = `
-                <tr class="border-b">
-                    <td class="px-6 py-4 font-medium">${task.title || ''}</td>
-                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td>
-                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td>
-                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td>
-                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td>
-                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td>
-                    <td class="px-6 py-4 font-mono">${task.response_time || ''}</td>
-                    <td class="px-6 py-4">${task.assigned_to || ''}</td>
-                    <td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
+            tbody.innerHTML += `<tr class="border-b"><td class="px-6 py-4 font-medium">${task.title || ''}</td><td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td><td class="px-6 py-4 font-mono">${task.response_time || ''}</td><td class="px-6 py-4">${task.assigned_to || ''}</td><td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td></tr>`;
         });
     }
-
-    function getPriorityClass(priority) {
-        if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800';
-        if (priority === 'Media') return 'bg-yellow-100 text-yellow-800';
-        return 'bg-gray-100 text-gray-800';
-    }
-
-    function formatDate(dateString) {
-        if (!dateString) return '';
-        const date = new Date(dateString);
-        return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
-    }
-
+    function getPriorityClass(priority) { if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800'; if (priority === 'Media') return 'bg-yellow-100 text-yellow-800'; return 'bg-gray-100 text-gray-800'; }
+    function formatDate(dateString) { if (!dateString) return ''; const date = new Date(dateString); return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true }); }
     function applyTrazabilidadFilters() {
-        const startDate = document.getElementById('filter-start-date').value;
-        const endDate = document.getElementById('filter-end-date').value;
-        const user = document.getElementById('filter-user').value;
-        const checker = document.getElementById('filter-checker').value;
-        const priority = document.getElementById('filter-priority').value;
-
+        const startDate = document.getElementById('filter-start-date').value, endDate = document.getElementById('filter-end-date').value, user = document.getElementById('filter-user').value, checker = document.getElementById('filter-checker').value, priority = document.getElementById('filter-priority').value;
         let filteredTasks = completedTasksData.filter(task => {
-            let isValid = true;
-            const taskStartDate = task.created_at.split(' ')[0];
-
-            if (startDate && taskStartDate < startDate) isValid = false;
-            if (endDate && taskStartDate > endDate) isValid = false;
-            if (user && task.assigned_to !== user) isValid = false;
-            if (checker && task.completed_by !== checker) isValid = false;
-            if (priority && task.final_priority !== priority) isValid = false;
-
+            let isValid = true; const taskStartDate = task.created_at.split(' ')[0];
+            if (startDate && taskStartDate < startDate) isValid = false; if (endDate && taskStartDate > endDate) isValid = false; if (user && task.assigned_to !== user) isValid = false; if (checker && task.completed_by !== checker) isValid = false; if (priority && task.final_priority !== priority) isValid = false;
             return isValid;
         });
         populateTrazabilidadTable(filteredTasks);
     }
-
     function sortTableByDate(column) {
-        const header = document.querySelector(`th[data-column-name="${column}"]`);
-        if (!header) return;
-
-        const currentDirection = header.dataset.sortDir || 'none';
-        const nextDirection = (currentDirection === 'desc') ? 'asc' : 'desc';
-
-        completedTasksData.sort((a, b) => {
-            const dateA = new Date(a[column]).getTime();
-            const dateB = new Date(b[column]).getTime();
-            if (isNaN(dateA)) return 1;
-            if (isNaN(dateB)) return -1;
-            return nextDirection === 'asc' ? dateA - dateB : dateB - a[column];
-        });
-
-        document.querySelectorAll('th.sortable').forEach(th => {
-            const iconSpan = th.querySelector('span');
-            if (th === header) {
-                th.dataset.sortDir = nextDirection;
-                iconSpan.textContent = nextDirection === 'asc' ? ' ▲' : ' ▼';
-            } else {
-                delete th.dataset.sortDir;
-                iconSpan.textContent = '';
-            }
-        });
-
+        const header = document.querySelector(`th[data-column-name="${column}"]`), currentDirection = header.dataset.sortDir || 'none', nextDirection = (currentDirection === 'desc') ? 'asc' : 'desc';
+        completedTasksData.sort((a, b) => { const dateA = new Date(a[column]).getTime(), dateB = new Date(b[column]).getTime(); if (isNaN(dateA)) return 1; if (isNaN(dateB)) return -1; return nextDirection === 'asc' ? dateA - dateB : dateB - dateA; });
+        document.querySelectorAll('th.sortable').forEach(th => { const iconSpan = th.querySelector('span'); if (th === header) { th.dataset.sortDir = nextDirection; iconSpan.textContent = nextDirection === 'asc' ? ' ▲' : ' ▼'; } else { delete th.dataset.sortDir; iconSpan.textContent = ''; } });
         applyTrazabilidadFilters();
     }
-
-    function exportToExcel() {
-        const table = document.getElementById("trazabilidad-table");
-        const wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" });
-        XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx");
-    }
+    function exportToExcel() { const table = document.getElementById("trazabilidad-table"), wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" }); XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx"); }
     <?php endif; ?>
-
-    // --- NUEVAS FUNCIONES PARA PANEL DIGITADOR (DE ARCHIVO 2) ---
 
     function flagForReview(checkbox) {
         const panel = document.getElementById('operator-panel-digitador');
-        // Desmarcar otros checkboxes
-        document.querySelectorAll('.review-checkbox').forEach(cb => {
-            if (cb !== checkbox) cb.checked = false;
-        });
-
+        document.querySelectorAll('.review-checkbox').forEach(cb => { if (cb !== checkbox) cb.checked = false; });
         if (checkbox.checked) {
             const data = JSON.parse(checkbox.dataset.info);
             const discrepancyClass = data.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            panel.innerHTML = `
-                <div class="flex justify-between items-start">
-                    <h3 class="text-xl font-semibold mb-4 text-blue-800">Planilla en Revisión: ${data.invoice_number}</h3>
-                    <button onclick="closeReviewPanel()" class="text-gray-500 hover:text-red-600 font-bold text-2xl">&times;</button>
-                </div>
-                <div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm border-t pt-4 mt-2">
-                    <p><strong>Cliente:</strong><br>${data.client_name}</p>
-                    <p><strong>Operador:</strong><br>${data.operator_name}</p>
-                    <p><strong>V. Declarado:</strong><br>${formatCurrency(data.declared_value)}</p>
-                    <p><strong>V. Contado:</strong><br>${formatCurrency(data.total_counted)}</p>
-                    <p><strong class="${discrepancyClass}">Discrepancia:</strong><br><span class="${discrepancyClass}">${formatCurrency(data.discrepancy)}</span></p>
-                    <p class="col-span-2 lg:col-span-3"><strong>Observaciones:</strong><br>${data.observations || 'Sin observaciones'}</p>
-                </div>
-            `;
+            panel.innerHTML = `<div class="flex justify-between items-start"><h3 class="text-xl font-semibold mb-4 text-blue-800">Planilla en Revisión: ${data.invoice_number}</h3><button onclick="closeReviewPanel()" class="text-gray-500 hover:text-red-600 font-bold text-2xl">&times;</button></div><div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm border-t pt-4 mt-2"><p><strong>Cliente:</strong><br>${data.client_name}</p><p><strong>Operador:</strong><br>${data.operator_name}</p><p><strong>V. Declarado:</strong><br>${formatCurrency(data.declared_value)}</p><p><strong>V. Contado:</strong><br>${formatCurrency(data.total_counted)}</p><p><strong class="${discrepancyClass}">Discrepancia:</strong><br><span class="${discrepancyClass}">${formatCurrency(data.discrepancy)}</span></p><p class="col-span-2 lg:col-span-3"><strong>Obs. del Operador:</strong><br>${data.observations || 'Sin observaciones'}</p></div><div class="mt-6 border-t pt-4"><h4 class="text-md font-semibold mb-2">Decisión de Cierre</h4><div><label for="digitador-observations" class="block text-sm font-medium text-gray-700">Observaciones Finales (Requerido)</label><textarea id="digitador-observations" rows="3" class="mt-1 w-full border rounded-md p-2 shadow-sm" placeholder="Escriba aquí el motivo de la aprobación o rechazo..."></textarea></div><div class="mt-4 flex space-x-4"><button onclick="submitDigitadorReview(${data.check_in_id}, 'Rechazado')" class="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Rechazar Conteo</button><button onclick="submitDigitadorReview(${data.check_in_id}, 'Conforme')" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-md hover:bg-green-700">Aprobar (Conforme)</button></div></div>`;
             panel.classList.remove('hidden');
             panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        } else {
-            panel.classList.add('hidden');
-        }
+        } else { panel.classList.add('hidden'); }
     }
 
-    function closeReviewPanel() {
-        document.getElementById('operator-panel-digitador').classList.add('hidden');
-        document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false);
+    async function submitDigitadorReview(checkInId, status) {
+        const observations = document.getElementById('digitador-observations').value;
+        if (!observations.trim()) { alert('Las observaciones finales son requeridas para aceptar o rechazar.'); return; }
+        const confirmationText = status === 'Conforme' ? '¿Está seguro de que desea APROBAR este conteo?' : '¿Está seguro de que desea RECHAZAR este conteo? La planilla volverá al operador.';
+        if (!confirm(confirmationText)) return;
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_review_api.php`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ check_in_id: checkInId, status: status, observations: observations })
+            });
+            const result = await response.json();
+            if (result.success) { alert(result.message); location.reload(); }
+            else { alert('Error: ' + result.error); }
+        } catch (error) { console.error('Error al enviar la revisión:', error); alert('Error de conexión.'); }
     }
+
+    function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
+        const pendingReview = history.filter(item => { const checkin = initialCheckins.find(ci => ci.id == item.check_in_id); return checkin && checkin.status !== 'Pendiente'; });
         const tbody = document.getElementById('operator-history-table-body-digitador');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!history || history.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos para supervisar.</td></tr>`;
-            return;
-        }
-        history.forEach(item => {
+        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`; return; }
+        pendingReview.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
             const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
-            const row = `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td>
-                    <td class="p-3 font-mono">${item.invoice_number}</td>
-                    <td class="p-3">${item.client_name}</td>
-                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
-                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
-                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                    <td class="p-3">${item.operator_name}</td>
-                    <td class="p-3 text-xs">${new Date(item.count_date).toLocaleString('es-CO')}</td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
+            tbody.innerHTML += `<tr class="border-b hover:bg-gray-50"><td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.client_name}</td><td class="p-3 text-right">${formatCurrency(item.declared_value)}</td><td class="p-3 text-right">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td><td class="p-3">${item.operator_name}</td><td class="p-3 text-xs">${new Date(item.count_date).toLocaleString('es-CO')}</td></tr>`;
         });
     }
 
@@ -1824,335 +1458,121 @@ $conn->close();
         const tbody = document.getElementById('digitador-closed-history-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!history || history.length === 0) {
-            const colspan = (currentUserRole === 'Admin') ? 4 : 3;
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`;
-            return;
-        }
+        if (!history || history.length === 0) { const colspan = (currentUserRole === 'Admin') ? 7 : 6; tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`; return; }
         history.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
             const adminColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.digitador_name || 'N/A'}</td>` : '';
-            const row = `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="p-3 font-mono">${item.invoice_number}</td>
-                    <td class="p-3 text-xs">${new Date(item.closed_by_digitador_at).toLocaleString('es-CO')}</td>
-                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                    ${adminColumn}
-                </tr>
-            `;
-            tbody.innerHTML += row;
+            let statusBadge = '';
+            if (item.digitador_status === 'Conforme') { statusBadge = `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Conforme</span>`; }
+            else if (item.digitador_status === 'Rechazado') { statusBadge = `<span class="bg-red-100 text-red-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; }
+            else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
+            tbody.innerHTML += `<tr class="border-b hover:bg-gray-50"><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.fund_name || 'N/A'}</td><td class="p-3 text-xs">${item.closed_by_digitador_at ? new Date(item.closed_by_digitador_at).toLocaleString('es-CO') : 'N/A'}</td><td class="p-3 text-right font-mono">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td><td class="p-3">${statusBadge}</td><td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>${adminColumn}</tr>`;
         });
     }
 
-    // === SCRIPT PARA EL PANEL DEL DIGITADOR (CIERRE E INFORMES) ===
-    const btnLlegadas = document.getElementById('btn-llegadas');
-    const btnCierre = document.getElementById('btn-cierre');
-    const btnInformes = document.getElementById('btn-informes');
-    
-    const panelLlegadas = document.getElementById('panel-llegadas');
-    const panelCierre = document.getElementById('panel-cierre');
-    const panelInformes = document.getElementById('panel-informes');
+    const btnLlegadas = document.getElementById('btn-llegadas'), btnCierre = document.getElementById('btn-cierre'), btnInformes = document.getElementById('btn-informes');
+    const panelLlegadas = document.getElementById('panel-llegadas'), panelCierre = document.getElementById('panel-cierre'), panelInformes = document.getElementById('panel-informes');
 
     const setActiveButton = (activeBtn) => {
         if (!activeBtn) return;
-        [btnLlegadas, btnCierre, btnInformes].forEach(btn => {
-            if(btn) {
-                btn.classList.remove('bg-blue-600', 'text-white');
-                btn.classList.add('bg-gray-200', 'text-gray-700');
-            }
-        });
-        activeBtn.classList.add('bg-blue-600', 'text-white');
-        activeBtn.classList.remove('bg-gray-200', 'text-gray-700');
+        [btnLlegadas, btnCierre, btnInformes].forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
+        activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700');
     };
-
     const showPanel = (activePanel) => {
         if (!activePanel) return;
-        [panelLlegadas, panelCierre, panelInformes].forEach(panel => {
-            if(panel) panel.classList.add('hidden');
-        });
+        [panelLlegadas, panelCierre, panelInformes].forEach(panel => { if(panel) panel.classList.add('hidden'); });
         activePanel.classList.remove('hidden');
     };
 
-    if (btnLlegadas) {
-        btnLlegadas.addEventListener('click', () => {
-            setActiveButton(btnLlegadas);
-            showPanel(panelLlegadas);
-            loadLlegadas();
-        });
-    }
-
-    if (btnCierre) {
-        btnCierre.addEventListener('click', () => {
-            setActiveButton(btnCierre);
-            showPanel(panelCierre);
-            loadFundsForCierre();
-        });
-    }
-
-    if (btnInformes) {
-        btnInformes.addEventListener('click', () => {
-            setActiveButton(btnInformes);
-            showPanel(panelInformes);
-            loadInformes();
-        });
-    }
+    if (btnLlegadas) btnLlegadas.addEventListener('click', () => { setActiveButton(btnLlegadas); showPanel(panelLlegadas); loadLlegadas(); });
+    if (btnCierre) btnCierre.addEventListener('click', () => { setActiveButton(btnCierre); showPanel(panelCierre); loadFundsForCierre(); });
+    if (btnInformes) btnInformes.addEventListener('click', () => { setActiveButton(btnInformes); showPanel(panelInformes); loadInformes(); });
 
     async function loadLlegadas() {
-        const tbody = document.getElementById('llegadas-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center">Cargando...</td></tr>';
+        const tbody = document.getElementById('llegadas-table-body'); if (!tbody) return; tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center">Cargando...</td></tr>';
         try {
             const response = await fetch(`${apiUrlBase}/digitador_llegadas_api.php`);
-            const llegadas = await response.json();
-            tbody.innerHTML = '';
-            if (llegadas.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay llegadas pendientes.</td></tr>';
-                return;
-            }
-            llegadas.forEach(item => {
-                const row = `
-                    <tr class="border-b">
-                        <td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td>
-                        <td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td>
-                        <td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td>
-                        <td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td>
-                    </tr>`;
-                tbody.innerHTML += row;
-            });
-        } catch (error) {
-            console.error('Error cargando llegadas:', error);
-            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>';
-        }
+            const llegadas = await response.json(); tbody.innerHTML = '';
+            if (llegadas.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay llegadas pendientes.</td></tr>'; return; }
+            llegadas.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td><td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td><td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td><td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td></tr>`; });
+        } catch (error) { console.error('Error cargando llegadas:', error); tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
     }
-
     async function loadFundsForCierre() {
-        const container = document.getElementById('funds-list-container');
-        if (!container) return;
-        container.innerHTML = '<p class="text-center">Cargando fondos...</p>';
-        document.getElementById('services-list-container').innerHTML = '<p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>';
-        
+        const container = document.getElementById('funds-list-container'); if (!container) return; container.innerHTML = '<p class="text-center">Cargando fondos...</p>'; document.getElementById('services-list-container').innerHTML = '<p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>';
         try {
             const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=list_funds`);
-            const funds = await response.json();
-            container.innerHTML = '';
-            if (funds.length === 0) {
-                container.innerHTML = '<p class="text-gray-500 text-center">No hay fondos con servicios activos.</p>';
-                return;
-            }
-            funds.forEach(fund => {
-                const fundElement = `
-                    <div class="p-3 border rounded-lg cursor-pointer hover:bg-gray-100" onclick="loadServicesForFund(${fund.id}, this)">
-                        <div class="flex justify-between items-center">
-                            <p class="font-semibold">${fund.name}</p>
-                            <span class="text-xs text-gray-500">${fund.client_name}</span>
-                        </div>
-                    </div>`;
-                container.innerHTML += fundElement;
-            });
-        } catch (error) {
-            console.error('Error cargando fondos:', error);
-            container.innerHTML = '<p class="text-center text-red-500">Error al cargar fondos.</p>';
-        }
+            const funds = await response.json(); container.innerHTML = '';
+            if (funds.length === 0) { container.innerHTML = '<p class="text-gray-500 text-center">No hay fondos con servicios activos.</p>'; return; }
+            funds.forEach(fund => { container.innerHTML += `<div class="p-3 border rounded-lg cursor-pointer hover:bg-gray-100" onclick="loadServicesForFund(${fund.id}, this)"><div class="flex justify-between items-center"><p class="font-semibold">${fund.name}</p><span class="text-xs text-gray-500">${fund.client_name}</span></div></div>`; });
+        } catch (error) { console.error('Error cargando fondos:', error); container.innerHTML = '<p class="text-center text-red-500">Error al cargar fondos.</p>'; }
     }
-    
     async function loadServicesForFund(fundId, element) {
-        document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400'));
-        element.classList.add('bg-blue-100', 'border-blue-400');
-        
-        const container = document.getElementById('services-list-container');
-        if (!container) return;
-        container.innerHTML = '<p class="text-center">Cargando servicios...</p>';
-        
+        document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400')); element.classList.add('bg-blue-100', 'border-blue-400');
+        const container = document.getElementById('services-list-container'); if (!container) return; container.innerHTML = '<p class="text-center">Cargando servicios...</p>';
         try {
             const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=get_services&fund_id=${fundId}`);
-            const services = await response.json();
-            container.innerHTML = '';
-            if (services.length === 0) {
-                container.innerHTML = '<p class="text-gray-500">Este fondo no tiene servicios activos.</p>';
-                return;
-            }
-            services.forEach(service => {
-                const serviceElement = `
-                    <div class="p-3 border rounded-lg flex justify-between items-center">
-                        <div>
-                            <p class="font-mono"><strong>Planilla:</strong> ${service.invoice_number}</p>
-                            <p class="text-xs text-gray-500">${service.client_name} - ${formatCurrency(service.declared_value)}</p>
-                        </div>
-                        <button onclick="closeService(${service.id})" class="bg-teal-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-teal-600">
-                            Cerrar Servicio
-                        </button>
-                    </div>`;
-                container.innerHTML += serviceElement;
-            });
-        } catch (error) {
-            console.error('Error cargando servicios:', error);
-            container.innerHTML = '<p class="text-center text-red-500">Error al cargar servicios.</p>';
-        }
+            const services = await response.json(); container.innerHTML = '';
+            if (services.length === 0) { container.innerHTML = '<p class="text-gray-500">Este fondo no tiene servicios activos.</p>'; return; }
+            services.forEach(service => { container.innerHTML += `<div class="p-3 border rounded-lg flex justify-between items-center"><div><p class="font-mono"><strong>Planilla:</strong> ${service.invoice_number}</p><p class="text-xs text-gray-500">${service.client_name} - ${formatCurrency(service.declared_value)}</p></div><button onclick="closeService(${service.id})" class="bg-teal-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-teal-600">Cerrar Servicio</button></div>`; });
+        } catch (error) { console.error('Error cargando servicios:', error); container.innerHTML = '<p class="text-center text-red-500">Error al cargar servicios.</p>'; }
     }
-    
     async function closeService(serviceId) {
-        if (!confirm('¿Está seguro de que desea cerrar este servicio? Esta acción hará que desaparezca de las listas de pendientes del Checkinero y Operador.')) return;
-        
+        if (!confirm('¿Está seguro de que desea cerrar este servicio?')) return;
         try {
-            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_service`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ service_id: serviceId })
-            });
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_service`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_id: serviceId }) });
             const result = await response.json();
-            if (result.success) {
-                alert('Servicio cerrado exitosamente.');
-                location.reload(); 
-            } else {
-                alert('Error: ' + (result.error || 'No se pudo cerrar el servicio.'));
-            }
-        } catch (error) {
-            console.error('Error al cerrar servicio:', error);
-            alert('Error de conexión.');
-        }
+            if (result.success) { alert('Servicio cerrado.'); location.reload(); }
+            else { alert('Error: ' + (result.error || 'No se pudo cerrar.')); }
+        } catch (error) { console.error('Error al cerrar servicio:', error); alert('Error de conexión.'); }
     }
-    
     async function loadInformes() {
-        const tbody = document.getElementById('informes-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center">Cargando...</td></tr>';
-        document.getElementById('select-all-informes').checked = false;
-        updateInformeCount();
-        
+        const tbody = document.getElementById('informes-table-body'); if (!tbody) return; tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center">Cargando...</td></tr>'; document.getElementById('select-all-informes').checked = false; updateInformeCount();
         try {
             const response = await fetch(`${apiUrlBase}/digitador_informes_api.php`);
-            const servicios = await response.json();
-            tbody.innerHTML = '';
-            if (servicios.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-gray-500">No hay servicios cerrados para informar.</td></tr>';
-                return;
-            }
-            servicios.forEach(item => {
-                const row = `
-                    <tr class="border-b">
-                        <td class="p-3"><input type="checkbox" class="informe-checkbox" data-planilla="${item.planilla}" data-sello="${item.sello}" data-total="${item.total}" data-cliente="${item.cliente}"></td>
-                        <td class="p-3 font-mono">${item.planilla}</td> <td class="p-3 font-mono">${item.sello}</td>
-                        <td class="p-3">${formatCurrency(item.total)}</td> <td class="p-3">${item.fondo || 'N/A'}</td> <td class="p-3">${item.cliente}</td>
-                    </tr>`;
-                tbody.innerHTML += row;
-            });
-            
+            const servicios = await response.json(); tbody.innerHTML = '';
+            if (servicios.length === 0) { tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-gray-500">No hay servicios para informar.</td></tr>'; return; }
+            servicios.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3"><input type="checkbox" class="informe-checkbox" data-planilla="${item.planilla}" data-sello="${item.sello}" data-total="${item.total}" data-cliente="${item.cliente}"></td><td class="p-3 font-mono">${item.planilla}</td> <td class="p-3 font-mono">${item.sello}</td><td class="p-3">${formatCurrency(item.total)}</td> <td class="p-3">${item.fondo || 'N/A'}</td> <td class="p-3">${item.cliente}</td></tr>`; });
             document.querySelectorAll('.informe-checkbox').forEach(cb => cb.addEventListener('change', updateInformeCount));
-            document.getElementById('select-all-informes').addEventListener('change', (e) => {
-                document.querySelectorAll('.informe-checkbox').forEach(cb => cb.checked = e.target.checked);
-                updateInformeCount();
-            });
-
-        } catch (error) {
-            console.error('Error cargando informes:', error);
-            tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>';
-        }
+            document.getElementById('select-all-informes').addEventListener('change', (e) => { document.querySelectorAll('.informe-checkbox').forEach(cb => cb.checked = e.target.checked); updateInformeCount(); });
+        } catch (error) { console.error('Error cargando informes:', error); tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
     }
-
-    function updateInformeCount() {
-        const count = document.querySelectorAll('.informe-checkbox:checked').length;
-        document.getElementById('selected-informe-count').textContent = count;
-    }
-
+    function updateInformeCount() { const count = document.querySelectorAll('.informe-checkbox:checked').length; document.getElementById('selected-informe-count').textContent = count; }
     function generatePDF() {
-        if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
-            alert('Error: La librería jsPDF principal no se cargó. Revise su conexión a internet y la consola (F12).');
-            return;
-        }
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
-        if (typeof doc.autoTable === 'undefined') {
-            alert('Error: La extensión autoTable para generar PDF no se cargó. Revise la conexión y la consola (F12).');
-            return;
-        }
-
+        if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') { alert('Error: La librería jsPDF no se cargó.'); return; }
+        const { jsPDF } = window.jspdf; const doc = new jsPDF();
+        if (typeof doc.autoTable === 'undefined') { alert('Error: La extensión autoTable para PDF no se cargó.'); return; }
         const selectedRows = [];
-        document.querySelectorAll('.informe-checkbox:checked').forEach(checkbox => {
-            const ds = checkbox.dataset;
-            selectedRows.push([
-                ds.planilla,
-                ds.sello,
-                formatCurrency(ds.total),
-                ds.cliente
-            ]);
-        });
-
-        if (selectedRows.length === 0) {
-            alert('Por favor, seleccione al menos un servicio para generar el informe.');
-            return;
-        }
-
-        doc.setFontSize(18);
-        doc.text("Informe de Servicios Cerrados", 14, 22);
-        
-        doc.autoTable({
-            head: [['Planilla', 'Sello', 'Total Contado', 'Cliente']],
-            body: selectedRows,
-            startY: 30,
-        });
-
+        document.querySelectorAll('.informe-checkbox:checked').forEach(checkbox => { const ds = checkbox.dataset; selectedRows.push([ ds.planilla, ds.sello, formatCurrency(ds.total), ds.cliente ]); });
+        if (selectedRows.length === 0) { alert('Seleccione al menos un servicio.'); return; }
+        doc.setFontSize(18); doc.text("Informe de Servicios Cerrados", 14, 22);
+        doc.autoTable({ head: [['Planilla', 'Sello', 'Total Contado', 'Cliente']], body: selectedRows, startY: 30 });
         const pageCount = doc.internal.getNumberOfPages();
-        for(let i = 1; i <= pageCount; i++) {
-            doc.setPage(i);
-            doc.setFontSize(10);
-            doc.text(`Generado por EAGLE 3.0 - ${new Date().toLocaleDateString('es-CO')}`, 14, doc.internal.pageSize.height - 10);
-        }
-
+        for(let i = 1; i <= pageCount; i++) { doc.setPage(i); doc.setFontSize(10); doc.text(`Generado por EAGLE 3.0 - ${new Date().toLocaleDateString('es-CO')}`, 14, doc.internal.pageSize.height - 10); }
         doc.save("informe-servicios.pdf");
     }
 
     document.addEventListener('DOMContentLoaded', () => {
-        if (document.getElementById('user-table-body')) {
-            populateUserTable(adminUsersData);
-        }
+        if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); }
         <?php if ($_SESSION['user_role'] === 'Admin'): ?>
         if(document.getElementById('trazabilidad-tbody')){
             populateTrazabilidadTable(completedTasksData);
             const defaultSortHeader = document.querySelector(`th[data-column-name="completed_at"]`);
-            if (defaultSortHeader) {
-                defaultSortHeader.dataset.sortDir = 'desc';
-                defaultSortHeader.querySelector('span').textContent = ' ▼';
-            }
+            if (defaultSortHeader) { defaultSortHeader.dataset.sortDir = 'desc'; defaultSortHeader.querySelector('span').textContent = ' ▼'; }
         }
         <?php endif; ?>
 
         if (document.getElementById('content-checkinero')) {
             populateCheckinsTable(initialCheckins);
             document.getElementById('checkin-form').addEventListener('submit', handleCheckinSubmit);
-
-            const clientSelect = document.getElementById('client_id');
-            const fundSelect = document.getElementById('fund_id');
-
+            const clientSelect = document.getElementById('client_id'), fundSelect = document.getElementById('fund_id');
             clientSelect.addEventListener('change', async () => {
-                const clientId = clientSelect.value;
-                fundSelect.innerHTML = '<option value="">Cargando...</option>';
-                fundSelect.disabled = true;
-                fundSelect.classList.add('bg-gray-200');
-
-                if (!clientId) {
-                    fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
-                    return;
-                }
-
+                const clientId = clientSelect.value; fundSelect.innerHTML = '<option value="">Cargando...</option>'; fundSelect.disabled = true; fundSelect.classList.add('bg-gray-200');
+                if (!clientId) { fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>'; return; }
                 try {
-                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
-                    const funds = await response.json();
-                    
-                    fundSelect.innerHTML = '';
-                    if (funds.length > 0) {
-                        funds.forEach(fund => {
-                            const option = new Option(fund.name, fund.id);
-                            fundSelect.add(option);
-                        });
-                        fundSelect.disabled = false;
-                        fundSelect.classList.remove('bg-gray-200');
-                    } else {
-                        fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>';
-                    }
-                } catch (error) {
-                    console.error('Error fetching funds:', error);
-                    fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>';
-                }
+                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`); const funds = await response.json(); fundSelect.innerHTML = '';
+                    if (funds.length > 0) { funds.forEach(fund => { fundSelect.add(new Option(fund.name, fund.id)); }); fundSelect.disabled = false; fundSelect.classList.remove('bg-gray-200'); }
+                    else { fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>'; }
+                } catch (error) { console.error('Error fetching funds:', error); fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>'; }
             });
         }
         
@@ -2164,39 +1584,27 @@ $conn->close();
         }
         
         if (document.getElementById('content-digitador')) {
-            // Cargar datos para las herramientas propias del digitador
             loadLlegadas();
-            populateDiscrepancyTraceability(discrepancyCases);
-            // Funcionalidad de supervisión y historial del digitador
             populateOperatorHistoryForDigitador(operatorHistoryData);
             populateDigitadorClosedHistory(digitadorClosedHistory);
         }
 
         updateReminderCount();
-        updateCountdownTimers();
-        setInterval(updateCountdownTimers, 1000);
-
-        const startDateInput = document.getElementById('manual-task-start');
-        const endDateInput = document.getElementById('manual-task-end');
-        if(startDateInput) {
-            const getLocalISOString = (date) => {
-                const pad = (num) => num.toString().padStart(2, '0');
-                return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-            };
-            const now = new Date();
-            const nowString = getLocalISOString(now);
-            startDateInput.min = nowString;
-            endDateInput.min = nowString;
-            if (!startDateInput.value) startDateInput.value = nowString;
-            if (!endDateInput.value) endDateInput.value = nowString;
-            startDateInput.addEventListener('input', () => {
-                if (startDateInput.value) {
-                    endDateInput.min = startDateInput.value;
-                    if (endDateInput.value < startDateInput.value) {
-                        endDateInput.value = startDateInput.value;
-                    }
-                }
+        setInterval(() => {
+            document.querySelectorAll('.countdown-timer').forEach(timerEl => {
+                const endTime = new Date(timerEl.dataset.endTime).getTime(); if (isNaN(endTime)) return; const now = new Date().getTime(), distance = endTime - now;
+                if (distance < 0) { const elapsed = now - endTime, days = Math.floor(elapsed / 864e5), hours = Math.floor((elapsed % 864e5) / 36e5), minutes = Math.floor((elapsed % 36e5) / 6e4), seconds = Math.floor((elapsed % 6e4) / 1e3); let elapsedTime = ''; if (days > 0) elapsedTime += `${days}d `; if (hours > 0 || days > 0) elapsedTime += `${hours}h `; elapsedTime += `${minutes}m ${seconds}s`; timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`; }
+                else { const days = Math.floor(distance / 864e5), hours = Math.floor((distance % 864e5) / 36e5), minutes = Math.floor((distance % 36e5) / 6e4), seconds = Math.floor((distance % 6e4) / 1e3); let timeLeft = ''; if (days > 0) timeLeft += `${days}d `; if (hours > 0 || days > 0) timeLeft += `${hours}h `; timeLeft += `${minutes}m ${seconds}s`; let textColor = 'text-green-600'; if (days === 0 && hours < 1) textColor = 'text-red-600'; else if (days === 0 && hours < 24) textColor = 'text-yellow-700'; timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`; }
             });
+        }, 1000);
+
+        const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
+        if(startDateInput) {
+            const getLocalISOString = (date) => { const pad = (num) => num.toString().padStart(2, '0'); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`; };
+            const now = new Date(), nowString = getLocalISOString(now);
+            startDateInput.min = nowString; endDateInput.min = nowString;
+            if (!startDateInput.value) startDateInput.value = nowString; if (!endDateInput.value) endDateInput.value = nowString;
+            startDateInput.addEventListener('input', () => { if (startDateInput.value) { endDateInput.min = startDateInput.value; if (endDateInput.value < startDateInput.value) endDateInput.value = startDateInput.value; } });
         }
     });
     </script>
