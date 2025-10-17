@@ -120,14 +120,12 @@ if ($_SESSION['user_role'] === 'Admin') {
     );
     if ($completed_result) {
         while($row = $completed_result->fetch_assoc()){
-            // Lógica para agregar la Prioridad Final a las tareas completadas
             $original_priority = $row['priority'];
             $final_priority = $original_priority;
             if (!empty($row['end_datetime'])) {
                 $end_time = new DateTime($row['end_datetime']);
                 $completed_time = new DateTime($row['completed_at']);
-                $diff_minutes = ($completed_time->getTimestamp() - $end_time->getTimestamp()) / 60;
-                if ($diff_minutes >= 0) { $final_priority = 'Alta'; }
+                if ($completed_time > $end_time) { $final_priority = 'Alta'; }
             }
             $row['final_priority'] = $final_priority;
             $completed_tasks[] = $row;
@@ -142,8 +140,13 @@ if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_re
 $today_collections = [];
 $today_collections_result = $conn->query("
     SELECT
-        oc.id, oc.total_counted, c.name as client_name, u.name as operator_name, ci.status,
-        oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins
+        oc.id, oc.total_counted, c.name as client_name, u.name as operator_name,
+        oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
+        oc.created_at,
+        CASE
+            WHEN ci.digitador_status IS NOT NULL THEN ci.digitador_status
+            ELSE 'En Revisión'
+        END AS final_status
     FROM operator_counts oc
     JOIN check_ins ci ON oc.check_in_id = ci.id
     JOIN clients c ON ci.client_id = c.id
@@ -169,7 +172,18 @@ $routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
 if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
 $initial_checkins = [];
-$checkins_result = $conn->query("SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, ci.created_at, c.name as client_name, r.name as route_name, u.name as checkinero_name, ci.status FROM check_ins ci JOIN clients c ON ci.client_id = c.id JOIN routes r ON ci.route_id = r.id JOIN users u ON ci.checkinero_id = u.id LEFT JOIN funds f ON ci.fund_id = f.id WHERE ci.digitador_status IS NULL ORDER BY ci.created_at DESC");
+$checkins_result = $conn->query("
+    SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, 
+           ci.created_at, c.name as client_name, r.name as route_name, u.name as checkinero_name, 
+           ci.status, ci.correction_count 
+    FROM check_ins ci 
+    JOIN clients c ON ci.client_id = c.id 
+    JOIN routes r ON ci.route_id = r.id 
+    JOIN users u ON ci.checkinero_id = u.id 
+    LEFT JOIN funds f ON ci.fund_id = f.id 
+    WHERE ci.status IN ('Pendiente', 'Rechazado') 
+    ORDER BY ci.created_at DESC
+");
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
 
 $operator_history = [];
@@ -197,12 +211,14 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
 
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
+    // --- INICIO DE LA CORRECCIÓN ---
     $digitador_filter = ($current_user_role === 'Digitador') 
         ? "WHERE ci.closed_by_digitador_id = " . $current_user_id 
         : "WHERE ci.digitador_status IS NOT NULL";
+    // --- FIN DE LA CORRECCIÓN ---
         
     $closed_history_result = $conn->query("
-        SELECT ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
+        SELECT ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
                oc.total_counted, oc.discrepancy, u_op.name as operator_name,
                ci.closed_by_digitador_at, u_digitador.name as digitador_name,
                ci.digitador_status, ci.digitador_observations, f.name as fund_name
@@ -479,56 +495,70 @@ $conn->close();
                             </div>
                         <?php endforeach; endif; ?>
 
-                        <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
-                             <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
-                             <div class="overflow-x-auto">
-                                <table class="w-full text-sm text-left">
-                                    <thead class="text-xs text-gray-500 uppercase bg-gray-50">
-                                        <tr>
-                                            <th class="px-6 py-3">Cliente / Tienda</th>
-                                            <th class="px-6 py-3">Operador</th>
-                                            <th class="px-6 py-3">Monto Contado</th>
-                                            <th class="px-6 py-3">Estado</th>
-                                            <th class="px-6 py-3"></th>
-                                        </tr>
-                                    </thead>
-                                    <tbody id="recaudos-tbody">
-                                        <?php if (empty($today_collections)): ?>
-                                            <tr><td colspan="5" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
-                                        <?php else: ?>
-                                            <?php foreach ($today_collections as $recaudo): ?>
-                                                <tr class="border-b">
-                                                    <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td>
-                                                    <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td>
-                                                    <td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td>
-                                                    <td class="px-6 py-4">
-                                                        <span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Completado</span>
-                                                    </td>
-                                                    <td class="px-6 py-4 text-right">
-                                                        <button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button>
-                                                    </td>
-                                                </tr>
-                                                <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>">
-                                                    <td colspan="5" class="p-0">
-                                                        <div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50">
-                                                            <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
-                                                                <span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span>
-                                                                <span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span>
-                                                                <span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span>
-                                                                <span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span>
-                                                                <span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span>
-                                                                <span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span>
-                                                                <span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span>
-                                                            </div>
-                                                        </div>
-                                                    </td>
-                                                </tr>
-                                            <?php endforeach; ?>
-                                        <?php endif; ?>
-                                    </tbody>
-                                </table>
-                            </div>
-                        </div>
+                       <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
+     <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
+     <div class="overflow-x-auto">
+        <table class="w-full text-sm text-left">
+            <thead class="text-xs text-gray-500 uppercase bg-gray-50">
+                <tr>
+                    <th class="px-6 py-3">Cliente / Tienda</th>
+                    <th class="px-6 py-3">Operador</th>
+                    <th class="px-6 py-3">Fecha/Hora Conteo</th>
+                    <th class="px-6 py-3">Monto Contado</th>
+                    <th class="px-6 py-3">Estado</th>
+                    <th class="px-6 py-3"></th>
+                </tr>
+            </thead>
+            <tbody id="recaudos-tbody">
+                <?php if (empty($today_collections)): ?>
+                    <tr><td colspan="6" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
+                <?php else: ?>
+                    <?php foreach ($today_collections as $recaudo): ?>
+                        <?php
+                            $status_badge = '';
+                            switch ($recaudo['final_status']) {
+                                case 'Conforme':
+                                    $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>';
+                                    break;
+                                case 'Rechazado':
+                                    $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>';
+                                    break;
+                                default:
+                                    $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>';
+                                    break;
+                            }
+                        ?>
+                        <tr class="border-b">
+                            <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td>
+                            <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td>
+                            <td class="px-6 py-4 text-xs"><?php echo date('d/m/y h:i a', strtotime($recaudo['created_at'])); ?></td>
+                            <td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td>
+                            <td class="px-6 py-4"><?php echo $status_badge; ?></td>
+                            <td class="px-6 py-4 text-right">
+                                <button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button>
+                            </td>
+                        </tr>
+                        <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>">
+                            <td colspan="6" class="p-0">
+                                <div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50">
+                                    <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
+                                        <span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span>
+                                        <span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span>
+                                        <span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span>
+                                        <span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span>
+                                        <span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span>
+                                        <span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span>
+                                        <span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>
+                    <?php endforeach; ?>
+                <?php endif; ?>
+            </tbody>
+        </table>
+    </div>
+</div> 
                     </div>
 
                     <div class="space-y-8">
@@ -951,17 +981,20 @@ $conn->close();
                     <div class="overflow-auto max-h-[700px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th class="p-3">Planilla</th>
-                                    <th class="p-3">Fondo</th>
-                                    <th class="p-3">Cierre</th>
-                                    <th class="p-3">Total Recaudado</th>
-                                    <th class="p-3">Discrepancia</th>
-                                    <th class="p-3">Estado Final</th>
-                                    <th class="p-3">Observaciones</th>
-                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Cerrada por</th><?php endif; ?>
-                                </tr>
-                            </thead>
+    <tr>
+        <th class="p-3">Planilla</th>
+        <th class="p-3">Fondo</th>
+        <th class="p-3">Cierre</th>
+        <th class="p-3">Total Recaudado</th>
+        <th class="p-3">Discrepancia</th>
+        <th class="p-3">Estado Final</th>
+        <th class="p-3">Observaciones</th>
+        <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+            <th class="p-3">Cerrada por</th>
+            <th class="p-3">Acciones</th>
+        <?php endif; ?>
+    </tr>
+</thead>
                             <tbody id="digitador-closed-history-body"></tbody>
                         </table>
                     </div>
@@ -1257,26 +1290,118 @@ $conn->close();
         return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
     }
 
-    function populateCheckinsTable(checkins) {
-        const tbody = document.getElementById('checkins-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        if (!checkins || checkins.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>'; return; }
-        checkins.forEach(ci => {
-            tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${ci.invoice_number}</td><td class="p-3 font-mono">${ci.seal_number}</td><td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td><td class="p-3">${ci.route_name}</td><td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td><td class="p-3">${ci.checkinero_name}</td><td class="p-3">${ci.client_name}</td><td class="p-3">${ci.fund_name || 'N/A'}</td></tr>`;
-        });
+   function populateCheckinsTable(checkins) {
+    const tbody = document.getElementById('checkins-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    const colspan = 10; // Aumentamos a 10 por la nueva columna
+    if (!checkins || checkins.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>`;
+        return;
     }
+
+    // Definimos la cabecera correcta con la columna "Corrección"
+    const thead = tbody.previousElementSibling;
+    thead.innerHTML = `
+        <tr>
+            <th class="p-3">Corrección</th>
+            <th class="p-3">Estado</th>
+            <th class="p-3">Planilla</th>
+            <th class="p-3">Sello</th>
+            <th class="p-3">Declarado</th>
+            <th class="p-3">Ruta</th>
+            <th class="p-3">Fecha de Registro</th>
+            <th class="p-3">Checkinero</th>
+            <th class="p-3">Cliente</th>
+            <th class="p-3">Fondo</th>
+        </tr>
+    `;
+
+    checkins.forEach(ci => {
+        // Lógica para la insignia de corrección
+        let correctionBadge = '';
+        if (ci.correction_count > 0) {
+            correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
+        }
+
+        // Lógica para la insignia de estado
+        let statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span>`;
+        if (ci.status === 'Rechazado') {
+             statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`;
+        }
+
+        const row = `
+            <tr class="border-b hover:bg-gray-50">
+                <td class="p-3">${correctionBadge}</td>
+                <td class="p-3">${statusBadge}</td>
+                <td class="p-3 font-mono">${ci.invoice_number}</td>
+                <td class="p-3 font-mono">${ci.seal_number}</td>
+                <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                <td class="p-3">${ci.route_name}</td>
+                <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                <td class="p-3">${ci.checkinero_name}</td>
+                <td class="p-3">${ci.client_name}</td>
+                <td class="p-3">${ci.fund_name || 'N/A'}</td>
+            </tr>
+        `;
+        tbody.innerHTML += row;
+    });
+}
     
     function populateOperatorCheckinsTable(checkins) {
-        const tbody = document.getElementById('operator-checkins-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
-        if (pendingCheckins.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>'; return; }
-        pendingCheckins.forEach(ci => {
-            tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${ci.invoice_number}</td><td class="p-3 font-mono">${ci.seal_number}</td><td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td><td class="p-3">${ci.client_name}</td><td class="p-3">${ci.checkinero_name}</td><td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td><td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td><td class="p-3"><button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button></td></tr>`;
-        });
+    const tbody = document.getElementById('operator-checkins-table-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    
+    const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente' || ci.status === 'Rechazado');
+
+    if (pendingCheckins.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="9" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
+        return;
     }
+    
+    // Cambiamos la cabecera dinámicamente para añadir la nueva columna
+    const thead = tbody.previousElementSibling;
+    thead.innerHTML = `
+        <tr>
+            <th class="p-3">Corrección</th>
+            <th class="p-3">Planilla</th>
+            <th class="p-3">Sello</th>
+            <th class="p-3">Declarado</th>
+            <th class="p-3">Cliente</th>
+            <th class="p-3">Checkinero</th>
+            <th class="p-3">Fecha de Registro</th>
+            <th class="p-3">Estado</th>
+            <th class="p-3">Acción</th>
+        </tr>
+    `;
+    
+    pendingCheckins.forEach(ci => {
+        // --- INICIO DE LA LÓGICA DE CORRECCIÓN ---
+        let correctionBadge = '';
+        if (ci.correction_count > 0) {
+            correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
+        }
+        // --- FIN DE LA LÓGICA ---
+
+        const row = `
+            <tr class="border-b">
+                <td class="p-3">${correctionBadge}</td>
+                <td class="p-3 font-mono">${ci.invoice_number}</td>
+                <td class="p-3 font-mono">${ci.seal_number}</td>
+                <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                <td class="p-3">${ci.client_name}</td>
+                <td class="p-3">${ci.checkinero_name}</td>
+                <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
+                <td class="p-3">
+                    <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
+                </td>
+            </tr>
+        `;
+        tbody.innerHTML += row;
+    });
+}
     
     function populateOperatorHistoryTable(historyData) {
         const tbody = document.getElementById('operator-history-table-body');
@@ -1454,21 +1579,46 @@ $conn->close();
         });
     }
 
-    function populateDigitadorClosedHistory(history) {
-        const tbody = document.getElementById('digitador-closed-history-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        if (!history || history.length === 0) { const colspan = (currentUserRole === 'Admin') ? 7 : 6; tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`; return; }
-        history.forEach(item => {
-            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            const adminColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.digitador_name || 'N/A'}</td>` : '';
-            let statusBadge = '';
-            if (item.digitador_status === 'Conforme') { statusBadge = `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Conforme</span>`; }
-            else if (item.digitador_status === 'Rechazado') { statusBadge = `<span class="bg-red-100 text-red-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; }
-            else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
-            tbody.innerHTML += `<tr class="border-b hover:bg-gray-50"><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.fund_name || 'N/A'}</td><td class="p-3 text-xs">${item.closed_by_digitador_at ? new Date(item.closed_by_digitador_at).toLocaleString('es-CO') : 'N/A'}</td><td class="p-3 text-right font-mono">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td><td class="p-3">${statusBadge}</td><td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>${adminColumn}</tr>`;
-        });
+   function populateDigitadorClosedHistory(history) {
+    const tbody = document.getElementById('digitador-closed-history-body');
+    if (!tbody) return;
+    tbody.innerHTML = '';
+    const colspan = (currentUserRole === 'Admin') ? 9 : 7;
+    if (!history || history.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`;
+        return;
     }
+    history.forEach(item => {
+        const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+        let adminColumns = '';
+        if (currentUserRole === 'Admin') {
+            adminColumns = `
+                <td class="p-3">${item.digitador_name || 'N/A'}</td>
+                <td class="p-3 text-center">
+                    <button onclick="deleteClosedCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button>
+                </td>
+            `;
+        }
+        let statusBadge = '';
+        if (item.digitador_status === 'Conforme') { statusBadge = `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Conforme</span>`; }
+        else if (item.digitador_status === 'Rechazado') { statusBadge = `<span class="bg-red-100 text-red-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; }
+        else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
+
+        const row = `
+            <tr class="border-b hover:bg-gray-50">
+                <td class="p-3 font-mono">${item.invoice_number}</td>
+                <td class="p-3">${item.fund_name || 'N/A'}</td>
+                <td class="p-3 text-xs">${item.closed_by_digitador_at ? new Date(item.closed_by_digitador_at).toLocaleString('es-CO') : 'N/A'}</td>
+                <td class="p-3 text-right font-mono">${formatCurrency(item.total_counted)}</td>
+                <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                <td class="p-3">${statusBadge}</td>
+                <td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>
+                ${adminColumns}
+            </tr>
+        `;
+        tbody.innerHTML += row;
+    });
+}
 
     const btnLlegadas = document.getElementById('btn-llegadas'), btnCierre = document.getElementById('btn-cierre'), btnInformes = document.getElementById('btn-informes');
     const panelLlegadas = document.getElementById('panel-llegadas'), panelCierre = document.getElementById('panel-cierre'), panelInformes = document.getElementById('panel-informes');
@@ -1497,6 +1647,31 @@ $conn->close();
             llegadas.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td><td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td><td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td><td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td></tr>`; });
         } catch (error) { console.error('Error cargando llegadas:', error); tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
     }
+    async function deleteClosedCheckIn(checkInId) {
+    if (!confirm('¿Está seguro de que desea eliminar permanentemente esta planilla y todos sus registros asociados (conteo, alertas, etc.)? Esta acción no se puede deshacer.')) {
+        return;
+    }
+
+    try {
+        const response = await fetch(`${apiUrlBase}/delete_checkin_api.php`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ check_in_id: checkInId })
+        });
+
+        const result = await response.json();
+
+        if (result.success) {
+            alert(result.message);
+            location.reload(); // Recargar la página para ver los cambios
+        } else {
+            alert('Error al eliminar: ' + result.error);
+        }
+    } catch (error) {
+        console.error('Error de conexión al eliminar la planilla:', error);
+        alert('Error de conexión. No se pudo completar la solicitud.');
+    }
+}
     async function loadFundsForCierre() {
         const container = document.getElementById('funds-list-container'); if (!container) return; container.innerHTML = '<p class="text-center">Cargando fondos...</p>'; document.getElementById('services-list-container').innerHTML = '<p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>';
         try {

@@ -55,14 +55,16 @@ try {
 
     // Si la planilla es rechazada, la devolvemos al estado 'Pendiente' 
     // para que el Operador pueda corregirla.
-    if ($status === 'Rechazado') {
-        $update_operator_status_stmt = $conn->prepare(
-            "UPDATE check_ins SET status = 'Pendiente' WHERE id = ?"
-        );
-        $update_operator_status_stmt->bind_param("i", $check_in_id);
-        $update_operator_status_stmt->execute();
-        $update_operator_status_stmt->close();
-    }
+   // Si se rechazó, reabrimos el estado del operador e incrementamos el contador de corrección
+// Si se rechazó, cambiamos el estado a 'Rechazado' para que vuelva al Checkinero e incrementamos el contador.
+if ($status === 'Rechazado') {
+    $update_status_stmt = $conn->prepare(
+        "UPDATE check_ins SET status = 'Rechazado', correction_count = correction_count + 1 WHERE id = ?"
+    );
+    $update_status_stmt->bind_param("i", $check_in_id);
+    $update_status_stmt->execute();
+    $update_status_stmt->close();
+}
 
     if ($stmt->affected_rows > 0) {
         $conn->commit();
