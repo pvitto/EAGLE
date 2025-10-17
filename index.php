@@ -180,7 +180,7 @@ $initial_checkins = [];
 $checkins_result = $conn->query("
     SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.id as fund_id, f.name as fund_name,
            ci.created_at, c.name as client_name, c.id as client_id, r.name as route_name, r.id as route_id, u.name as checkinero_name,
-           ci.status, ci.correction_count
+           ci.status, ci.correction_count, ci.digitador_status
     FROM check_ins ci
     JOIN clients c ON ci.client_id = c.id
     JOIN routes r ON ci.route_id = r.id
@@ -1580,14 +1580,8 @@ $conn->close();
         const discrepancy = totalCounted - declaredValue;
         const discrepancyEl = document.getElementById('discrepancy');
         discrepancyEl.textContent = formatCurrency(discrepancy);
-        
-        // --- CORRECCIÓN LÓGICA DE COLOR ---
-        discrepancyEl.classList.remove('text-red-500', 'text-green-500');
-        if (discrepancy < 0) {
-            discrepancyEl.classList.add('text-red-500');
-        } else if (discrepancy > 0) {
-            discrepancyEl.classList.add('text-green-500');
-        }
+        discrepancyEl.classList.toggle('text-red-500', discrepancy !== 0);
+        discrepancyEl.classList.toggle('text-green-500', discrepancy === 0);
     }
 
     async function handleDenominationSave(event) {
@@ -1690,15 +1684,16 @@ $conn->close();
     function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
+        // --- CORRECCIÓN LÓGICA: Ahora solo muestra planillas con estado 'Discrepancia' ---
         const pendingReview = history.filter(item => {
             const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
-            return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia');
+            return checkin && checkin.status === 'Discrepancia';
         });
 
         const tbody = document.getElementById('operator-history-table-body-digitador');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`; return; }
+        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos con discrepancias pendientes de supervisión.</td></tr>`; return; }
         pendingReview.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
             const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
