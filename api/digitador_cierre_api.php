@@ -11,9 +11,9 @@ if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_role'], ['Digitado
 
 $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
+$user_id = $_SESSION['user_id'];
 
 if ($method === 'GET' && $action === 'list_funds') {
-    // Lista todos los fondos que tienen servicios activos pendientes de cierre.
     $query = "
         SELECT DISTINCT f.id, f.name, c.name as client_name
         FROM funds f
@@ -24,16 +24,11 @@ if ($method === 'GET' && $action === 'list_funds') {
     ";
     $result = $conn->query($query);
     $funds = [];
-    if ($result) {
-        while ($row = $result->fetch_assoc()) {
-            $funds[] = $row;
-        }
-    }
+    if ($result) { while ($row = $result->fetch_assoc()) { $funds[] = $row; } }
     echo json_encode($funds);
 
 } elseif ($method === 'GET' && $action === 'get_services' && isset($_GET['fund_id'])) {
     $fund_id = intval($_GET['fund_id']);
-    // Obtiene los servicios activos para un fondo específico.
     $stmt = $conn->prepare("
         SELECT ci.id, ci.invoice_number, ci.declared_value, ci.created_at, c.name as client_name
         FROM check_ins ci
@@ -45,37 +40,27 @@ if ($method === 'GET' && $action === 'list_funds') {
     $stmt->execute();
     $result = $stmt->get_result();
     $services = [];
-    while ($row = $result->fetch_assoc()) {
-        $services[] = $row;
-    }
+    while ($row = $result->fetch_assoc()) { $services[] = $row; }
     echo json_encode($services);
     $stmt->close();
     
 } elseif ($method === 'POST' && $action === 'close_service') {
-    // Marca un servicio como cerrado por el digitador.
     $data = json_decode(file_get_contents('php://input'), true);
     $service_id = $data['service_id'] ?? null;
-
     if ($service_id) {
-        $stmt = $conn->prepare("UPDATE check_ins SET digitador_status = 'Cerrado', closed_by_digitador_at = NOW() WHERE id = ?");
-        $stmt->bind_param("i", $service_id);
+        // CORRECCIÓN: Ahora también guardamos el ID del digitador que cierra.
+        $stmt = $conn->prepare("UPDATE check_ins SET digitador_status = 'Cerrado', closed_by_digitador_at = NOW(), closed_by_digitador_id = ? WHERE id = ?");
+        $stmt->bind_param("ii", $user_id, $service_id);
         if ($stmt->execute()) {
-            if ($stmt->affected_rows > 0) {
-                echo json_encode(['success' => true]);
-            } else {
-                echo json_encode(['success' => false, 'error' => 'No se encontró el servicio para cerrar o ya estaba cerrado.']);
-            }
+            echo json_encode(['success' => true]);
         } else {
-            echo json_encode(['success' => false, 'error' => 'Error al ejecutar la actualización del servicio.']);
+            echo json_encode(['success' => false, 'error' => 'Error al cerrar el servicio.']);
         }
         $stmt->close();
     } else {
         http_response_code(400);
         echo json_encode(['success' => false, 'error' => 'ID de servicio no proporcionado.']);
     }
-} else {
-    http_response_code(404);
-    echo json_encode(['success' => false, 'error' => 'Acción no válida.']);
 }
 
 $conn->close();

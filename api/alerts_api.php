@@ -3,11 +3,11 @@ session_start();
 require '../db_connection.php';
 header('Content-Type: application/json');
 
-// Para depuración
+// For debugging purposes
 ini_set('display_errors', 1);
 error_reporting(E_ALL);
 
-// Verificar que el usuario ha iniciado sesión
+// Verify that the user is logged in
 if (!isset($_SESSION['user_id'])) {
     http_response_code(401);
     echo json_encode(['success' => false, 'error' => 'Acceso no autorizado.']);
@@ -15,12 +15,48 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
-$data = json_decode(file_get_contents('php://input'), true);
+$user_id_session = $_SESSION['user_id'];
+
+// =================================================================
+// LOGIC TO HANDLE 'DELETE' REQUESTS FOR REMINDERS
+// =================================================================
+if ($method === 'DELETE') {
+    // Check if a reminder deletion is being requested
+    if (isset($_GET['reminder_id'])) {
+        $reminder_id = intval($_GET['reminder_id']);
+
+        // Prepare a secure query to delete the reminder
+        // This ensures that users can only delete their own reminders
+        $stmt = $conn->prepare("DELETE FROM reminders WHERE id = ? AND user_id = ?");
+        $stmt->bind_param("ii", $reminder_id, $user_id_session);
+
+        if ($stmt->execute()) {
+            // Check if a row was actually deleted
+            if ($stmt->affected_rows > 0) {
+                echo json_encode(['success' => true]);
+            } else {
+                // If nothing was deleted, the reminder either didn't exist or didn't belong to the user
+                echo json_encode(['success' => false, 'error' => 'Recordatorio no encontrado o no autorizado para eliminar.']);
+            }
+        } else {
+            // Error during query execution
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => 'Error en la base de datos: ' . $stmt->error]);
+        }
+        $stmt->close();
+        $conn->close();
+        exit; // Stop the script here
+    }
+}
+// =================================================================
+// END OF 'DELETE' SECTION
+// =================================================================
 
 if ($method === 'POST') {
+    $data = json_decode(file_get_contents('php://input'), true);
+
     $user_id = $data['assign_to'] ?? null;
     $assign_to_group = $data['assign_to_group'] ?? null;
-    
     $instruction = $data['instruction'] ?? '';
     $type = $data['type'] ?? '';
     $task_id = $data['task_id'] ?? null;
@@ -30,24 +66,45 @@ if ($method === 'POST') {
     $start_datetime = $data['start_datetime'] ?? null;
     $end_datetime = $data['end_datetime'] ?? null;
 
+    // --- Logic for Reminders ---
+    if ($type === 'Recordatorio') {
+        if (!$user_id) {
+             echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario para el recordatorio.']);
+             exit;
+        }
+        // Use the title of the task/alert for a more descriptive reminder message
+        $taskTitleQuery = $conn->query("SELECT title FROM tasks WHERE id = " . intval($task_id));
+        $taskTitle = $taskTitleQuery ? $taskTitleQuery->fetch_assoc()['title'] : "ID " . ($alert_id ?? $task_id);
+        
+        $message = "Recordatorio sobre la tarea: '" . $taskTitle . "'";
+        $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, alert_id, task_id) VALUES (?, ?, ?, ?)");
+        $stmt->bind_param("isii", $user_id, $message, $alert_id, $task_id);
+        
+        if ($stmt->execute()) {
+            echo json_encode(['success' => true, 'message' => 'Recordatorio creado.']);
+        } else {
+            echo json_encode(['success' => false, 'error' => 'Error al crear el recordatorio: ' . $stmt->error]);
+        }
+        $stmt->close();
+        $conn->close();
+        exit;
+    }
+
     if ($type !== 'Recordatorio' && !$user_id && !$assign_to_group) {
         echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario o un grupo.']);
         exit;
     }
-    if ($type === 'Recordatorio' && !$user_id) {
-        echo json_encode(['success' => false, 'error' => 'Es necesario seleccionar un usuario para el recordatorio.']);
-        exit;
-    }
-    
-    // ===== LÓGICA PARA ASIGNACIÓN GRUPAL =====
+
+    // --- Logic for Group Assignments ---
     if ($assign_to_group) {
         $conn->begin_transaction();
         try {
             $userIds = [];
-            if ($assign_to_group === 'todos') {
-                $stmt_users = $conn->prepare("SELECT id FROM users");
-            } else {
-                $stmt_users = $conn->prepare("SELECT id FROM users WHERE role = ?");
+            $stmt_users = ($assign_to_group === 'todos')
+                ? $conn->prepare("SELECT id FROM users")
+                : $conn->prepare("SELECT id FROM users WHERE role = ?");
+
+            if ($assign_to_group !== 'todos') {
                 $stmt_users->bind_param("s", $assign_to_group);
             }
             $stmt_users->execute();
@@ -64,10 +121,8 @@ if ($method === 'POST') {
             $stmt_task = null;
             if ($type === 'Manual') {
                 if (!$title) throw new Exception("El título es requerido para tareas manuales grupales.");
-                // MODIFICADO: Se añade 'assigned_to_group'
                 $stmt_task = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, assigned_to_group, type, start_datetime, end_datetime) VALUES (?, ?, ?, ?, ?, 'Manual', ?, ?)");
             } elseif ($type === 'Asignacion' && $alert_id) {
-                 // MODIFICADO: Se añade 'assigned_to_group'
                 $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, assigned_to_group, instruction, type) VALUES (?, ?, ?, ?, 'Asignacion')");
             } else {
                 throw new Exception("Parámetros no válidos para asignación grupal.");
@@ -75,11 +130,9 @@ if ($method === 'POST') {
 
             foreach ($userIds as $uid) {
                 if ($type === 'Manual') {
-                    // MODIFICADO: Se bindea el nuevo parámetro 'assigned_to_group'
                     $stmt_task->bind_param("sssisss", $title, $instruction, $priority, $uid, $assign_to_group, $start_datetime, $end_datetime);
                 } elseif ($type === 'Asignacion') {
-                    // MODIFICADO: Se bindea el nuevo parámetro 'assigned_to_group'
-                    $stmt_task->bind_param("iisss", $alert_id, $uid, $assign_to_group, $instruction);
+                    $stmt_task->bind_param("iiss", $alert_id, $uid, $assign_to_group, $instruction);
                 }
                 $stmt_task->execute();
             }
@@ -99,14 +152,12 @@ if ($method === 'POST') {
         exit;
     }
     
-    // ===== LÓGICA PARA ASIGNACIÓN INDIVIDUAL Y RECORDATORIOS =====
+    // --- Logic for Individual Assignments ---
     $stmt = null; 
 
-    if ($type === 'Recordatorio') {
-        //... (código sin cambios)
-    } elseif ($type === 'Asignacion') {
+    if ($type === 'Asignacion') {
         if ($task_id) {
-            // MODIFICADO: Limpiar el 'assigned_to_group' al re-asignar individualmente
+            // Clear 'assigned_to_group' when re-assigning individually
             $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL WHERE id = ?");
             $stmt->bind_param("isi", $user_id, $instruction, $task_id);
         } elseif ($alert_id) { 
@@ -134,8 +185,6 @@ if ($method === 'POST') {
         echo json_encode(['success' => false, 'error' => 'No se pudo preparar la consulta.']);
     }
 
-} elseif ($method === 'DELETE') {
-    //... (código sin cambios)
 }
 
 $conn->close();

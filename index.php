@@ -28,32 +28,19 @@ if ($current_user_role !== 'Admin') {
 
 // 1. Cargar Alertas Pendientes (Agrupadas si son asignaciones a grupos)
 $base_query_fields = "
-    a.*,
-    t.id as task_id,
-    t.status as task_status,
-    t.assigned_to_user_id,
-    t.assigned_to_group,
-    u_assigned.name as assigned_to_name,
-    t.type as task_type,
-    t.instruction as task_instruction,
-    t.start_datetime,
-    t.end_datetime,
-    GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as group_members
+    a.*, t.id as task_id, t.status as task_status, t.assigned_to_user_id, t.assigned_to_group,
+    u_assigned.name as assigned_to_name, t.type as task_type, t.instruction as task_instruction,
+    t.start_datetime, t.end_datetime, GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as group_members
 ";
-
 $base_query_joins = "
     FROM alerts a
     LEFT JOIN tasks t ON t.alert_id = a.id AND t.status != 'Cancelada'
     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
 ";
-
-// Agrupa por grupo si existe, si no, por ID de tarea individual
 $grouping = " GROUP BY a.id, IF(t.assigned_to_group IS NOT NULL, t.assigned_to_group, t.id)";
 
-// Lógica de consulta por defecto
 $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
 
-// Lógica especial para el Digitador: debe ver sus tareas asignadas Y todas las alertas de discrepancia
 if ($current_user_role === 'Digitador') {
     $alerts_sql = "
         SELECT {$base_query_fields} {$base_query_joins} 
@@ -63,20 +50,15 @@ if ($current_user_role === 'Digitador') {
     ";
 }
 
-
 $alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
-        // Evitar duplicados si una alerta se asigna a un grupo y también individualmente (caso borde)
-        $unique_key = $row['id'] . '-' . ($row['assigned_to_group'] ?? $row['task_id']);
-        $processed_keys[$unique_key] = true;
-        
         $row['item_type'] = 'alert';
         $all_pending_items[] = $row;
     }
 }
 
-// 2. Cargar Tareas Manuales Pendientes (Agrupadas si son a grupos)
+// 2. Cargar Tareas Manuales Pendientes
 $manual_tasks_sql = "
     SELECT
         t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status,
@@ -88,7 +70,6 @@ $manual_tasks_sql = "
     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente' {$user_filter}
     GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group), t.id)
 ";
-
 $manual_tasks_result = $conn->query($manual_tasks_sql);
 if ($manual_tasks_result) {
     while($row = $manual_tasks_result->fetch_assoc()) {
@@ -97,7 +78,7 @@ if ($manual_tasks_result) {
     }
 }
 
-// 3. Procesar todos los items para prioridad dinámica
+// 3. Procesar y ordenar items
 $main_priority_items = [];
 $main_non_priority_items = [];
 $panel_high_priority_items = [];
@@ -112,121 +93,69 @@ foreach ($all_pending_items as $item) {
         $end_time = new DateTime($item['end_datetime']);
         $diff_minutes = ($now->getTimestamp() - $end_time->getTimestamp()) / 60;
 
-        if ($diff_minutes >= 0) {
-            $current_priority = 'Alta';
-        } elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) {
-            $current_priority = 'Media';
-        }
+        if ($diff_minutes >= 0) { $current_priority = 'Alta'; } 
+        elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) { $current_priority = 'Media'; }
     }
     $item['current_priority'] = $current_priority;
 
     if ($current_priority === 'Critica' || $current_priority === 'Alta') {
         $main_priority_items[] = $item;
+        $panel_high_priority_items[] = $item;
     } else {
         $main_non_priority_items[] = $item;
-    }
-
-    if ($current_priority === 'Critica' || $current_priority === 'Alta') {
-        $panel_high_priority_items[] = $item;
-    }
-    if ($current_priority === 'Media') {
-        $panel_medium_priority_items[] = $item;
+        if ($current_priority === 'Media') {
+            $panel_medium_priority_items[] = $item;
+        }
     }
 }
 
-// 4. Ordenar las listas
 $priority_order = ['Critica' => 4, 'Alta' => 3, 'Media' => 2, 'Baja' => 1];
 usort($main_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 usort($main_non_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 usort($panel_high_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 usort($panel_medium_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 
-// 5. Cargar Tareas Completadas (Admin)
+// Resto de las consultas
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
-        "SELECT
-            t.id,
-            COALESCE(a.title, t.title) as title,
-            t.instruction,
-            t.priority,
-            t.start_datetime,
-            t.end_datetime,
-            u_assigned.name as assigned_to,
-            u_completed.name as completed_by,
-            t.created_at,
-            t.completed_at,
-            TIMEDIFF(t.completed_at, t.created_at) as response_time
-         FROM tasks t
-         LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
-         LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id
-         LEFT JOIN alerts a ON t.alert_id = a.id
-         WHERE t.status = 'Completada'
-         ORDER BY t.completed_at DESC"
+        "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' ORDER BY t.completed_at DESC"
     );
-    if ($completed_result) {
-        while($row = $completed_result->fetch_assoc()){
-            $final_priority = $row['priority'];
-            if (!empty($row['end_datetime']) && !empty($row['completed_at'])) {
-                $end_time = new DateTime($row['end_datetime']);
-                $completed_time = new DateTime($row['completed_at']);
-                if ($completed_time > $end_time) { $final_priority = 'Alta'; }
-            }
-            $row['final_priority'] = $final_priority;
-            $completed_tasks[] = $row;
-        }
-    }
+    if ($completed_result) { while($row = $completed_result->fetch_assoc()){ $completed_tasks[] = $row; } }
 }
-
 $recaudos = [];
 $recaudos_result = $conn->query("SELECT 1 as id, 'Tienda Ejemplo' as store_name, 197030000 as expected_amount, 'Completado' as status, 100 as bills_100k, 50 as bills_50k, 20 as bills_20k, 10 as bills_10k, 5 as bills_5k, 2 as bills_2k, 10000 as coins FROM DUAL");
 if ($recaudos_result) { while ($row = $recaudos_result->fetch_assoc()) { $recaudos[] = $row; } }
-
 $user_reminders = [];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
-
 $total_alerts_count_for_user = count($all_pending_items);
 $priority_summary_count = count($main_priority_items);
 $high_priority_badge_count = count($panel_high_priority_items);
 $medium_priority_badge_count = count($panel_medium_priority_items);
-
-// Cargar Clientes y Rutas para los formularios
 $all_clients = [];
 $clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
 if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
-
 $all_routes = [];
 $routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
 if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
-// Cargar Check-ins iniciales (NO CERRADOS POR DIGITADOR)
+// Cargar Check-ins iniciales (SOLO los que NO han sido cerrados por el digitador)
 $initial_checkins = [];
-$checkins_query = "
-    SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, ci.created_at, 
-           c.name as client_name, r.name as route_name, u.name as checkinero_name, ci.status 
-    FROM check_ins ci 
-    JOIN clients c ON ci.client_id = c.id 
-    JOIN routes r ON ci.route_id = r.id 
-    JOIN users u ON ci.checkinero_id = u.id
-    LEFT JOIN funds f ON ci.fund_id = f.id
-    WHERE ci.digitador_status IS NULL
-    ORDER BY ci.created_at DESC
-";
-$checkins_result = $conn->query($checkins_query);
+$checkins_result = $conn->query("SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.name as fund_name, ci.created_at, c.name as client_name, r.name as route_name, u.name as checkinero_name, ci.status FROM check_ins ci JOIN clients c ON ci.client_id = c.id JOIN routes r ON ci.route_id = r.id JOIN users u ON ci.checkinero_id = u.id LEFT JOIN funds f ON ci.fund_id = f.id WHERE ci.digitador_status IS NULL ORDER BY ci.created_at DESC");
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
 
 // Cargar historial del operador
 $operator_history = [];
-if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])) {
-    $operator_id_filter = ($_SESSION['user_role'] === 'Admin') ? "" : "WHERE op.operator_id = " . $_SESSION['user_id'];
+// CORRECCIÓN: El digitador también debe poder ver el historial de todos
+if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
+    // El filtro solo se aplica si el rol es Operador. Para Admin y Digitador se muestra todo.
+    $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . $_SESSION['user_id'] : "";
     
     $history_query = "
         SELECT 
             op.id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
-            ci.invoice_number, ci.declared_value,
-            c.name as client_name,
-            u.name as operator_name
+            ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name
         FROM operator_counts op
         JOIN check_ins ci ON op.check_in_id = ci.id
         JOIN clients c ON ci.client_id = c.id
@@ -242,24 +171,17 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])) {
     }
 }
 
-// === Cargar casos de discrepancia para el panel del digitador ===
+// Cargar casos de discrepancia para el panel del digitador
 $discrepancy_cases = [];
 if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])) {
     $discrepancy_query = "
         SELECT
-            MIN(t.id) AS task_id,
-            a.id AS alert_id,
+            MIN(t.id) AS task_id, a.id AS alert_id,
             (SELECT status FROM tasks WHERE alert_id = a.id AND assigned_to_user_id = {$current_user_id} ORDER BY FIELD(status, 'Pendiente', 'Resuelta') LIMIT 1) AS task_status,
             (SELECT resolution_note FROM tasks WHERE alert_id = a.id AND resolution_note IS NOT NULL LIMIT 1) AS resolution_note,
-            a.title AS alert_title,
-            a.created_at AS alert_date,
-            ci.invoice_number,
-            ci.declared_value,
-            oc.total_counted,
-            oc.discrepancy,
-            oc.created_at AS count_date,
-            u_check.name AS checkinero_name,
-            u_op.name AS operator_name
+            a.title AS alert_title, a.created_at AS alert_date,
+            ci.invoice_number, ci.declared_value, oc.total_counted, oc.discrepancy, oc.created_at AS count_date,
+            u_check.name AS checkinero_name, u_op.name AS operator_name
         FROM alerts a
         LEFT JOIN tasks t ON a.id = t.alert_id
         JOIN check_ins ci ON a.check_in_id = ci.id
@@ -287,7 +209,9 @@ $conn->close();
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EAGLE 3.0 - Sistema de Alertas</title>
     <script src="https://cdn.tailwindcss.com"></script>
-    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script> <script src="js/jspdf.umd.min.js"></script> <script src="js/jspdf-autotable.min.js"></script> ```
+    <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
+    <script src="js/jspdf.umd.min.js"></script>
+    <script src="js/jspdf-autotable.min.js"></script>
     
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
@@ -866,18 +790,141 @@ $conn->close();
             <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
             <div id="content-digitador" class="hidden">
                 <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión de Procesos</h2>
-                    <div class="bg-white p-2 rounded-lg shadow-md flex space-x-2">
-                        <button id="btn-llegadas" class="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-md shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500">
-                            Abrir Llegadas
-                        </button>
-                        <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
-                            Abrir Proceso de Cierre
-                        </button>
-                        <button id="btn-informes" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
-                            Abrir Menú PDFs
-                        </button>
+                    <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión y Supervisión</h2>
+                </div>
+                
+                <hr class="my-8 border-gray-300">
+
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">Supervisión de Operaciones</h2>
+                
+                <div id="consultation-section-digitador" class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                     <h3 class="text-xl font-semibold mb-4">Buscar Planilla para Detallar y Supervisar</h3>
+                     <form id="consultation-form-digitador" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
+                         <div>
+                             <label for="consult-invoice-digitador" class="block text-sm font-medium">Número de Planilla</label>
+                             <input type="text" id="consult-invoice-digitador" required class="mt-1 w-full p-2 border rounded-md">
+                         </div>
+                         <div class="pt-6">
+                             <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">Consultar</button>
+                         </div>
+                     </form>
+                </div>
+
+                <div id="operator-panel-digitador" class="hidden">
+                    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 pb-4 border-b">
+                            <div><span class="block text-sm text-gray-500">Número de Planilla</span><strong id="display-invoice-digitador" class="text-lg"></strong></div>
+                            <div><span class="block text-sm text-gray-500">Sello de la Factura</span><strong id="display-seal-digitador" class="text-lg"></strong></div>
+                            <div><span class="block text-sm text-gray-500">Nombre del Cliente</span><strong id="display-client-digitador" class="text-lg"></strong></div>
+                            <div><span class="block text-sm text-gray-500">Valor Declarado</span><strong id="display-declared-digitador" class="text-lg text-blue-600"></strong></div>
+                        </div>
+                        
+                        <h3 class="text-xl font-semibold mb-4">Detalle de Denominación</h3>
+                        <form id="denomination-form-digitador">
+                            <input type="hidden" id="op-checkin-id-digitador">
+                            <div class="space-y-2">
+                                <?php 
+                                    foreach($denominations as $value):
+                                ?>
+                                <div class="grid grid-cols-5 gap-4 items-center denomination-row" data-value="<?php echo $value; ?>">
+                                    <div class="col-span-2 font-medium text-gray-700"><?php echo '$' . number_format($value, 0, ',', '.'); ?></div>
+                                    <div class="col-span-2 flex items-center">
+                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-l-md font-bold text-lg" onclick="updateQty(this, -1)">-</button>
+                                        <input type="number" value="0" min="0" class="w-full text-center border-t border-b p-1 denomination-qty" oninput="calculateTotals('digitador')">
+                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-r-md font-bold text-lg" onclick="updateQty(this, 1)">+</button>
+                                    </div>
+                                    <div class="text-right font-mono subtotal">$ 0</div>
+                                </div>
+                                <?php endforeach; ?>
+                                
+                                <div class="grid grid-cols-5 gap-4 items-center pt-2 border-t">
+                                    <div class="col-span-2 font-medium text-gray-700">Monedas</div>
+                                    <div class="col-span-2">
+                                        <input type="number" id="coins-value-digitador" value="0" min="0" step="50" class="w-full border p-1" oninput="calculateTotals('digitador')" placeholder="Valor total en monedas">
+                                    </div>
+                                    <div class="text-right font-mono" id="coins-subtotal-digitador">$ 0</div>
+                                </div>
+                                
+                                <div class="grid grid-cols-5 gap-4 items-center pt-4 mt-4 border-t-2">
+                                    <div class="col-span-2 font-bold text-xl">Total</div>
+                                    <div class="col-span-3 text-right font-mono text-xl" id="total-counted-digitador">$ 0</div>
+                                </div>
+                                <div class="grid grid-cols-5 gap-4 items-center">
+                                    <div class="col-span-2 font-bold text-xl">Diferencia</div>
+                                    <div class="col-span-3 text-right font-mono text-xl" id="discrepancy-digitador">$ 0</div>
+                                </div>
+                            </div>
+                            
+                            <div class="mt-6">
+                                <label for="observations-digitador" class="block text-sm font-medium">Observación</label>
+                                <textarea id="observations-digitador" rows="3" class="mt-1 w-full border rounded-md p-2"></textarea>
+                            </div>
+                            
+                            <div class="mt-6 flex justify-end">
+                                <button type="submit" class="bg-gray-400 text-white font-bold py-3 px-6 rounded-md cursor-not-allowed" disabled>Guardar Conteo (Solo Operador)</button>
+                            </div>
+                        </form>
                     </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
+                    <h3 class="text-xl font-semibold mb-4">Planillas Pendientes de Detallar (Supervisión)</h3>
+                    <div class="overflow-auto max-h-[600px]">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="p-3">Planilla</th>
+                                    <th class="p-3">Sello</th>
+                                    <th class="p-3">Declarado</th>
+                                    <th class="p-3">Cliente</th>
+                                    <th class="p-3">Checkinero</th>
+                                    <th class="p-3">Fecha de Registro</th>
+                                    <th class="p-3">Estado</th>
+                                    <th class="p-3">Acción</th>
+                                </tr>
+                            </thead>
+                            <tbody id="operator-checkins-table-body-digitador">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
+                    <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados (Supervisión)</h3>
+                    <div class="overflow-auto max-h-[600px]">
+                        <table class="w-full text-sm text-left">
+                            <thead class="bg-gray-50 sticky top-0">
+                                <tr>
+                                    <th class="p-3">Planilla</th>
+                                    <th class="p-3">Cliente</th>
+                                    <th class="p-3">V. Declarado</th>
+                                    <th class="p-3">V. Contado</th>
+                                    <th class="p-3">Discrepancia</th>
+                                    <th class="p-3">Operador</th>
+                                    <th class="p-3">Fecha Conteo</th>
+                                    <th class="p-3">Observaciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="operator-history-table-body-digitador">
+                                </tbody>
+                        </table>
+                    </div>
+                </div>
+                
+                <hr class="my-8 border-gray-300">
+                
+                <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre e Informes</h2>
+
+                <div class="bg-white p-2 rounded-lg shadow-md flex space-x-2 mb-6">
+                    <button id="btn-llegadas" class="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-md shadow-sm hover:bg-blue-700">
+                        Ver Llegadas
+                    </button>
+                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
+                        Proceso de Cierre
+                    </button>
+                    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
+                        Generar Informes (PDF)
+                    </button>
                 </div>
 
                 <div id="panel-llegadas" class="bg-white p-6 rounded-xl shadow-lg">
@@ -901,14 +948,13 @@ $conn->close();
                     <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
                         <div>
                             <h3 class="text-xl font-semibold mb-4 text-gray-900">Listado de Fondos</h3>
-                            <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto">
-                                </div>
+                            <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto"></div>
                         </div>
                         <div>
                             <h3 class="text-xl font-semibold mb-4 text-gray-900">Servicios Activos</h3>
                             <div id="services-list-container" class="space-y-3">
                                 <p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>
-                                </div>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -929,8 +975,7 @@ $conn->close();
                                     <th class="p-3">Fondo</th> <th class="p-3">Cliente</th>
                                 </tr>
                             </thead>
-                            <tbody id="informes-table-body">
-                                </tbody>
+                            <tbody id="informes-table-body"></tbody>
                         </table>
                     </div>
                 </div>
@@ -951,7 +996,6 @@ $conn->close();
                 </div>
             </div>
             <?php endif; ?>
-
             <?php if ($_SESSION['user_role'] === 'Admin'): ?>
             <div id="content-roles" class="hidden">
                  <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold">Gestionar Usuarios</h2><button onclick="openModal()" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg">Agregar Usuario</button></div>
@@ -1350,8 +1394,10 @@ $conn->close();
         });
     }
     
-    function populateOperatorCheckinsTable(checkins) {
-        const tbody = document.getElementById('operator-checkins-table-body');
+    // MODIFICADO: Ahora hay dos tablas de pendientes, una para cada rol
+    function populateOperatorCheckinsTable(checkins, context = 'operador') {
+        const tableId = (context === 'digitador') ? 'operator-checkins-table-body-digitador' : 'operator-checkins-table-body';
+        const tbody = document.getElementById(tableId);
         if (!tbody) return;
         tbody.innerHTML = '';
         
@@ -1363,6 +1409,8 @@ $conn->close();
         }
         
         pendingCheckins.forEach(ci => {
+            // MODIFICADO: La función llamada ahora sabe desde qué contexto se llama
+            const buttonFunction = (context === 'digitador') ? `selectPlanillaForDigitador` : `selectPlanilla`;
             const row = `
                 <tr class="border-b">
                     <td class="p-3 font-mono">${ci.invoice_number}</td>
@@ -1373,7 +1421,7 @@ $conn->close();
                     <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
                     <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
                     <td class="p-3">
-                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
+                        <button onclick="${buttonFunction}('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
                     </td>
                 </tr>
             `;
@@ -1381,20 +1429,23 @@ $conn->close();
         });
     }
     
-    function populateOperatorHistoryTable(historyData) {
-        const tbody = document.getElementById('operator-history-table-body');
+    // MODIFICADO: Ahora hay dos tablas de historial, una para cada rol
+    function populateOperatorHistoryTable(historyData, context = 'operador') {
+        const tableId = (context === 'digitador') ? 'operator-history-table-body-digitador' : 'operator-history-table-body';
+        const tbody = document.getElementById(tableId);
         if (!tbody) return;
         tbody.innerHTML = '';
 
         if (!historyData || historyData.length === 0) {
-            const colspan = (currentUserRole === 'Admin') ? 8 : 7;
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No has realizado ningún conteo.</td></tr>`;
+            const colspan = (currentUserRole === 'Admin' || context === 'digitador') ? 8 : 7;
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`;
             return;
         }
 
         historyData.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            const adminOperatorColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.operator_name}</td>` : '';
+            // Para el admin o el digitador, siempre mostramos la columna del operador
+            const operatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador') ? `<td class="p-3">${item.operator_name}</td>` : '';
             const row = `
                 <tr class="border-b">
                     <td class="p-3 font-mono">${item.invoice_number}</td>
@@ -1402,7 +1453,7 @@ $conn->close();
                     <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
                     <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
                     <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                    ${adminOperatorColumn}
+                    ${operatorColumn}
                     <td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td>
                     <td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td>
                 </tr>
@@ -1414,6 +1465,13 @@ $conn->close();
     function selectPlanilla(invoiceNumber) {
         document.getElementById('consult-invoice').value = invoiceNumber;
         document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
+        window.scrollTo(0, 0); 
+    }
+    
+    // NUEVA FUNCIÓN: Específica para el panel de supervisión del digitador
+    function selectPlanillaForDigitador(invoiceNumber) {
+        document.getElementById('consult-invoice-digitador').value = invoiceNumber;
+        document.getElementById('consultation-form-digitador').dispatchEvent(new Event('submit'));
         window.scrollTo(0, 0); 
     }
 
@@ -1447,10 +1505,13 @@ $conn->close();
         }
     }
 
-    async function handleConsultation(event) {
+    // MODIFICADO: Función genérica para manejar la consulta de ambos roles
+    async function handleConsultation(event, context = 'operador') {
         event.preventDefault();
-        const invoiceInput = document.getElementById('consult-invoice');
-        const operatorPanel = document.getElementById('operator-panel');
+        const prefix = (context === 'digitador') ? '-digitador' : '';
+        
+        const invoiceInput = document.getElementById(`consult-invoice${prefix}`);
+        const operatorPanel = document.getElementById(`operator-panel${prefix}`);
         const planilla = invoiceInput.value;
 
         if (!planilla) {
@@ -1464,15 +1525,15 @@ $conn->close();
 
             if (result.success) {
                 const data = result.data;
-                document.getElementById('display-invoice').textContent = data.invoice_number;
-                document.getElementById('display-seal').textContent = data.seal_number;
-                document.getElementById('display-client').textContent = data.client_name;
-                document.getElementById('display-declared').textContent = formatCurrency(data.declared_value);
-                document.getElementById('display-declared').dataset.value = data.declared_value;
-                document.getElementById('op-checkin-id').value = data.id;
+                document.getElementById(`display-invoice${prefix}`).textContent = data.invoice_number;
+                document.getElementById(`display-seal${prefix}`).textContent = data.seal_number;
+                document.getElementById(`display-client${prefix}`).textContent = data.client_name;
+                document.getElementById(`display-declared${prefix}`).textContent = formatCurrency(data.declared_value);
+                document.getElementById(`display-declared${prefix}`).dataset.value = data.declared_value;
+                document.getElementById(`op-checkin-id${prefix}`).value = data.id;
 
-                document.getElementById('denomination-form').reset();
-                calculateTotals();
+                document.getElementById(`denomination-form${prefix}`).reset();
+                calculateTotals(context);
                 operatorPanel.classList.remove('hidden');
             } else {
                 alert('Error: ' + result.error);
@@ -1490,12 +1551,20 @@ $conn->close();
         currentValue += amount;
         if (currentValue < 0) currentValue = 0;
         input.value = currentValue;
-        calculateTotals();
+
+        // Determinar el contexto (operador o digitador) para recalcular
+        const context = button.closest('#content-digitador') ? 'digitador' : 'operador';
+        calculateTotals(context);
     }
 
-    function calculateTotals() {
+    // MODIFICADO: Función genérica para calcular totales en ambos paneles
+    function calculateTotals(context = 'operador') {
+        const prefix = (context === 'digitador') ? '-digitador' : '';
+        const form = document.getElementById(`denomination-form${prefix}`);
+        if (!form) return;
+
         let totalCounted = 0;
-        document.querySelectorAll('.denomination-row').forEach(row => {
+        form.querySelectorAll('.denomination-row').forEach(row => {
             const value = parseFloat(row.dataset.value);
             const qty = parseInt(row.querySelector('.denomination-qty').value) || 0;
             const subtotal = value * qty;
@@ -1503,16 +1572,16 @@ $conn->close();
             totalCounted += subtotal;
         });
 
-        const coinsValue = parseFloat(document.getElementById('coins-value').value) || 0;
-        document.getElementById('coins-subtotal').textContent = formatCurrency(coinsValue);
+        const coinsValue = parseFloat(document.getElementById(`coins-value${prefix}`).value) || 0;
+        document.getElementById(`coins-subtotal${prefix}`).textContent = formatCurrency(coinsValue);
         totalCounted += coinsValue;
 
-        document.getElementById('total-counted').textContent = formatCurrency(totalCounted);
+        document.getElementById(`total-counted${prefix}`).textContent = formatCurrency(totalCounted);
         
-        const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
+        const declaredValue = parseFloat(document.getElementById(`display-declared${prefix}`).dataset.value) || 0;
         const discrepancy = totalCounted - declaredValue;
         
-        const discrepancyEl = document.getElementById('discrepancy');
+        const discrepancyEl = document.getElementById(`discrepancy${prefix}`);
         discrepancyEl.textContent = formatCurrency(discrepancy);
         if (discrepancy !== 0) {
             discrepancyEl.classList.add('text-red-500');
@@ -1527,12 +1596,12 @@ $conn->close();
         event.preventDefault();
         const payload = {
             check_in_id: document.getElementById('op-checkin-id').value,
-            bills_100k: document.querySelector('[data-value="100000"] .denomination-qty').value,
-            bills_50k: document.querySelector('[data-value="50000"] .denomination-qty').value,
-            bills_20k: document.querySelector('[data-value="20000"] .denomination-qty').value,
-            bills_10k: document.querySelector('[data-value="10000"] .denomination-qty').value,
-            bills_5k: document.querySelector('[data-value="5000"] .denomination-qty').value,
-            bills_2k: document.querySelector('[data-value="2000"] .denomination-qty').value,
+            bills_100k: document.querySelector('#denomination-form [data-value="100000"] .denomination-qty').value,
+            bills_50k: document.querySelector('#denomination-form [data-value="50000"] .denomination-qty').value,
+            bills_20k: document.querySelector('#denomination-form [data-value="20000"] .denomination-qty').value,
+            bills_10k: document.querySelector('#denomination-form [data-value="10000"] .denomination-qty').value,
+            bills_5k: document.querySelector('#denomination-form [data-value="5000"] .denomination-qty').value,
+            bills_2k: document.querySelector('#denomination-form [data-value="2000"] .denomination-qty').value,
             coins: parseFloat(document.getElementById('coins-value').value) || 0,
             total_counted: 0,
             discrepancy: 0,
@@ -1968,7 +2037,6 @@ $conn->close();
     }
 
     function generatePDF() {
-        // VERIFICACIÓN MEJORADA
         if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
             alert('Error: La librería jsPDF principal no se cargó. Revise su conexión a internet y la consola (F12).');
             return;
@@ -2071,16 +2139,20 @@ $conn->close();
         }
         
         if (document.getElementById('content-operador')) {
-            populateOperatorCheckinsTable(initialCheckins);
-            populateOperatorHistoryTable(operatorHistoryData);
+            populateOperatorCheckinsTable(initialCheckins, 'operador');
+            populateOperatorHistoryTable(operatorHistoryData, 'operador');
             document.getElementById('consultation-form').addEventListener('submit', handleConsultation);
             document.getElementById('denomination-form').addEventListener('submit', handleDenominationSave);
         }
         
         if (document.getElementById('content-digitador')) {
-            // Cargar la vista inicial del digitador
+            // Cargar datos para el panel de supervisión
+            populateOperatorCheckinsTable(initialCheckins, 'digitador');
+            populateOperatorHistoryTable(operatorHistoryData, 'digitador');
+            document.getElementById('consultation-form-digitador').addEventListener('submit', (e) => handleConsultation(e, 'digitador'));
+            
+            // Cargar datos para las herramientas propias del digitador
             loadLlegadas();
-            // Cargar también el panel de discrepancias
             populateDiscrepancyTraceability(discrepancyCases);
         }
 
