@@ -138,25 +138,33 @@ $user_reminders = [];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
 
-// Cargar los recaudos del día basados en los conteos de los operadores
+
+// --- CAMBIO AQUÍ: Consulta de Recaudos del Día corregida y con más datos ---
 $today_collections = [];
+$total_recaudado_hoy = 0;
 $today_collections_result = $conn->query("
     SELECT
         oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name,
         oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
         oc.created_at,
+        ci.invoice_number, 
+        f.name as fund_name,
+        u_dig.name as digitador_name,
         CASE
-            WHEN ci.digitador_status IS NOT NULL THEN ci.digitador_status
-            ELSE 'En Revisión'
-        END AS final_status,
-        GROUP_CONCAT(DISTINCT u_dig.name SEPARATOR ', ') as digitador_name
+            WHEN ci.digitador_status = 'Cerrado' THEN 'Cerrado'
+            WHEN ci.digitador_status = 'Conforme' THEN 'Conforme'
+            WHEN ci.status = 'Rechazado' THEN 'Rechazado'
+            WHEN ci.status = 'Discrepancia' THEN 'En Revisión (Digitador)'
+            WHEN ci.status = 'Procesado' THEN 'En Revisión (Digitador)'
+            WHEN ci.status = 'Pendiente' THEN 'Pendiente (Operador)'
+            ELSE ci.status
+        END AS final_status
     FROM operator_counts oc
     JOIN check_ins ci ON oc.check_in_id = ci.id
     JOIN clients c ON ci.client_id = c.id
     JOIN users u_op ON oc.operator_id = u_op.id
-    LEFT JOIN alerts al ON al.check_in_id = ci.id
-    LEFT JOIN tasks t ON t.alert_id = al.id
-    LEFT JOIN users u_dig ON t.assigned_to_user_id = u_dig.id AND u_dig.role = 'Digitador'
+    LEFT JOIN funds f ON ci.fund_id = f.id
+    LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id
     WHERE DATE(oc.created_at) = CURDATE()
     GROUP BY oc.id
     ORDER BY oc.created_at DESC
@@ -164,8 +172,21 @@ $today_collections_result = $conn->query("
 if ($today_collections_result) {
     while ($row = $today_collections_result->fetch_assoc()) {
         $today_collections[] = $row;
+        $total_recaudado_hoy += $row['total_counted']; // Sumar al total
     }
 }
+// --- FIN DEL CAMBIO ---
+
+// --- CAMBIO AQUÍ: Conteo dinámico de Cierres Pendientes ---
+$cierres_pendientes_result = $conn->query("
+    SELECT COUNT(id) as total 
+    FROM check_ins 
+    WHERE status IN ('Procesado', 'Discrepancia') 
+    AND digitador_status IS NULL
+");
+$cierres_pendientes_count = $cierres_pendientes_result->fetch_assoc()['total'] ?? 0;
+// --- FIN DEL CAMBIO ---
+
 
 $total_alerts_count_for_user = count($all_pending_items);
 $priority_summary_count = count($main_priority_items);
@@ -226,7 +247,6 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
     
-    // El historial de cerradas AHORA muestra las que están 'Conforme' O 'Cerrado'
     $status_filter = "ci.digitador_status IN ('Conforme', 'Cerrado')";
 
     if ($current_user_role === 'Digitador') {
@@ -236,10 +256,13 @@ if (in_array($current_user_role, ['Digitador', 'Admin'])) {
     }
 
     $closed_history_result = $conn->query("
-        SELECT ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
-               oc.total_counted, oc.discrepancy, u_op.name as operator_name,
-               ci.closed_by_digitador_at, u_digitador.name as digitador_name,
-               ci.digitador_status, ci.digitador_observations, f.name as fund_name
+        SELECT 
+            ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
+            oc.total_counted, oc.discrepancy, 
+            oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
+            u_op.name as operator_name,
+            ci.closed_by_digitador_at, u_digitador.name as digitador_name,
+            ci.digitador_status, ci.digitador_observations, f.name as fund_name
         FROM check_ins ci
         LEFT JOIN clients c ON ci.client_id = c.id
         LEFT JOIN users u_check ON ci.checkinero_id = u_check.id
@@ -448,12 +471,11 @@ $conn->close();
         <main>
             <div id="content-operaciones">
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-                    <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Recaudos de Hoy</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">$</div></div><p class="text-3xl font-bold text-gray-900 mt-2">$197.030.000</p><p class="text-sm text-green-600 mt-2">▲ 12% vs ayer</p></div>
-                    <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Cierres Pendientes</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">🕔</div></div><p class="text-3xl font-bold text-gray-900 mt-2">3</p><p class="text-sm text-gray-500 mt-2">Programados para hoy</p></div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Recaudos de Hoy</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">$</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo '$' . number_format($total_recaudado_hoy, 0, ',', '.'); ?></p></div>
+                    <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Cierres Pendientes</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">🕔</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo $cierres_pendientes_count; ?></p><p class="text-sm text-gray-500 mt-2">Para revisión de Digitador</p></div>
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Alertas Activas</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">❗</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo $total_alerts_count_for_user; ?></p><p class="text-sm text-gray-500 mt-2"><?php echo $priority_summary_count; ?> Prioritarias</p></div>
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Tasa de Cumplimiento</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">📈</div></div><p class="text-3xl font-bold text-gray-900 mt-2">94%</p><p class="text-sm text-green-600 mt-2">▲ 3% vs semana pasada</p></div>
                 </div>
-
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     <div class="lg:col-span-2 space-y-4">
                         <h2 class="text-xl font-bold text-gray-900">Alertas y Tareas Prioritarias</h2>
@@ -535,16 +557,18 @@ $conn->close();
                             </div>
                         <?php endforeach; endif; ?>
 
-                       <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
+                        <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
                          <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
                          <div class="overflow-x-auto">
                             <table class="w-full text-sm text-left">
                                 <thead class="text-xs text-gray-500 uppercase bg-gray-50">
                                     <tr>
+                                        <th class="px-6 py-3">Planilla</th>
+                                        <th class="px-6 py-3">Fondo</th>
                                         <th class="px-6 py-3">Cliente / Tienda</th>
                                         <th class="px-6 py-3">Operador</th>
                                         <th class="px-6 py-3">Digitador</th>
-                                        <th class="px-6 py-3">Fecha/Hora Conteo</th>
+                                        <th class="px-6 py-3">Hora Conteo</th>
                                         <th class="px-6 py-3">Monto Contado</th>
                                         <th class="px-6 py-3">Estado</th>
                                         <th class="px-6 py-3"></th>
@@ -552,28 +576,27 @@ $conn->close();
                                 </thead>
                                 <tbody id="recaudos-tbody">
                                     <?php if (empty($today_collections)): ?>
-                                        <tr><td colspan="7" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
+                                        <tr><td colspan="9" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
                                     <?php else: ?>
                                         <?php foreach ($today_collections as $recaudo): ?>
                                             <?php
                                                 $status_badge = '';
                                                 switch ($recaudo['final_status']) {
-                                                    case 'Conforme':
-                                                        $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>';
-                                                        break;
-                                                    case 'Rechazado':
-                                                        $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>';
-                                                        break;
-                                                    default:
-                                                        $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>';
-                                                        break;
+                                                    case 'Conforme': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>'; break;
+                                                    case 'Cerrado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">Cerrado</span>'; break;
+                                                    case 'Rechazado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>'; break;
+                                                    case 'En Revisión (Digitador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>'; break;
+                                                    case 'Pendiente (Operador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">Pendiente</span>'; break;
+                                                    default: $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">' . htmlspecialchars($recaudo['final_status']) . '</span>'; break;
                                                 }
                                             ?>
                                             <tr class="border-b">
+                                                <td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($recaudo['invoice_number']); ?></td>
+                                                <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['fund_name'] ?? 'N/A'); ?></td>
                                                 <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td>
                                                 <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td>
                                                 <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['digitador_name'] ?? 'N/A'); ?></td>
-                                                <td class="px-6 py-4 text-xs"><?php echo date('d/m/y h:i a', strtotime($recaudo['created_at'])); ?></td>
+                                                <td class="px-6 py-4 text-xs"><?php echo date('h:i a', strtotime($recaudo['created_at'])); ?></td>
                                                 <td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td>
                                                 <td class="px-6 py-4"><?php echo $status_badge; ?></td>
                                                 <td class="px-6 py-4 text-right">
@@ -581,7 +604,7 @@ $conn->close();
                                                 </td>
                                             </tr>
                                             <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>">
-                                                <td colspan="7" class="p-0">
+                                                <td colspan="9" class="p-0">
                                                     <div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50">
                                                         <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
                                                             <span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span>
@@ -941,7 +964,7 @@ $conn->close();
 
                 <div class="bg-white p-6 rounded-xl shadow-lg">
                     <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
-                    <p class="text-sm text-gray-500 mb-4">Todas las planillas contadas (con o sin discrepancia) deben ser aprobadas manualmente.</p>
+                    <p class="text-sm text-gray-500 mb-4">Planillas pendientes de aprobación o rechazo.</p>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
@@ -973,7 +996,7 @@ $conn->close();
                             <div>
                                 <h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4>
                                 <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto">
-                                    </div>
+                                </div>
                             </div>
                             <div>
                                 <h4 class="font-semibold mb-2">2. Planillas a incluir en el cierre</h4>
@@ -1001,30 +1024,32 @@ $conn->close();
                                     </tr>
                                 </thead>
                                 <tbody id="informes-table-body">
-                                    </tbody>
+                                </tbody>
                             </table>
                         </div>
                     </div>
                 </div>
+
+
                 <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
                     <h3 class="text-xl font-semibold mb-4">Historial de Planillas Cerradas (Aprobadas)</h3>
                     <div class="overflow-auto max-h-[700px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
-    <tr>
-        <th class="p-3">Planilla</th>
-        <th class="p-3">Fondo</th>
-        <th class="p-3">Cierre</th>
-        <th class="p-3">Total Recaudado</th>
-        <th class="p-3">Discrepancia</th>
-        <th class="p-3">Estado Final</th>
-        <th class="p-3">Observaciones</th>
-        <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-            <th class="p-3">Cerrada por</th>
-            <th class="p-3">Acciones</th>
-        <?php endif; ?>
-    </tr>
-</thead>
+                                <tr>
+                                    <th class="p-3">Planilla</th>
+                                    <th class="p-3">Fondo</th>
+                                    <th class="p-3">Cierre</th>
+                                    <th class="p-3">Total Recaudado</th>
+                                    <th class="p-3">Discrepancia</th>
+                                    <th class="p-3">Estado Final</th>
+                                    <th class="p-3">Observaciones</th>
+                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+                                        <th class="p-3">Cerrada por</th>
+                                    <?php endif; ?>
+                                    <th class="p-3">Acciones</th>
+                                </tr>
+                            </thead>
                             <tbody id="digitador-closed-history-body"></tbody>
                         </table>
                     </div>
@@ -1123,7 +1148,7 @@ $conn->close();
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
 
-    let selectedFundForClosure = null; // Variable global para guardar el fondo a cerrar
+    let selectedFundForClosure = null; 
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -1144,7 +1169,16 @@ $conn->close();
         form.classList.toggle('active');
     }
 
-    function toggleBreakdown(id) { document.getElementById(`breakdown-row-${id}`).classList.toggle('hidden'); setTimeout(() => { document.getElementById(`breakdown-content-${id}`).classList.toggle('active'); }, 10); }
+    function toggleBreakdown(id) { 
+        const row = document.getElementById(`breakdown-row-${id}`);
+        const content = document.getElementById(`breakdown-content-${id}`);
+        if (row && content) {
+            row.classList.toggle('hidden'); 
+            setTimeout(() => { 
+                content.classList.toggle('active'); 
+            }, 10);
+        }
+    }
 
     async function deleteReminder(reminderId, button) {
         try {
@@ -1699,7 +1733,6 @@ $conn->close();
     function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
-        // --- CAMBIO: Se revirtió a la lógica de aprobación manual ---
         const pendingReview = history.filter(item => {
             const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
             return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia') && checkin.digitador_status === null;
@@ -1722,24 +1755,27 @@ $conn->close();
     const tbody = document.getElementById('digitador-closed-history-body');
     if (!tbody) return;
     tbody.innerHTML = '';
-    const colspan = (currentUserRole === 'Admin') ? 9 : 7;
+    
+    const colspan = (currentUserRole === 'Admin') ? 9 : 8; 
+
     if (!history || history.length === 0) {
         tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`;
         return;
     }
     history.forEach(item => {
         const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-        let adminColumns = '';
+        
+        let actionButtons = `<button onclick="toggleBreakdown('hist-${item.id}')" class="text-blue-600 text-xs font-semibold">Desglose</button>`;
         if (currentUserRole === 'Admin') {
-            adminColumns = `
-                <td class="p-3">${item.digitador_name || 'N/A'}</td>
-                <td class="p-3 text-center">
-                    <button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button>
-                </td>
-            `;
+            actionButtons += `<button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs ml-2">Eliminar</button>`;
         }
+
+        let adminColumnCerradaPor = '';
+        if (currentUserRole === 'Admin') {
+            adminColumnCerradaPor = `<td class="p-3">${item.digitador_name || 'N/A'}</td>`;
+        }
+
         let statusBadge = '';
-        // El historial ahora muestra 'Conforme' (listo para cerrar) y 'Cerrado'
         if (item.digitador_status === 'Conforme') { statusBadge = `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Conforme</span>`; }
         else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`; }
         else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
@@ -1753,10 +1789,29 @@ $conn->close();
                 <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
                 <td class="p-3">${statusBadge}</td>
                 <td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>
-                ${adminColumns}
+                ${adminColumnCerradaPor}
+                <td class="p-3 text-center">${actionButtons}</td>
             </tr>
         `;
         tbody.innerHTML += row;
+
+        const breakdownRow = `
+            <tr class="details-row hidden" id="breakdown-row-hist-${item.id}">
+                <td colspan="${colspan}" class="p-0">
+                    <div id="breakdown-content-hist-${item.id}" class="cash-breakdown bg-gray-50">
+                        <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
+                            <span><strong>$100.000:</strong> ${item.bills_100k || 0}</span>
+                            <span><strong>$50.000:</strong> ${item.bills_50k || 0}</span>
+                            <span><strong>$20.000:</strong> ${item.bills_20k || 0}</span>
+                            <span><strong>$10.000:</strong> ${item.bills_10k || 0}</span>
+                            <span><strong>$5.000:</strong> ${item.bills_5k || 0}</span>
+                            <span><strong>$2.000:</strong> ${item.bills_2k || 0}</span>
+                            <span class="font-bold">Monedas: ${formatCurrency(item.coins)}</span>
+                        </div>
+                    </div>
+                </td>
+            </tr>`;
+        tbody.innerHTML += breakdownRow;
     });
 }
 
@@ -1816,7 +1871,6 @@ $conn->close();
     const panelCierre = document.getElementById('panel-cierre');
     const panelInformes = document.getElementById('panel-informes');
     
-    // Ocultar botones de navegación si los paneles no existen (para no-digitadores)
     if (btnLlegadas) {
         const setActiveButton = (activeBtn) => {
             [btnLlegadas, btnCierre, btnInformes].forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
@@ -1824,15 +1878,25 @@ $conn->close();
         };
         const showPanel = (activePanel) => {
             [panelLlegadas, panelCierre, panelInformes].forEach(panel => { if(panel) panel.classList.add('hidden'); });
-            activePanel.classList.remove('hidden');
+            if (activePanel) activePanel.classList.remove('hidden');
         };
 
-        btnLlegadas.addEventListener('click', () => { setActiveButton(btnLlegadas); showPanel(panelLlegadas); });
+        btnLlegadas.addEventListener('click', () => { setActiveButton(btnLlegadas); showPanel(panelLlegadas); loadLlegadas(); });
         btnCierre.addEventListener('click', () => { setActiveButton(btnCierre); showPanel(panelCierre); loadFundsForCierre(); });
         btnInformes.addEventListener('click', () => { setActiveButton(btnInformes); showPanel(panelInformes); loadInformes(); });
+        
+        const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
+        if (savedSubTab === 'llegadas') {
+             setActiveButton(btnLlegadas); showPanel(panelLlegadas);
+        } else if (savedSubTab === 'informes') {
+             setActiveButton(btnInformes); showPanel(panelInformes);
+        } else {
+             setActiveButton(btnCierre); showPanel(panelCierre);
+        }
     }
 
     async function loadLlegadas() {
+        sessionStorage.setItem('activeDigitadorSubTab', 'llegadas');
         const tbody = document.getElementById('llegadas-table-body'); if (!tbody) return; tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-sm text-gray-500">Cargando...</td></tr>';
         try {
             const response = await fetch(`${apiUrlBase}/digitador_llegadas_api.php`);
@@ -1843,6 +1907,7 @@ $conn->close();
     }
 
     async function loadFundsForCierre() {
+        sessionStorage.setItem('activeDigitadorSubTab', 'cierre');
         const container = document.getElementById('funds-list-container');
         if (!container) return;
         container.innerHTML = '<p class="text-center text-sm text-gray-500">Cargando fondos...</p>';
@@ -1938,6 +2003,7 @@ $conn->close();
     }
 
     async function loadInformes() {
+        sessionStorage.setItem('activeDigitadorSubTab', 'informes');
         const tbody = document.getElementById('informes-table-body');
         if (!tbody) return;
         tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-sm text-gray-500">Cargando informes...</td></tr>';
@@ -1956,7 +2022,7 @@ $conn->close();
                                         <td class="p-3">${fund.client_name}</td>
                                         <td class="p-3 text-xs">${new Date(fund.last_close_date).toLocaleString('es-CO')}</td>
                                         <td class="p-3 text-center">
-                                            <button onclick="generatePDF(${fund.id}, '${fund.fund_name}')" class="bg-green-600 text-white font-bold py-1 px-3 rounded-md hover:bg-green-700 text-xs">
+                                            <button onclick="generatePDF(${fund.id}, '${fund.fund_name}', '${fund.client_name}')" class="bg-green-600 text-white font-bold py-1 px-3 rounded-md hover:bg-green-700 text-xs">
                                                 Generar PDF
                                             </button>
                                         </td>
@@ -1968,24 +2034,19 @@ $conn->close();
         }
     }
 
-    // <-- CAMBIO AQUÍ: Función de PDF corregida -->
-    async function generatePDF(fundId, fundName) {
-        // 1. Verificar que las librerías estén cargadas
+    async function generatePDF(fundId, fundName, clientName) {
         if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
             alert('Error: La librería jsPDF no se cargó.');
             return;
         }
-        
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF(); // <-- Instanciar ANTES de usar
+        const doc = new jsPDF();
 
-        // 2. Verificar que el plugin autoTable esté cargado
         if (typeof doc.autoTable === 'undefined') {
             alert('Error: La extensión autoTable para PDF no se cargó.');
             return;
         }
         
-        // 3. Obtener los datos del informe
         try {
             const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=get_report_details&fund_id=${fundId}`);
             const planillas = await response.json();
@@ -1995,49 +2056,58 @@ $conn->close();
                 return;
             }
 
-            // 4. Preparar datos para el PDF
-            const head = [['Planilla', 'Sello', 'V. Declarado', 'V. Contado', 'Discrepancia', 'Operador', 'Digitador']];
+            const head = [['Planilla', 'V. Contado', 'Discrepancia', 'Operador', 'Desglose de Billetes/Monedas']];
             const body = [];
-            let totalDeclarado = 0;
             let totalContado = 0;
             let totalDiscrepancia = 0;
 
             planillas.forEach(p => {
+                let desgloseText = [
+                    `$100.000: ${p.bills_100k || 0}`,
+                    `$50.000: ${p.bills_50k || 0}`,
+                    `$20.000: ${p.bills_20k || 0}`,
+                    `$10.000: ${p.bills_10k || 0}`,
+                    `$5.000: ${p.bills_5k || 0}`,
+                    `$2.000: ${p.bills_2k || 0}`,
+                    `Monedas: ${formatCurrency(p.coins)}`
+                ].join('\n'); 
+
                 body.push([
                     p.planilla,
-                    p.sello,
-                    formatCurrency(p.declared_value),
                     formatCurrency(p.total),
                     formatCurrency(p.discrepancy),
                     p.operador,
-                    p.digitador
+                    desgloseText 
                 ]);
-                totalDeclarado += parseFloat(p.declared_value);
                 totalContado += parseFloat(p.total);
                 totalDiscrepancia += parseFloat(p.discrepancy);
             });
 
-            // Añadir fila de totales
             body.push([
-                { content: 'TOTALES', colSpan: 2, styles: { fontStyle: 'bold', halign: 'right' } },
-                { content: formatCurrency(totalDeclarado), styles: { fontStyle: 'bold' } },
+                { content: 'TOTALES', styles: { fontStyle: 'bold', halign: 'right' } },
                 { content: formatCurrency(totalContado), styles: { fontStyle: 'bold' } },
                 { content: formatCurrency(totalDiscrepancia), styles: { fontStyle: 'bold', textColor: totalDiscrepancia != 0 ? [220, 38, 38] : [22, 163, 74] } },
-                { content: '', colSpan: 2 }
+                { content: '', colSpan: 2 } 
             ]);
 
-            // 5. Generar el PDF
             doc.setFontSize(18);
             doc.text(`Informe de Cierre de Fondo: ${fundName}`, 14, 22);
             doc.setFontSize(11);
-            doc.text(`Cliente: ${planillas[0].cliente}`, 14, 30);
+            doc.text(`Cliente: ${clientName}`, 14, 30);
             doc.text(`Fecha de Generación: ${new Date().toLocaleDateString('es-CO')}`, 14, 36);
 
             doc.autoTable({
                 head: head,
                 body: body,
                 startY: 42,
-                headStyles: { fillColor: [29, 78, 216] } // Color azul
+                headStyles: { fillColor: [29, 78, 216] },
+                columnStyles: {
+                    0: { cellWidth: 20 },
+                    1: { cellWidth: 30, halign: 'right' },
+                    2: { cellWidth: 30, halign: 'right' },
+                    3: { cellWidth: 30 },
+                    4: { fontSize: 8, cellWidth: 'auto' }
+                }
             });
             
             const pageCount = doc.internal.getNumberOfPages();
@@ -2054,7 +2124,6 @@ $conn->close();
             alert('No se pudo generar el informe en PDF.');
         }
     }
-    // --- FIN DE LA LÓGICA DE CIERRE Y REPORTES ---
 
 
     document.addEventListener('DOMContentLoaded', () => {
@@ -2093,10 +2162,8 @@ $conn->close();
         }
 
         if (document.getElementById('content-digitador')) {
-            // Carga las funciones del nuevo flujo de cierre
             loadFundsForCierre();
             loadInformes();
-            // Carga las tablas de supervisión e historial
             populateOperatorHistoryForDigitador(operatorHistoryData);
             populateDigitadorClosedHistory(digitadorClosedHistory);
         }

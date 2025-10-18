@@ -35,7 +35,7 @@ if ($action === 'list_closed_funds') {
 } elseif ($action === 'get_report_details' && isset($_GET['fund_id'])) {
     $fund_id = intval($_GET['fund_id']);
     
-    // Obtiene todas las planillas cerradas para ese fondo, asegurándose de tomar el último conteo
+    // --- CAMBIO AQUÍ: Se seleccionan todas las columnas de desglose ---
     $query = "
         SELECT 
             ci.invoice_number as planilla, 
@@ -43,6 +43,7 @@ if ($action === 'list_closed_funds') {
             ci.declared_value,
             oc.total_counted as total, 
             oc.discrepancy,
+            oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
             c.name as cliente,
             u_op.name as operador,
             u_dig.name as digitador

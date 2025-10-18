@@ -17,9 +17,8 @@ if ($method === 'GET' && $action === 'list_funds_to_close') {
     
     // --- CORRECCIÓN LÓGICA AQUÍ ---
     // La consulta ahora solo busca fondos que tengan planillas 'Conforme'.
-    // Se eliminó la condición NOT IN que impedía que fondos ya cerrados
-    // (con planillas 'Cerrado') volvieran a aparecer si tenían nuevas
-    // planillas 'Conforme' listas para un nuevo cierre.
+    // Se eliminó la condición que impedía que fondos ya cerrados
+    // volvieran a aparecer si tenían nuevas planillas 'Conforme' listas.
     $query = "
         SELECT DISTINCT f.id, f.name, c.name as client_name
         FROM funds f
