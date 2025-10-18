@@ -906,7 +906,7 @@ $conn->close();
 
                 <div class="bg-white p-6 rounded-xl shadow-lg">
                     <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
-                    <p class="text-sm text-gray-500 mb-4">Marca la casilla de una planilla para cargar sus detalles, revisarla y aprobarla o rechazarla.</p>
+                    <p class="text-sm text-gray-500 mb-4">Solo las planillas con discrepancias aparecerán aquí para su revisión.</p>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
@@ -1295,7 +1295,11 @@ $conn->close();
         });
     }
 
+    // <-- CAMBIO AQUÍ: Parte 1 - Guardar la pestaña activa -->
     function switchTab(tabName) {
+        // Guarda la pestaña activa en la memoria de la sesión del navegador
+        sessionStorage.setItem('activeTab', tabName);
+        
         const contentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'roles', 'trazabilidad'];
         document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
         contentPanels.forEach(panel => {
@@ -1684,7 +1688,6 @@ $conn->close();
     function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
-        // --- CORRECCIÓN LÓGICA: Ahora solo muestra planillas con estado 'Discrepancia' ---
         const pendingReview = history.filter(item => {
             const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
             return checkin && checkin.status === 'Discrepancia';
@@ -1873,6 +1876,15 @@ $conn->close();
     }
 
     document.addEventListener('DOMContentLoaded', () => {
+        // <-- CAMBIO AQUÍ: Parte 2 - Restaurar la pestaña activa al cargar la página -->
+        const savedTab = sessionStorage.getItem('activeTab');
+        if (savedTab) {
+            // Se usa un pequeño retraso para asegurar que todos los elementos estén listos
+            setTimeout(() => {
+                switchTab(savedTab);
+            }, 100);
+        }
+
         if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); }
         if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
             populateTrazabilidadTable(completedTasksData);
