@@ -30,12 +30,14 @@ if ($current_user_role !== 'Admin') {
 $base_query_fields = "
     a.*, t.id as task_id, t.status as task_status, t.assigned_to_user_id, t.assigned_to_group,
     u_assigned.name as assigned_to_name, t.type as task_type, t.instruction as task_instruction,
-    t.start_datetime, t.end_datetime, GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as group_members
+    t.start_datetime, t.end_datetime, GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as group_members,
+    ci.invoice_number 
 ";
 $base_query_joins = "
     FROM alerts a
     LEFT JOIN tasks t ON t.alert_id = a.id AND t.status != 'Cancelada'
     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
+    LEFT JOIN check_ins ci ON a.check_in_id = ci.id 
 ";
 $grouping = " GROUP BY a.id, IF(t.assigned_to_group IS NOT NULL, t.assigned_to_group, t.id)";
 $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
@@ -309,7 +311,11 @@ $conn->close();
                             <?php else: foreach($panel_high_priority_items as $item): ?>
                                 <?php $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange'; ?>
                                 <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
-                                    <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title']); ?></p>
+                                    <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title']); ?>
+                                        <?php if (!empty($item['invoice_number'])): ?>
+                                            <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
+                                        <?php endif; ?>
+                                    </p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
 
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
@@ -346,7 +352,11 @@ $conn->close();
                                 <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
                             <?php else: foreach($panel_medium_priority_items as $item): ?>
                                 <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
-                                    <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title']); ?></p>
+                                    <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title']); ?>
+                                        <?php if (!empty($item['invoice_number'])): ?>
+                                            <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
+                                        <?php endif; ?>
+                                    </p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
 
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
@@ -451,7 +461,13 @@ $conn->close();
                             <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $id; ?>">
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                     <div class="flex justify-between items-start">
-                                        <p class="font-semibold <?php echo $color['text']; ?> text-lg"><?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span></p>
+                                        <p class="font-semibold <?php echo $color['text']; ?> text-lg">
+                                            <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?>
+                                            <?php if (!empty($item['invoice_number'])): ?>
+                                                <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
+                                            <?php endif; ?>
+                                            <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
+                                        </p>
                                         <?php if ($is_assigned && !$is_group_task && isset($item['task_status']) && $item['task_status'] === 'Pendiente'): ?>
                                             <button onclick="completeTask(<?php echo $item['task_id']; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
                                         <?php endif; ?>
@@ -632,7 +648,13 @@ $conn->close();
                                     <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $id; ?>">
                                         <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                             <div class="flex justify-between items-start">
-                                                <p class="font-semibold <?php echo $color['text']; ?> text-md"><?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span></p>
+                                                <p class="font-semibold <?php echo $color['text']; ?> text-md">
+                                                    <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?>
+                                                    <?php if (!empty($item['invoice_number'])): ?>
+                                                        <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
+                                                    <?php endif; ?>
+                                                    <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
+                                                </p>
                                                 <?php if ($is_assigned && !$is_group_task && isset($item['task_status']) && $item['task_status'] === 'Pendiente'): ?>
                                                     <button onclick="completeTask(<?php echo $item['task_id']; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
                                                 <?php endif; ?>
@@ -845,8 +867,9 @@ $conn->close();
                     </div>
                 </div>
 
+                <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                 <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
-                    <h3 class="text-xl font-semibold mb-4">Planillas Pendientes de Detallar</h3>
+                    <h3 class="text-xl font-semibold mb-4">Planillas Pendientes de Detallar (Visible solo para Admin)</h3>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
@@ -866,7 +889,7 @@ $conn->close();
                         </table>
                     </div>
                 </div>
-
+                <?php endif; ?>
                 <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
                     <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados</h3>
                     <div class="overflow-auto max-h-[600px]">
@@ -1386,8 +1409,10 @@ $conn->close();
     }
 
     function populateOperatorCheckinsTable(checkins) {
+        // Esta función solo se usa si el usuario es Admin, ya que el panel está oculto para otros.
         const tbody = document.getElementById('operator-checkins-table-body');
-        if (!tbody) return;
+        if (!tbody) return; // Si el panel está oculto (no-admin), no hacer nada.
+        
         tbody.innerHTML = '';
 
         const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
@@ -1688,15 +1713,17 @@ $conn->close();
     function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
+        // --- CAMBIO AQUÍ: Lógica de auto-aprobación ---
         const pendingReview = history.filter(item => {
             const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
-            return checkin && checkin.status === 'Discrepancia';
+            return checkin && checkin.status === 'Discrepancia' && checkin.digitador_status === null;
         });
 
         const tbody = document.getElementById('operator-history-table-body-digitador');
         if (!tbody) return;
         tbody.innerHTML = '';
         if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos con discrepancias pendientes de supervisión.</td></tr>`; return; }
+        
         pendingReview.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
             const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
@@ -1879,10 +1906,7 @@ $conn->close();
         // <-- CAMBIO AQUÍ: Parte 2 - Restaurar la pestaña activa al cargar la página -->
         const savedTab = sessionStorage.getItem('activeTab');
         if (savedTab) {
-            // Se usa un pequeño retraso para asegurar que todos los elementos estén listos
-            setTimeout(() => {
-                switchTab(savedTab);
-            }, 100);
+            switchTab(savedTab);
         }
 
         if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); }
@@ -1906,7 +1930,10 @@ $conn->close();
         }
 
         if (document.getElementById('content-operador')) {
-            populateOperatorCheckinsTable(initialCheckins);
+            // Solo poblar esta tabla si el usuario es Admin (ya que el panel está oculto para otros)
+            if (currentUserRole === 'Admin') {
+                populateOperatorCheckinsTable(initialCheckins);
+            }
             populateOperatorHistoryTable(operatorHistoryData);
             document.getElementById('consultation-form').addEventListener('submit', handleConsultation);
             document.getElementById('denomination-form').addEventListener('submit', handleDenominationSave);
