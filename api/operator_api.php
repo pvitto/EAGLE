@@ -42,7 +42,6 @@ if ($method === 'POST') {
     
     $conn->begin_transaction();
     try {
-        // Primero, inserta el registro del conteo
         $stmt_insert = $conn->prepare(
             "INSERT INTO operator_counts (check_in_id, operator_id, bills_100k, bills_50k, bills_20k, bills_10k, bills_5k, bills_2k, coins, total_counted, discrepancy, observations) 
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
@@ -55,27 +54,10 @@ if ($method === 'POST') {
         $stmt_insert->execute();
         $stmt_insert->close();
 
-        // --- LÓGICA DE AUTO-APROBACIÓN ---
-        if ($data['discrepancy'] == 0) {
-            // Si NO hay discrepancia, se auto-aprueba.
-            $stmt_update = $conn->prepare(
-                "UPDATE check_ins 
-                 SET status = 'Procesado', 
-                     digitador_status = 'Conforme', 
-                     digitador_observations = 'Cierre automático sin discrepancias.', 
-                     closed_by_digitador_id = ?, 
-                     closed_by_digitador_at = NOW() 
-                 WHERE id = ?"
-            );
-            $stmt_update->bind_param("ii", $user_id, $data['check_in_id']);
-
-        } else {
-            // Si HAY discrepancia, se marca para revisión del digitador.
-            $new_status = 'Discrepancia';
-            $stmt_update = $conn->prepare("UPDATE check_ins SET status = ? WHERE id = ?");
-            $stmt_update->bind_param("si", $new_status, $data['check_in_id']);
-        }
-        
+        // Lógica estándar: marca como Procesado o Discrepancia. No auto-aprueba.
+        $new_status = ($data['discrepancy'] == 0) ? 'Procesado' : 'Discrepancia';
+        $stmt_update = $conn->prepare("UPDATE check_ins SET status = ? WHERE id = ?");
+        $stmt_update->bind_param("si", $new_status, $data['check_in_id']);
         $stmt_update->execute();
         $stmt_update->close();
 
@@ -85,13 +67,29 @@ if ($method === 'POST') {
             $res = $conn->query("SELECT invoice_number FROM check_ins WHERE id = $check_in_id");
             $invoice_number = $res->fetch_assoc()['invoice_number'];
             $discrepancy_formatted = number_format($data['discrepancy'], 0, ',', '.');
+            
             $alert_title = "Discrepancia en Planilla: " . $invoice_number;
             $alert_desc = "Diferencia de $" . $discrepancy_formatted . ". Requiere revisión y seguimiento.";
             
             $stmt_alert = $conn->prepare("INSERT INTO alerts (title, description, priority, status, suggested_role, check_in_id) VALUES (?, ?, 'Critica', 'Pendiente', 'Digitador', ?)");
             $stmt_alert->bind_param("ssi", $alert_title, $alert_desc, $check_in_id);
             $stmt_alert->execute();
+            $alert_id = $stmt_alert->insert_id;
             $stmt_alert->close();
+
+            // Asignar tarea de alerta a todos los digitadores
+            $digitadores_res = $conn->query("SELECT id FROM users WHERE role = 'Digitador'");
+            if ($digitadores_res->num_rows > 0 && $alert_id) {
+                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, instruction, type, status) VALUES (?, ?, ?, 'Asignacion', 'Pendiente')");
+                $instruction = "Realizar seguimiento a la discrepancia, contactar a los responsables y documentar la resolución.";
+                while($row = $digitadores_res->fetch_assoc()) {
+                    $digitador_id = $row['id'];
+                    $stmt_task->bind_param("iis", $alert_id, $digitador_id, $instruction);
+                    $stmt_task->execute();
+                }
+                $stmt_task->close();
+                $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = $alert_id");
+            }
         }
         
         $conn->commit();

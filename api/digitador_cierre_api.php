@@ -13,13 +13,15 @@ $action = $_GET['action'] ?? '';
 $method = $_SERVER['REQUEST_METHOD'];
 $user_id = $_SESSION['user_id'];
 
-if ($method === 'GET' && $action === 'list_funds') {
+if ($method === 'GET' && $action === 'list_funds_to_close') {
+    // Lista fondos que tienen al menos una planilla 'Conforme' Y NINGUNA planilla 'Cerrado'
     $query = "
         SELECT DISTINCT f.id, f.name, c.name as client_name
         FROM funds f
         JOIN clients c ON f.client_id = c.id
         JOIN check_ins ci ON ci.fund_id = f.id
-        WHERE ci.status IN ('Procesado', 'Discrepancia') AND ci.digitador_status IS NULL
+        WHERE ci.digitador_status = 'Conforme'
+        AND f.id NOT IN (SELECT fund_id FROM check_ins WHERE digitador_status = 'Cerrado' AND fund_id IS NOT NULL)
         ORDER BY f.name ASC
     ";
     $result = $conn->query($query);
@@ -27,13 +29,14 @@ if ($method === 'GET' && $action === 'list_funds') {
     if ($result) { while ($row = $result->fetch_assoc()) { $funds[] = $row; } }
     echo json_encode($funds);
 
-} elseif ($method === 'GET' && $action === 'get_services' && isset($_GET['fund_id'])) {
+} elseif ($method === 'GET' && $action === 'get_services_for_closing' && isset($_GET['fund_id'])) {
+    // Lista todas las planillas 'Conforme' de un fondo que están listas para ser cerradas
     $fund_id = intval($_GET['fund_id']);
     $stmt = $conn->prepare("
-        SELECT ci.id, ci.invoice_number, ci.declared_value, ci.created_at, c.name as client_name
+        SELECT ci.id, ci.invoice_number, ci.declared_value, oc.total_counted, oc.discrepancy
         FROM check_ins ci
-        JOIN clients c ON ci.client_id = c.id
-        WHERE ci.fund_id = ? AND ci.status IN ('Procesado', 'Discrepancia') AND ci.digitador_status IS NULL
+        JOIN operator_counts oc ON ci.id = oc.check_in_id
+        WHERE ci.fund_id = ? AND ci.digitador_status = 'Conforme'
         ORDER BY ci.created_at DESC
     ");
     $stmt->bind_param("i", $fund_id);
@@ -44,22 +47,32 @@ if ($method === 'GET' && $action === 'list_funds') {
     echo json_encode($services);
     $stmt->close();
     
-} elseif ($method === 'POST' && $action === 'close_service') {
+} elseif ($method === 'POST' && $action === 'close_fund') {
+    // Cierra TODAS las planillas 'Conforme' de un fondo específico
     $data = json_decode(file_get_contents('php://input'), true);
-    $service_id = $data['service_id'] ?? null;
-    if ($service_id) {
-        // CORRECCIÓN: Ahora también guardamos el ID del digitador que cierra.
-        $stmt = $conn->prepare("UPDATE check_ins SET digitador_status = 'Cerrado', closed_by_digitador_at = NOW(), closed_by_digitador_id = ? WHERE id = ?");
-        $stmt->bind_param("ii", $user_id, $service_id);
+    $fund_id = $data['fund_id'] ?? null;
+    if ($fund_id) {
+        $stmt = $conn->prepare("
+            UPDATE check_ins 
+            SET digitador_status = 'Cerrado', 
+                closed_by_digitador_at = NOW(), 
+                closed_by_digitador_id = ? 
+            WHERE fund_id = ? AND digitador_status = 'Conforme'
+        ");
+        $stmt->bind_param("ii", $user_id, $fund_id);
         if ($stmt->execute()) {
-            echo json_encode(['success' => true]);
+            if ($stmt->affected_rows > 0) {
+                echo json_encode(['success' => true, 'message' => 'Fondo cerrado exitosamente.']);
+            } else {
+                echo json_encode(['success' => false, 'error' => 'No se encontraron planillas conformes para cerrar.']);
+            }
         } else {
-            echo json_encode(['success' => false, 'error' => 'Error al cerrar el servicio.']);
+            echo json_encode(['success' => false, 'error' => 'Error al cerrar el fondo.']);
         }
         $stmt->close();
     } else {
         http_response_code(400);
-        echo json_encode(['success' => false, 'error' => 'ID de servicio no proporcionado.']);
+        echo json_encode(['success' => false, 'error' => 'ID de fondo no proporcionado.']);
     }
 }
 

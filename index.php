@@ -462,7 +462,7 @@ $conn->close();
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                     <div class="flex justify-between items-start">
                                         <p class="font-semibold <?php echo $color['text']; ?> text-lg">
-                                            <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?>
+                                            <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> 
                                             <?php if (!empty($item['invoice_number'])): ?>
                                                 <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
                                             <?php endif; ?>
@@ -929,7 +929,7 @@ $conn->close();
 
                 <div class="bg-white p-6 rounded-xl shadow-lg">
                     <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
-                    <p class="text-sm text-gray-500 mb-4">Solo las planillas con discrepancias aparecerán aquí para su revisión.</p>
+                    <p class="text-sm text-gray-500 mb-4">Planillas pendientes de aprobación o rechazo. Las planillas sin discrepancia se aprueban automáticamente.</p>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
@@ -950,76 +950,52 @@ $conn->close();
                 </div>
 
                 <hr class="my-8 border-gray-300">
-
+                
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre e Informes</h2>
 
-                <div class="bg-white p-2 rounded-lg shadow-md flex space-x-2 mb-6">
-                    <button id="btn-llegadas" class="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-md shadow-sm hover:bg-blue-700">
-                        Ver Llegadas
-                    </button>
-                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
-                        Proceso de Cierre
-                    </button>
-                    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-200 rounded-md hover:bg-gray-300">
-                        Generar Informes (PDF)
-                    </button>
-                </div>
-
-                <div id="panel-llegadas" class="bg-white p-6 rounded-xl shadow-lg">
-                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Check-ins (Llegadas)</h3>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-sm">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="p-3">Planilla</th> <th class="p-3">Sello</th> <th class="p-3">Declarado</th>
-                                    <th class="p-3">Ruta</th> <th class="p-3">Fecha Registro</th> <th class="p-3">Checkinero</th>
-                                    <th class="p-3">Cliente</th> <th class="p-3">Fondo</th>
-                                </tr>
-                            </thead>
-                            <tbody id="llegadas-table-body">
-                                </tbody>
-                        </table>
-                    </div>
-                </div>
-
-                <div id="panel-cierre" class="hidden bg-white p-6 rounded-xl shadow-lg">
-                    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-                        <div>
-                            <h3 class="text-xl font-semibold mb-4 text-gray-900">Listado de Fondos</h3>
-                            <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto"></div>
-                        </div>
-                        <div>
-                            <h3 class="text-xl font-semibold mb-4 text-gray-900">Servicios Activos</h3>
-                            <div id="services-list-container" class="space-y-3">
-                                <p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
+                    <div id="panel-cierre" class="bg-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre por Fondo</h3>
+                        <p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas y proceder con el cierre.</p>
+                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                            <div>
+                                <h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4>
+                                <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto">
+                                    </div>
+                            </div>
+                            <div>
+                                <h4 class="font-semibold mb-2">2. Planillas a incluir en el cierre</h4>
+                                <div id="services-list-container" class="space-y-3">
+                                    <p class="text-gray-500 text-sm">Seleccione un fondo de la lista.</p>
+                                </div>
+                                <button id="close-fund-button" onclick="closeFund()" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-teal-600 mt-4 hidden">
+                                    Cerrar Fondo
+                                </button>
                             </div>
                         </div>
                     </div>
-                </div>
 
-                <div id="panel-informes" class="hidden bg-white p-6 rounded-xl shadow-lg">
-                    <h3 class="text-xl font-semibold mb-4 text-gray-900">Servicios para Informar</h3>
-                    <div class="flex justify-end mb-4">
-                        <button onclick="generatePDF()" class="bg-green-600 text-white font-bold py-2 px-4 rounded-md hover:bg-green-700">
-                            Generar PDF (<span id="selected-informe-count">0</span> seleccionados)
-                        </button>
-                    </div>
-                    <div class="overflow-x-auto">
-                        <table class="w-full text-sm">
-                            <thead class="bg-gray-50">
-                                <tr>
-                                    <th class="p-3 w-10"><input type="checkbox" id="select-all-informes"></th>
-                                    <th class="p-3">Planilla</th> <th class="p-3">Sello</th> <th class="p-3">Total</th>
-                                    <th class="p-3">Fondo</th> <th class="p-3">Cliente</th>
-                                </tr>
-                            </thead>
-                            <tbody id="informes-table-body"></tbody>
-                        </table>
+                    <div id="panel-informes" class="bg-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Generar Informes (PDF)</h3>
+                        <p class="text-sm text-gray-500 mb-4">Seleccione un fondo cerrado para generar el informe PDF consolidado.</p>
+                        <div class="overflow-auto max-h-[500px]">
+                            <table class="w-full text-sm">
+                                <thead class="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th class="p-3 text-left">Fondo</th>
+                                        <th class="p-3 text-left">Cliente</th>
+                                        <th class="p-3 text-left">Fecha de Cierre</th>
+                                        <th class="p-3 text-center">Acción</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="informes-table-body">
+                                    </tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
-
                 <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
-                    <h3 class="text-xl font-semibold mb-4">Historial de Planillas Cerradas</h3>
+                    <h3 class="text-xl font-semibold mb-4">Historial de Planillas Cerradas (Aprobadas)</h3>
                     <div class="overflow-auto max-h-[700px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
@@ -1134,6 +1110,8 @@ $conn->close();
     const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
+
+    let selectedFundForClosure = null; // Variable global para guardar el fondo a cerrar
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -1318,9 +1296,7 @@ $conn->close();
         });
     }
 
-    // <-- CAMBIO AQUÍ: Parte 1 - Guardar la pestaña activa -->
     function switchTab(tabName) {
-        // Guarda la pestaña activa en la memoria de la sesión del navegador
         sessionStorage.setItem('activeTab', tabName);
         
         const contentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'roles', 'trazabilidad'];
@@ -1409,12 +1385,10 @@ $conn->close();
     }
 
     function populateOperatorCheckinsTable(checkins) {
-        // Esta función solo se usa si el usuario es Admin, ya que el panel está oculto para otros.
         const tbody = document.getElementById('operator-checkins-table-body');
-        if (!tbody) return; // Si el panel está oculto (no-admin), no hacer nada.
+        if (!tbody) return; 
         
         tbody.innerHTML = '';
-
         const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
 
         if (pendingCheckins.length === 0) {
@@ -1713,16 +1687,17 @@ $conn->close();
     function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
-        // --- CAMBIO AQUÍ: Lógica de auto-aprobación ---
+        // --- CAMBIO AQUÍ: Volvemos a mostrar TODAS las planillas pendientes de decisión ---
         const pendingReview = history.filter(item => {
             const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
-            return checkin && checkin.status === 'Discrepancia' && checkin.digitador_status === null;
+            // Mostrar si está Procesado O con Discrepancia, Y si el digitador no ha tomado una decisión (es NULL)
+            return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia') && checkin.digitador_status === null;
         });
 
         const tbody = document.getElementById('operator-history-table-body-digitador');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos con discrepancias pendientes de supervisión.</td></tr>`; return; }
+        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`; return; }
         
         pendingReview.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
@@ -1772,7 +1747,7 @@ $conn->close();
     });
 }
 
-    // --- NUEVAS FUNCIONES DE ELIMINACIÓN PARA ADMIN ---
+    // --- FUNCIONES DE ELIMINACIÓN PARA ADMIN ---
     async function deleteCheckIn(checkInId) {
         if (!confirm('¿Está seguro de que desea eliminar permanentemente esta planilla y todos sus registros asociados (conteo, alertas, etc.)? Esta acción no se puede deshacer.')) {
             return;
@@ -1819,88 +1794,215 @@ $conn->close();
         }
     }
 
+    // --- LÓGICA REFACTORIZADA PARA CIERRE Y REPORTES POR FONDO ---
 
-    const btnLlegadas = document.getElementById('btn-llegadas'), btnCierre = document.getElementById('btn-cierre'), btnInformes = document.getElementById('btn-informes');
-    const panelLlegadas = document.getElementById('panel-llegadas'), panelCierre = document.getElementById('panel-cierre'), panelInformes = document.getElementById('panel-informes');
-
-    const setActiveButton = (activeBtn) => {
-        if (!activeBtn) return;
-        [btnLlegadas, btnCierre, btnInformes].forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
-        activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700');
-    };
-    const showPanel = (activePanel) => {
-        if (!activePanel) return;
-        [panelLlegadas, panelCierre, panelInformes].forEach(panel => { if(panel) panel.classList.add('hidden'); });
-        activePanel.classList.remove('hidden');
-    };
-
-    if (btnLlegadas) btnLlegadas.addEventListener('click', () => { setActiveButton(btnLlegadas); showPanel(panelLlegadas); loadLlegadas(); });
-    if (btnCierre) btnCierre.addEventListener('click', () => { setActiveButton(btnCierre); showPanel(panelCierre); loadFundsForCierre(); });
-    if (btnInformes) btnInformes.addEventListener('click', () => { setActiveButton(btnInformes); showPanel(panelInformes); loadInformes(); });
-
-    async function loadLlegadas() {
-        const tbody = document.getElementById('llegadas-table-body'); if (!tbody) return; tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center">Cargando...</td></tr>';
-        try {
-            const response = await fetch(`${apiUrlBase}/digitador_llegadas_api.php`);
-            const llegadas = await response.json(); tbody.innerHTML = '';
-            if (llegadas.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay llegadas pendientes.</td></tr>'; return; }
-            llegadas.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td><td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td><td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td><td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td></tr>`; });
-        } catch (error) { console.error('Error cargando llegadas:', error); tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
-    }
-
+    // Cargar fondos listos para cerrar (tienen planillas 'Conforme' pero el fondo no está 'Cerrado')
     async function loadFundsForCierre() {
-        const container = document.getElementById('funds-list-container'); if (!container) return; container.innerHTML = '<p class="text-center">Cargando fondos...</p>'; document.getElementById('services-list-container').innerHTML = '<p class="text-gray-500">Seleccione un fondo para ver sus servicios.</p>';
+        const container = document.getElementById('funds-list-container');
+        if (!container) return;
+        container.innerHTML = '<p class="text-center text-sm text-gray-500">Cargando fondos...</p>';
+        document.getElementById('services-list-container').innerHTML = '<p class="text-gray-500 text-sm">Seleccione un fondo de la lista.</p>';
+        document.getElementById('close-fund-button').classList.add('hidden');
+        selectedFundForClosure = null;
+
         try {
-            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=list_funds`);
-            const funds = await response.json(); container.innerHTML = '';
-            if (funds.length === 0) { container.innerHTML = '<p class="text-gray-500 text-center">No hay fondos con servicios activos.</p>'; return; }
-            funds.forEach(fund => { container.innerHTML += `<div class="p-3 border rounded-lg cursor-pointer hover:bg-gray-100" onclick="loadServicesForFund(${fund.id}, this)"><div class="flex justify-between items-center"><p class="font-semibold">${fund.name}</p><span class="text-xs text-gray-500">${fund.client_name}</span></div></div>`; });
-        } catch (error) { console.error('Error cargando fondos:', error); container.innerHTML = '<p class="text-center text-red-500">Error al cargar fondos.</p>'; }
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=list_funds_to_close`);
+            const funds = await response.json();
+            container.innerHTML = '';
+            if (funds.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-sm text-center">No hay fondos listos para cerrar.</p>';
+                return;
+            }
+            funds.forEach(fund => {
+                container.innerHTML += `<div id="fund-to-close-${fund.id}" class="p-3 border rounded-lg cursor-pointer hover:bg-gray-100" onclick="loadServicesForFund(${fund.id}, this)">
+                                            <p class="font-semibold">${fund.name}</p>
+                                            <span class="text-xs text-gray-500">${fund.client_name}</span>
+                                        </div>`;
+            });
+        } catch (error) {
+            console.error('Error cargando fondos para cierre:', error);
+            container.innerHTML = '<p class="text-center text-red-500 text-sm">Error al cargar fondos.</p>';
+        }
     }
+
+    // Cargar las planillas específicas de un fondo que están 'Conforme'
     async function loadServicesForFund(fundId, element) {
-        document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400')); element.classList.add('bg-blue-100', 'border-blue-400');
-        const container = document.getElementById('services-list-container'); if (!container) return; container.innerHTML = '<p class="text-center">Cargando servicios...</p>';
+        selectedFundForClosure = fundId; // Guardar el ID del fondo seleccionado
+        document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400'));
+        element.classList.add('bg-blue-100', 'border-blue-400');
+        
+        const container = document.getElementById('services-list-container');
+        container.innerHTML = '<p class="text-center text-sm text-gray-500">Cargando planillas...</p>';
+        
         try {
-            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=get_services&fund_id=${fundId}`);
-            const services = await response.json(); container.innerHTML = '';
-            if (services.length === 0) { container.innerHTML = '<p class="text-gray-500">Este fondo no tiene servicios activos.</p>'; return; }
-            services.forEach(service => { container.innerHTML += `<div class="p-3 border rounded-lg flex justify-between items-center"><div><p class="font-mono"><strong>Planilla:</strong> ${service.invoice_number}</p><p class="text-xs text-gray-500">${service.client_name} - ${formatCurrency(service.declared_value)}</p></div><button onclick="closeService(${service.id})" class="bg-teal-500 text-white text-xs font-bold py-2 px-3 rounded-md hover:bg-teal-600">Cerrar Servicio</button></div>`; });
-        } catch (error) { console.error('Error cargando servicios:', error); container.innerHTML = '<p class="text-center text-red-500">Error al cargar servicios.</p>'; }
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=get_services_for_closing&fund_id=${fundId}`);
+            const services = await response.json();
+            container.innerHTML = '';
+            if (services.length === 0) {
+                container.innerHTML = '<p class="text-gray-500 text-sm">Este fondo no tiene planillas aprobadas.</p>';
+                document.getElementById('close-fund-button').classList.add('hidden');
+                return;
+            }
+            
+            let total = 0;
+            services.forEach(service => {
+                total += parseFloat(service.total_counted);
+                container.innerHTML += `<div class="p-2 border-b text-sm">
+                                            <div class="flex justify-between">
+                                                <span class="font-mono">#${service.invoice_number}</span>
+                                                <span class="font-medium">${formatCurrency(service.total_counted)}</span>
+                                            </div>
+                                        </div>`;
+            });
+            container.innerHTML += `<div class="p-2 text-sm font-bold border-t-2 border-gray-500">
+                                        <div class="flex justify-between">
+                                            <span>Total Fondo:</span>
+                                            <span>${formatCurrency(total)}</span>
+                                        </div>
+                                    </div>`;
+            document.getElementById('close-fund-button').classList.remove('hidden');
+        } catch (error) {
+            console.error('Error cargando servicios:', error);
+            container.innerHTML = '<p class="text-center text-red-500 text-sm">Error al cargar servicios.</p>';
+        }
     }
-    async function closeService(serviceId) {
-        if (!confirm('¿Está seguro de que desea cerrar este servicio?')) return;
+
+    // Cerrar el fondo seleccionado (todas sus planillas 'Conforme')
+    async function closeFund() {
+        if (!selectedFundForClosure) {
+            alert('Por favor, seleccione un fondo primero.');
+            return;
+        }
+        if (!confirm('¿Está seguro de que desea cerrar este fondo? Todas las planillas aprobadas se marcarán como cerradas y pasarán a informes.')) return;
+        
         try {
-            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_service`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ service_id: serviceId }) });
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_fund`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fund_id: selectedFundForClosure })
+            });
             const result = await response.json();
-            if (result.success) { alert('Servicio cerrado.'); location.reload(); }
-            else { alert('Error: ' + (result.error || 'No se pudo cerrar.')); }
-        } catch (error) { console.error('Error al cerrar servicio:', error); alert('Error de conexión.'); }
+            if (result.success) {
+                alert(result.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (result.error || 'No se pudo cerrar el fondo.'));
+            }
+        } catch (error) {
+            console.error('Error al cerrar fondo:', error);
+            alert('Error de conexión.');
+        }
     }
+
+    // Cargar la lista de fondos ya cerrados para generar PDF
     async function loadInformes() {
-        const tbody = document.getElementById('informes-table-body'); if (!tbody) return; tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center">Cargando...</td></tr>'; document.getElementById('select-all-informes').checked = false; updateInformeCount();
+        const tbody = document.getElementById('informes-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-sm text-gray-500">Cargando informes...</td></tr>';
+        
         try {
-            const response = await fetch(`${apiUrlBase}/digitador_informes_api.php`);
-            const servicios = await response.json(); tbody.innerHTML = '';
-            if (servicios.length === 0) { tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-gray-500">No hay servicios para informar.</td></tr>'; return; }
-            servicios.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3"><input type="checkbox" class="informe-checkbox" data-planilla="${item.planilla}" data-sello="${item.sello}" data-total="${item.total}" data-cliente="${item.cliente}"></td><td class="p-3 font-mono">${item.planilla}</td> <td class="p-3 font-mono">${item.sello}</td><td class="p-3">${formatCurrency(item.total)}</td> <td class="p-3">${item.fondo || 'N/A'}</td> <td class="p-3">${item.cliente}</td></tr>`; });
-            document.querySelectorAll('.informe-checkbox').forEach(cb => cb.addEventListener('change', updateInformeCount));
-            document.getElementById('select-all-informes').addEventListener('change', (e) => { document.querySelectorAll('.informe-checkbox').forEach(cb => cb.checked = e.target.checked); updateInformeCount(); });
-        } catch (error) { console.error('Error cargando informes:', error); tbody.innerHTML = '<tr><td colspan="6" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
+            const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=list_closed_funds`);
+            const funds = await response.json();
+            tbody.innerHTML = '';
+            if (funds.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-sm text-gray-500">No hay fondos cerrados para informar.</td></tr>';
+                return;
+            }
+            funds.forEach(fund => {
+                tbody.innerHTML += `<tr class="border-b">
+                                        <td class="p-3 font-semibold">${fund.fund_name}</td>
+                                        <td class="p-3">${fund.client_name}</td>
+                                        <td class="p-3 text-xs">${new Date(fund.last_close_date).toLocaleString('es-CO')}</td>
+                                        <td class="p-3 text-center">
+                                            <button onclick="generatePDF(${fund.id}, '${fund.fund_name}')" class="bg-green-600 text-white font-bold py-1 px-3 rounded-md hover:bg-green-700 text-xs">
+                                                Generar PDF
+                                            </button>
+                                        </td>
+                                    </tr>`;
+            });
+        } catch (error) {
+            console.error('Error cargando informes:', error);
+            tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-red-500 text-sm">Error al cargar informes.</td></tr>';
+        }
     }
-    function updateInformeCount() { const count = document.querySelectorAll('.informe-checkbox:checked').length; document.getElementById('selected-informe-count').textContent = count; }
-    function generatePDF() {
+
+    // Generar el PDF para un fondo específico
+    async function generatePDF(fundId, fundName) {
         if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') { alert('Error: La librería jsPDF no se cargó.'); return; }
-        const { jsPDF } = window.jspdf; const doc = new jsPDF();
+        const { jsPDF } = window.jspdf;
         if (typeof doc.autoTable === 'undefined') { alert('Error: La extensión autoTable para PDF no se cargó.'); return; }
-        const selectedRows = [];
-        document.querySelectorAll('.informe-checkbox:checked').forEach(checkbox => { const ds = checkbox.dataset; selectedRows.push([ ds.planilla, ds.sello, formatCurrency(ds.total), ds.cliente ]); });
-        if (selectedRows.length === 0) { alert('Seleccione al menos un servicio.'); return; }
-        doc.setFontSize(18); doc.text("Informe de Servicios Cerrados", 14, 22);
-        doc.autoTable({ head: [['Planilla', 'Sello', 'Total Contado', 'Cliente']], body: selectedRows, startY: 30 });
-        const pageCount = doc.internal.getNumberOfPages();
-        for(let i = 1; i <= pageCount; i++) { doc.setPage(i); doc.setFontSize(10); doc.text(`Generado por EAGLE 3.0 - ${new Date().toLocaleDateString('es-CO')}`, 14, doc.internal.pageSize.height - 10); }
-        doc.save("informe-servicios.pdf");
+        
+        // 1. Obtener los datos del informe
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=get_report_details&fund_id=${fundId}`);
+            const planillas = await response.json();
+            
+            if (planillas.length === 0) {
+                alert('No se encontraron datos para este informe.');
+                return;
+            }
+
+            // 2. Preparar datos para el PDF
+            const doc = new jsPDF();
+            const head = [['Planilla', 'Sello', 'V. Declarado', 'V. Contado', 'Discrepancia', 'Operador', 'Digitador']];
+            const body = [];
+            let totalDeclarado = 0;
+            let totalContado = 0;
+            let totalDiscrepancia = 0;
+
+            planillas.forEach(p => {
+                body.push([
+                    p.planilla,
+                    p.sello,
+                    formatCurrency(p.declared_value),
+                    formatCurrency(p.total),
+                    formatCurrency(p.discrepancy),
+                    p.operador,
+                    p.digitador
+                ]);
+                totalDeclarado += parseFloat(p.declared_value);
+                totalContado += parseFloat(p.total);
+                totalDiscrepancia += parseFloat(p.discrepancy);
+            });
+
+            // Añadir fila de totales
+            body.push([
+                { content: 'TOTALES', colSpan: 2, styles: { fontStyle: 'bold', halign: 'right' } },
+                { content: formatCurrency(totalDeclarado), styles: { fontStyle: 'bold' } },
+                { content: formatCurrency(totalContado), styles: { fontStyle: 'bold' } },
+                { content: formatCurrency(totalDiscrepancia), styles: { fontStyle: 'bold', textColor: totalDiscrepancia != 0 ? [220, 38, 38] : [22, 163, 74] } },
+                { content: '', colSpan: 2 }
+            ]);
+
+            // 3. Generar el PDF
+            doc.setFontSize(18);
+            doc.text(`Informe de Cierre de Fondo: ${fundName}`, 14, 22);
+            doc.setFontSize(11);
+            doc.text(`Cliente: ${planillas[0].cliente}`, 14, 30);
+            doc.text(`Fecha de Generación: ${new Date().toLocaleDateString('es-CO')}`, 14, 36);
+
+            doc.autoTable({
+                head: head,
+                body: body,
+                startY: 42,
+                headStyles: { fillColor: [29, 78, 216] } // Color azul
+            });
+            
+            const pageCount = doc.internal.getNumberOfPages();
+            for(let i = 1; i <= pageCount; i++) {
+                doc.setPage(i);
+                doc.setFontSize(9);
+                doc.text(`Generado por EAGLE 3.0 - Página ${i} de ${pageCount}`, 14, doc.internal.pageSize.height - 10);
+            }
+            
+            doc.save(`Informe_Fondo_${fundName.replace(' ', '_')}.pdf`);
+
+        } catch (error) {
+            console.error('Error generando PDF:', error);
+            alert('No se pudo generar el informe en PDF.');
+        }
     }
+
 
     document.addEventListener('DOMContentLoaded', () => {
         // <-- CAMBIO AQUÍ: Parte 2 - Restaurar la pestaña activa al cargar la página -->
@@ -1930,7 +2032,6 @@ $conn->close();
         }
 
         if (document.getElementById('content-operador')) {
-            // Solo poblar esta tabla si el usuario es Admin (ya que el panel está oculto para otros)
             if (currentUserRole === 'Admin') {
                 populateOperatorCheckinsTable(initialCheckins);
             }
@@ -1940,7 +2041,10 @@ $conn->close();
         }
 
         if (document.getElementById('content-digitador')) {
-            loadLlegadas();
+            // Carga las funciones del nuevo flujo de cierre
+            loadFundsForCierre();
+            loadInformes();
+            // Carga las tablas de supervisión e historial
             populateOperatorHistoryForDigitador(operatorHistoryData);
             populateDigitadorClosedHistory(digitadorClosedHistory);
         }

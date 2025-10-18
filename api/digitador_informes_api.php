@@ -9,27 +9,65 @@ if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_role'], ['Digitado
     exit;
 }
 
-// Muestra todos los servicios que ya fueron cerrados por el digitador
-$query = "
-    SELECT 
-        ci.id, ci.invoice_number as planilla, ci.seal_number as sello, oc.total_counted as total, 
-        f.name as fondo, c.name as cliente
-    FROM check_ins ci
-    JOIN operator_counts oc ON ci.id = oc.check_in_id
-    JOIN clients c ON ci.client_id = c.id
-    LEFT JOIN funds f ON ci.fund_id = f.id
-    WHERE ci.digitador_status IN ('Cerrado', 'Conforme')
-    ORDER BY ci.closed_by_digitador_at DESC
-";
+$action = $_GET['action'] ?? 'list_closed_funds';
 
-$result = $conn->query($query);
-$servicios = [];
-if ($result) {
-    while ($row = $result->fetch_assoc()) {
-        $servicios[] = $row;
+if ($action === 'list_closed_funds') {
+    // Lista los fondos que tienen al menos una planilla 'Cerrado'
+    $query = "
+        SELECT DISTINCT f.id, f.name as fund_name, c.name as client_name,
+                       MAX(ci.closed_by_digitador_at) as last_close_date
+        FROM check_ins ci
+        JOIN funds f ON ci.fund_id = f.id
+        JOIN clients c ON f.client_id = c.id
+        WHERE ci.digitador_status = 'Cerrado'
+        GROUP BY f.id, f.name, c.name
+        ORDER BY last_close_date DESC
+    ";
+    $result = $conn->query($query);
+    $funds = [];
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $funds[] = $row;
+        }
     }
+    echo json_encode($funds);
+    
+} elseif ($action === 'get_report_details' && isset($_GET['fund_id'])) {
+    $fund_id = intval($_GET['fund_id']);
+    
+    // Obtiene todas las planillas cerradas para ese fondo
+    $query = "
+        SELECT 
+            ci.invoice_number as planilla, 
+            ci.seal_number as sello, 
+            ci.declared_value,
+            oc.total_counted as total, 
+            oc.discrepancy,
+            c.name as cliente,
+            u_op.name as operador,
+            u_dig.name as digitador
+        FROM check_ins ci
+        LEFT JOIN operator_counts oc ON ci.id = oc.check_in_id
+        LEFT JOIN clients c ON ci.client_id = c.id
+        LEFT JOIN users u_op ON oc.operator_id = u_op.id
+        LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id
+        WHERE ci.fund_id = ? AND ci.digitador_status = 'Cerrado'
+        ORDER BY ci.invoice_number ASC
+    ";
+    
+    $stmt = $conn->prepare($query);
+    $stmt->bind_param("i", $fund_id);
+    $stmt->execute();
+    $result = $stmt->get_result();
+    $planillas = [];
+    if ($result) {
+        while ($row = $result->fetch_assoc()) {
+            $planillas[] = $row;
+        }
+    }
+    echo json_encode($planillas);
+    $stmt->close();
 }
 
-echo json_encode($servicios);
 $conn->close();
 ?>
