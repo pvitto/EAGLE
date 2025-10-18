@@ -35,7 +35,7 @@ if ($action === 'list_closed_funds') {
 } elseif ($action === 'get_report_details' && isset($_GET['fund_id'])) {
     $fund_id = intval($_GET['fund_id']);
     
-    // Obtiene todas las planillas cerradas para ese fondo
+    // Obtiene todas las planillas cerradas para ese fondo, asegurándose de tomar el último conteo
     $query = "
         SELECT 
             ci.invoice_number as planilla, 
@@ -47,7 +47,15 @@ if ($action === 'list_closed_funds') {
             u_op.name as operador,
             u_dig.name as digitador
         FROM check_ins ci
-        LEFT JOIN operator_counts oc ON ci.id = oc.check_in_id
+        LEFT JOIN (
+            SELECT a.*
+            FROM operator_counts a
+            INNER JOIN (
+                SELECT check_in_id, MAX(id) as max_id
+                FROM operator_counts
+                GROUP BY check_in_id
+            ) b ON a.id = b.max_id
+        ) oc ON ci.id = oc.check_in_id
         LEFT JOIN clients c ON ci.client_id = c.id
         LEFT JOIN users u_op ON oc.operator_id = u_op.id
         LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id

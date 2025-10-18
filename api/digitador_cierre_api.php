@@ -14,16 +14,21 @@ $method = $_SERVER['REQUEST_METHOD'];
 $user_id = $_SESSION['user_id'];
 
 if ($method === 'GET' && $action === 'list_funds_to_close') {
-    // Lista fondos que tienen al menos una planilla 'Conforme' Y NINGUNA planilla 'Cerrado'
+    
+    // --- CORRECCIÓN LÓGICA AQUÍ ---
+    // La consulta ahora solo busca fondos que tengan planillas 'Conforme'.
+    // Se eliminó la condición NOT IN que impedía que fondos ya cerrados
+    // (con planillas 'Cerrado') volvieran a aparecer si tenían nuevas
+    // planillas 'Conforme' listas para un nuevo cierre.
     $query = "
         SELECT DISTINCT f.id, f.name, c.name as client_name
         FROM funds f
         JOIN clients c ON f.client_id = c.id
         JOIN check_ins ci ON ci.fund_id = f.id
         WHERE ci.digitador_status = 'Conforme'
-        AND f.id NOT IN (SELECT fund_id FROM check_ins WHERE digitador_status = 'Cerrado' AND fund_id IS NOT NULL)
         ORDER BY f.name ASC
     ";
+    
     $result = $conn->query($query);
     $funds = [];
     if ($result) { while ($row = $result->fetch_assoc()) { $funds[] = $row; } }
@@ -35,7 +40,15 @@ if ($method === 'GET' && $action === 'list_funds_to_close') {
     $stmt = $conn->prepare("
         SELECT ci.id, ci.invoice_number, ci.declared_value, oc.total_counted, oc.discrepancy
         FROM check_ins ci
-        JOIN operator_counts oc ON ci.id = oc.check_in_id
+        LEFT JOIN (
+            SELECT a.*
+            FROM operator_counts a
+            INNER JOIN (
+                SELECT check_in_id, MAX(id) as max_id
+                FROM operator_counts
+                GROUP BY check_in_id
+            ) b ON a.id = b.max_id
+        ) oc ON ci.id = oc.check_in_id
         WHERE ci.fund_id = ? AND ci.digitador_status = 'Conforme'
         ORDER BY ci.created_at DESC
     ");

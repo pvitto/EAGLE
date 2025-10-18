@@ -226,10 +226,13 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
     
+    // El historial de cerradas AHORA muestra las que están 'Conforme' O 'Cerrado'
+    $status_filter = "ci.digitador_status IN ('Conforme', 'Cerrado')";
+
     if ($current_user_role === 'Digitador') {
-        $digitador_filter = "WHERE ci.digitador_status = 'Conforme' AND ci.closed_by_digitador_id = " . $current_user_id;
+        $digitador_filter = "WHERE {$status_filter} AND ci.closed_by_digitador_id = " . $current_user_id;
     } else { // Admin
-        $digitador_filter = "WHERE ci.digitador_status = 'Conforme'";
+        $digitador_filter = "WHERE {$status_filter}";
     }
 
     $closed_history_result = $conn->query("
@@ -240,7 +243,15 @@ if (in_array($current_user_role, ['Digitador', 'Admin'])) {
         FROM check_ins ci
         LEFT JOIN clients c ON ci.client_id = c.id
         LEFT JOIN users u_check ON ci.checkinero_id = u_check.id
-        LEFT JOIN operator_counts oc ON oc.check_in_id = ci.id
+        LEFT JOIN (
+            SELECT a.*
+            FROM operator_counts a
+            INNER JOIN (
+                SELECT check_in_id, MAX(id) as max_id
+                FROM operator_counts
+                GROUP BY check_in_id
+            ) b ON a.id = b.max_id
+        ) oc ON ci.id = oc.check_in_id
         LEFT JOIN users u_op ON oc.operator_id = u_op.id
         LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id
         LEFT JOIN funds f ON ci.fund_id = f.id
@@ -890,6 +901,7 @@ $conn->close();
                     </div>
                 </div>
                 <?php endif; ?>
+
                 <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
                     <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados</h3>
                     <div class="overflow-auto max-h-[600px]">
@@ -929,7 +941,7 @@ $conn->close();
 
                 <div class="bg-white p-6 rounded-xl shadow-lg">
                     <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
-                    <p class="text-sm text-gray-500 mb-4">Planillas pendientes de aprobación o rechazo. Las planillas sin discrepancia se aprueban automáticamente.</p>
+                    <p class="text-sm text-gray-500 mb-4">Todas las planillas contadas (con o sin discrepancia) deben ser aprobadas manualmente.</p>
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
@@ -1687,10 +1699,9 @@ $conn->close();
     function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
 
     function populateOperatorHistoryForDigitador(history) {
-        // --- CAMBIO AQUÍ: Volvemos a mostrar TODAS las planillas pendientes de decisión ---
+        // --- CAMBIO: Se revirtió a la lógica de aprobación manual ---
         const pendingReview = history.filter(item => {
             const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
-            // Mostrar si está Procesado O con Discrepancia, Y si el digitador no ha tomado una decisión (es NULL)
             return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia') && checkin.digitador_status === null;
         });
 
@@ -1728,7 +1739,9 @@ $conn->close();
             `;
         }
         let statusBadge = '';
+        // El historial ahora muestra 'Conforme' (listo para cerrar) y 'Cerrado'
         if (item.digitador_status === 'Conforme') { statusBadge = `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Conforme</span>`; }
+        else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`; }
         else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
 
         const row = `
@@ -1794,9 +1807,41 @@ $conn->close();
         }
     }
 
-    // --- LÓGICA REFACTORIZADA PARA CIERRE Y REPORTES POR FONDO ---
 
-    // Cargar fondos listos para cerrar (tienen planillas 'Conforme' pero el fondo no está 'Cerrado')
+    // --- LÓGICA REFACTORIZADA PARA CIERRE Y REPORTES POR FONDO ---
+    const btnLlegadas = document.getElementById('btn-llegadas');
+    const btnCierre = document.getElementById('btn-cierre');
+    const btnInformes = document.getElementById('btn-informes');
+    const panelLlegadas = document.getElementById('panel-llegadas');
+    const panelCierre = document.getElementById('panel-cierre');
+    const panelInformes = document.getElementById('panel-informes');
+    
+    // Ocultar botones de navegación si los paneles no existen (para no-digitadores)
+    if (btnLlegadas) {
+        const setActiveButton = (activeBtn) => {
+            [btnLlegadas, btnCierre, btnInformes].forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
+            activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700');
+        };
+        const showPanel = (activePanel) => {
+            [panelLlegadas, panelCierre, panelInformes].forEach(panel => { if(panel) panel.classList.add('hidden'); });
+            activePanel.classList.remove('hidden');
+        };
+
+        btnLlegadas.addEventListener('click', () => { setActiveButton(btnLlegadas); showPanel(panelLlegadas); });
+        btnCierre.addEventListener('click', () => { setActiveButton(btnCierre); showPanel(panelCierre); loadFundsForCierre(); });
+        btnInformes.addEventListener('click', () => { setActiveButton(btnInformes); showPanel(panelInformes); loadInformes(); });
+    }
+
+    async function loadLlegadas() {
+        const tbody = document.getElementById('llegadas-table-body'); if (!tbody) return; tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-sm text-gray-500">Cargando...</td></tr>';
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_llegadas_api.php`);
+            const llegadas = await response.json(); tbody.innerHTML = '';
+            if (llegadas.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay llegadas pendientes.</td></tr>'; return; }
+            llegadas.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td><td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td><td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td><td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td></tr>`; });
+        } catch (error) { console.error('Error cargando llegadas:', error); tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
+    }
+
     async function loadFundsForCierre() {
         const container = document.getElementById('funds-list-container');
         if (!container) return;
@@ -1825,9 +1870,8 @@ $conn->close();
         }
     }
 
-    // Cargar las planillas específicas de un fondo que están 'Conforme'
     async function loadServicesForFund(fundId, element) {
-        selectedFundForClosure = fundId; // Guardar el ID del fondo seleccionado
+        selectedFundForClosure = fundId; 
         document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400'));
         element.classList.add('bg-blue-100', 'border-blue-400');
         
@@ -1867,7 +1911,6 @@ $conn->close();
         }
     }
 
-    // Cerrar el fondo seleccionado (todas sus planillas 'Conforme')
     async function closeFund() {
         if (!selectedFundForClosure) {
             alert('Por favor, seleccione un fondo primero.');
@@ -1894,7 +1937,6 @@ $conn->close();
         }
     }
 
-    // Cargar la lista de fondos ya cerrados para generar PDF
     async function loadInformes() {
         const tbody = document.getElementById('informes-table-body');
         if (!tbody) return;
@@ -1926,13 +1968,24 @@ $conn->close();
         }
     }
 
-    // Generar el PDF para un fondo específico
+    // <-- CAMBIO AQUÍ: Función de PDF corregida -->
     async function generatePDF(fundId, fundName) {
-        if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') { alert('Error: La librería jsPDF no se cargó.'); return; }
-        const { jsPDF } = window.jspdf;
-        if (typeof doc.autoTable === 'undefined') { alert('Error: La extensión autoTable para PDF no se cargó.'); return; }
+        // 1. Verificar que las librerías estén cargadas
+        if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
+            alert('Error: La librería jsPDF no se cargó.');
+            return;
+        }
         
-        // 1. Obtener los datos del informe
+        const { jsPDF } = window.jspdf;
+        const doc = new jsPDF(); // <-- Instanciar ANTES de usar
+
+        // 2. Verificar que el plugin autoTable esté cargado
+        if (typeof doc.autoTable === 'undefined') {
+            alert('Error: La extensión autoTable para PDF no se cargó.');
+            return;
+        }
+        
+        // 3. Obtener los datos del informe
         try {
             const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=get_report_details&fund_id=${fundId}`);
             const planillas = await response.json();
@@ -1942,8 +1995,7 @@ $conn->close();
                 return;
             }
 
-            // 2. Preparar datos para el PDF
-            const doc = new jsPDF();
+            // 4. Preparar datos para el PDF
             const head = [['Planilla', 'Sello', 'V. Declarado', 'V. Contado', 'Discrepancia', 'Operador', 'Digitador']];
             const body = [];
             let totalDeclarado = 0;
@@ -1974,7 +2026,7 @@ $conn->close();
                 { content: '', colSpan: 2 }
             ]);
 
-            // 3. Generar el PDF
+            // 5. Generar el PDF
             doc.setFontSize(18);
             doc.text(`Informe de Cierre de Fondo: ${fundName}`, 14, 22);
             doc.setFontSize(11);
@@ -1995,17 +2047,17 @@ $conn->close();
                 doc.text(`Generado por EAGLE 3.0 - Página ${i} de ${pageCount}`, 14, doc.internal.pageSize.height - 10);
             }
             
-            doc.save(`Informe_Fondo_${fundName.replace(' ', '_')}.pdf`);
+            doc.save(`Informe_Fondo_${fundName.replace(/ /g, '_')}.pdf`);
 
         } catch (error) {
             console.error('Error generando PDF:', error);
             alert('No se pudo generar el informe en PDF.');
         }
     }
+    // --- FIN DE LA LÓGICA DE CIERRE Y REPORTES ---
 
 
     document.addEventListener('DOMContentLoaded', () => {
-        // <-- CAMBIO AQUÍ: Parte 2 - Restaurar la pestaña activa al cargar la página -->
         const savedTab = sessionStorage.getItem('activeTab');
         if (savedTab) {
             switchTab(savedTab);
