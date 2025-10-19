@@ -10,7 +10,7 @@ if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_role'], ['Admin', 
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
-$user_id = $_SESSION['user_id'];
+$user_id = $_SESSION['user_id']; // ID del Operador (quien crea la tarea)
 
 if ($method === 'GET') {
     $planilla = $_GET['planilla'] ?? null;
@@ -78,21 +78,19 @@ if ($method === 'POST') {
             // --- CAMBIO AQUÍ: Asignar Tareas a Grupo 'Digitador' ---
             $digitadores_res = $conn->query("SELECT id FROM users WHERE role = 'Digitador'");
             if ($digitadores_res->num_rows > 0 && $alert_id) {
-                // Prepara la consulta para insertar la tarea con el campo 'assigned_to_group'
-                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, assigned_to_group, instruction, type, status) VALUES (?, ?, ?, ?, 'Asignacion', 'Pendiente')");
+                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, assigned_to_group, instruction, type, status, created_by_user_id) VALUES (?, ?, ?, ?, 'Asignacion', 'Pendiente', ?)");
                 $instruction = "Realizar seguimiento a la discrepancia, contactar a los responsables y documentar la resolución.";
-                $digitador_group_name = 'Digitador'; // Nombre del grupo
+                $digitador_group_name = 'Digitador';
                 
                 while($row = $digitadores_res->fetch_assoc()) {
                     $digitador_id = $row['id'];
-                    // Asigna a la vez al usuario individual Y al grupo
-                    $stmt_task->bind_param("iiss", $alert_id, $digitador_id, $digitador_group_name, $instruction);
+                    // Asigna al usuario Y al grupo, y registra QUIÉN (el operador) la creó
+                    $stmt_task->bind_param("iissi", $alert_id, $digitador_id, $digitador_group_name, $instruction, $user_id);
                     $stmt_task->execute();
                 }
                 $stmt_task->close();
                 $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = $alert_id");
             }
-            // --- FIN DEL CAMBIO ---
         }
         
         $conn->commit();

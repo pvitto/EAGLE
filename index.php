@@ -3,10 +3,8 @@ session_start();
 require 'check_session.php';
 require 'db_connection.php';
 
-// Establecer la zona horaria correcta para Colombia
 date_default_timezone_set('America/Bogota');
 
-// Cargar todos los usuarios
 $all_users = [];
 $users_result = $conn->query("SELECT id, name, role, email FROM users ORDER BY name ASC");
 if ($users_result) {
@@ -115,18 +113,31 @@ usort($main_non_priority_items, function($a, $b) use ($priority_order) { return 
 usort($panel_high_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 usort($panel_medium_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 
-// --- CAMBIO AQUÍ: LÍNEAS RESTAURADAS ---
 $total_alerts_count_for_user = count($all_pending_items);
 $priority_summary_count = count($main_priority_items);
 $high_priority_badge_count = count($panel_high_priority_items);
 $medium_priority_badge_count = count($panel_medium_priority_items);
-// --- FIN DEL CAMBIO ---
 
 // --- OTRAS CONSULTAS DE DATOS ---
+
+// --- CAMBIO AQUÍ: Consulta de Trazabilidad (Completadas) ---
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
-        "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' ORDER BY t.completed_at DESC"
+        "SELECT 
+            t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, 
+            t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, 
+            u_completed.name as completed_by, t.created_at, t.completed_at, 
+            TIMEDIFF(t.completed_at, t.created_at) as response_time,
+            t.assigned_to_group, u_creator.name as created_by_name
+         FROM tasks t 
+         LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id 
+         LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id 
+         LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id
+         LEFT JOIN alerts a ON t.alert_id = a.id 
+         WHERE t.status = 'Completada' 
+         GROUP BY t.id
+         ORDER BY t.completed_at DESC"
     );
     if ($completed_result) {
         while($row = $completed_result->fetch_assoc()){
@@ -1116,6 +1127,7 @@ $conn->close();
                                     <th class="px-6 py-3 sortable cursor-pointer" data-column-name="completed_at" onclick="sortTableByDate('completed_at')">Hora Fin <span class="text-gray-400"></span></th>
                                     <th class="px-6 py-3">Tiempo Resp.</th>
                                     <th class="px-6 py-3">Asignado a</th>
+                                    <th class="px-6 py-3">Asignado por</th>
                                     <th class="px-6 py-3">Check por</th>
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="px-6 py-3">Acciones</th><?php endif; ?>
                                 </tr>
@@ -1655,14 +1667,35 @@ $conn->close();
         } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
     }
 
+    // --- CAMBIO AQUÍ: Funciones de Trazabilidad movidas dentro del bloque Admin ---
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
     
     function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
         tbody.innerHTML = '';
-        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="10" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
+        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="11" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
         tasks.forEach(task => {
-            tbody.innerHTML += `<tr class="border-b"><td class="px-6 py-4 font-medium">${task.title || ''}</td><td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td><td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td><td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td><td class="px-6 py-4 font-mono">${task.response_time || ''}</td><td class="px-6 py-4">${task.assigned_to || ''}</td><td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td><td class="px-6 py-4 text-center"><button onclick="deleteTask(${task.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td></tr>`;
+            // Lógica para mostrar Asignado A (Grupo o Usuario)
+            let assignedTo = '';
+            if (task.assigned_to_group) {
+                assignedTo = `Grupo ${task.assigned_to_group}`;
+            } else if (task.assigned_to) {
+                assignedTo = task.assigned_to;
+            }
+
+            tbody.innerHTML += `<tr class="border-b">
+                                    <td class="px-6 py-4 font-medium">${task.title || ''}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td>
+                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td>
+                                    <td class="px-6 py-4 font-mono">${task.response_time || ''}</td>
+                                    <td class="px-6 py-4">${assignedTo}</td>
+                                    <td class="px-6 py-4">${task.created_by_name || 'Sistema'}</td>
+                                    <td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td>
+                                    <td class="px-6 py-4 text-center"><button onclick="deleteTask(${task.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>
+                               </tr>`;
         });
     }
 
@@ -1779,7 +1812,7 @@ $conn->close();
         let statusBadge = '';
         if (item.digitador_status === 'Conforme') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`; }
         else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">Cerrado</span>`; }
-        else { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">${item.digitador_status || 'N/A'}</span>`; }
+        else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
 
         const row = `
             <tr class="border-b hover:bg-gray-50">
