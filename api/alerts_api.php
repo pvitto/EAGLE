@@ -104,10 +104,8 @@ if ($method === 'POST') {
             $stmt_task = null;
             if ($type === 'Manual') {
                 if (!$title) throw new Exception("El título es requerido para tareas manuales grupales.");
-                // --- CAMBIO AQUÍ: Añadir created_by_user_id ---
                 $stmt_task = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, assigned_to_group, type, start_datetime, end_datetime, created_by_user_id) VALUES (?, ?, ?, ?, ?, 'Manual', ?, ?, ?)");
             } elseif ($type === 'Asignacion' && $alert_id) {
-                // --- CAMBIO AQUÍ: Añadir created_by_user_id ---
                 $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, assigned_to_group, instruction, type, created_by_user_id) VALUES (?, ?, ?, ?, 'Asignacion', ?)");
             } else {
                 throw new Exception("Parámetros no válidos para asignación grupal.");
@@ -145,13 +143,11 @@ if ($method === 'POST') {
             $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL WHERE id = ?");
             $stmt->bind_param("isi", $user_id, $instruction, $task_id);
         } elseif ($alert_id) { 
-            // --- CAMBIO AQUÍ: Añadir created_by_user_id ---
             $stmt = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, instruction, type, created_by_user_id) VALUES (?, ?, ?, 'Asignacion', ?)");
             $stmt->bind_param("iisi", $alert_id, $user_id, $instruction, $creator_id);
         }
     } elseif ($type === 'Manual') {
         if ($title) { 
-             // --- CAMBIO AQUÍ: Añadir created_by_user_id ---
              $stmt = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, type, start_datetime, end_datetime, created_by_user_id) VALUES (?, ?, ?, ?, 'Manual', ?, ?, ?)");
              $stmt->bind_param("sssissi", $title, $instruction, $priority, $user_id, $start_datetime, $end_datetime, $creator_id);
         }

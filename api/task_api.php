@@ -14,6 +14,7 @@ header('Content-Type: application/json');
 if ($method === 'POST') {
     $data = json_decode(file_get_contents('php://input'), true);
     $task_id = $data['task_id'] ?? null;
+    $resolution_note = $data['resolution_note'] ?? null; // <-- CAMBIO: Se recibe la nota
     $completing_user_id = $_SESSION['user_id'];
 
     if (!$task_id) {
@@ -22,12 +23,19 @@ if ($method === 'POST') {
         exit;
     }
 
+    // --- CAMBIO AQUÍ: Observación es obligatoria ---
+    if (empty(trim($resolution_note))) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'error' => 'La observación de cierre es obligatoria.']);
+        exit;
+    }
+
     $conn->begin_transaction();
 
     try {
-        // 1. Marcar la tarea específica del usuario como completada
-        $stmt_task = $conn->prepare("UPDATE tasks SET completed_at = NOW(), status = 'Completada', completed_by_user_id = ? WHERE id = ?");
-        $stmt_task->bind_param("ii", $completing_user_id, $task_id);
+        // 1. Marcar la tarea específica del usuario como completada Y AÑADIR LA NOTA
+        $stmt_task = $conn->prepare("UPDATE tasks SET completed_at = NOW(), status = 'Completada', completed_by_user_id = ?, resolution_note = ? WHERE id = ?");
+        $stmt_task->bind_param("isi", $completing_user_id, $resolution_note, $task_id);
         $stmt_task->execute();
         $stmt_task->close();
 
@@ -61,7 +69,6 @@ if ($method === 'POST') {
         } elseif ($assigned_to_group && $title && $created_at) {
             // Es una tarea manual de grupo
             // 3.c. Cancelar las otras tareas duplicadas para este grupo manual
-            // Usamos title, created_at y group para identificar el "lote" de tareas
             $stmt_cancel = $conn->prepare("UPDATE tasks SET status = 'Cancelada' WHERE title = ? AND assigned_to_group = ? AND created_at = ? AND id != ?");
             $stmt_cancel->bind_param("sssi", $title, $assigned_to_group, $created_at, $task_id);
             $stmt_cancel->execute();

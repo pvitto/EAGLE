@@ -6,9 +6,10 @@ require 'db_connection.php';
 // Establecer la zona horaria correcta para Colombia
 date_default_timezone_set('America/Bogota');
 
-// Cargar todos los usuarios
+// Cargar todos los usuarios (incluyendo el nuevo campo 'gender')
 $all_users = [];
-$users_result = $conn->query("SELECT id, name, role, email FROM users ORDER BY name ASC");
+// *** MODIFICADO: Incluir 'gender' en la consulta ***
+$users_result = $conn->query("SELECT id, name, role, email, gender FROM users ORDER BY name ASC");
 if ($users_result) {
     while ($row = $users_result->fetch_assoc()) {
         $all_users[] = $row;
@@ -19,9 +20,51 @@ $admin_users_list = ($_SESSION['user_role'] === 'Admin') ? $all_users : [];
 // --- LÓGICA DE ALERTAS Y TAREAS PENDIENTES ---
 $current_user_id = $_SESSION['user_id'];
 $current_user_role = $_SESSION['user_role'];
-$all_pending_items = [];
+// *** NUEVO: Obtener género de la sesión ***
+$current_user_gender = $_SESSION['user_gender'] ?? null;
 
-// Filtro de usuario mejorado para GRUPOS
+// *** NUEVA: Función para obtener el nombre del rol según el género ***
+function getRoleDisplayName($role, $gender) {
+    if ($gender === 'F') {
+        switch ($role) {
+            case 'Digitador': return 'Digitadora';
+            case 'Operador': return 'Operadora';
+            case 'Checkinero': return 'Checkinera';
+            // Añade más casos si es necesario
+            default: return $role; // Admin, etc.
+        }
+    }
+    return $role; // Devuelve el rol original si es Masculino o no definido
+}
+
+// *** NUEVO: Obtener el nombre del rol a mostrar ***
+$displayRole = getRoleDisplayName($current_user_role, $current_user_gender);
+
+// --- Lógica para el color del chip de rol y pestañas ---
+// (Esta lógica no necesita cambiar, usa $current_user_role para las clases CSS)
+$role_color_class = 'bg-gray-200 text-gray-800'; // Default
+$role_nav_class = 'nav-admin'; // Default for Admin
+switch ($current_user_role) {
+    case 'Admin':
+        $role_color_class = 'bg-red-200 text-red-800';
+        $role_nav_class = 'nav-admin';
+        break;
+    case 'Digitador':
+        $role_color_class = 'bg-blue-200 text-blue-800';
+        $role_nav_class = 'nav-digitador';
+        break;
+    case 'Operador':
+        $role_color_class = 'bg-yellow-200 text-yellow-800';
+        $role_nav_class = 'nav-operador';
+        break;
+    case 'Checkinero':
+        $role_color_class = 'bg-green-200 text-green-800';
+        $role_nav_class = 'nav-checkinero';
+        break;
+}
+
+
+$all_pending_items = [];
 $user_filter = '';
 if ($current_user_role !== 'Admin') {
     $user_filter = " AND (t.assigned_to_user_id = {$current_user_id} OR t.assigned_to_group = '{$current_user_role}')";
@@ -29,25 +72,25 @@ if ($current_user_role !== 'Admin') {
 
 // 1. Cargar Alertas Pendientes
 $base_query_fields = "
-    a.*, 
+    a.*,
     MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id,
     MAX(t.id) as any_task_id,
-    MAX(t.status) as task_status, 
+    MAX(t.status) as task_status,
     t.assigned_to_group,
-    GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as assigned_names, 
-    t.type as task_type, 
+    GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as assigned_names,
+    t.type as task_type,
     MAX(t.instruction) as instruction,
-    MAX(t.start_datetime) as start_datetime, 
+    MAX(t.start_datetime) as start_datetime,
     MAX(t.end_datetime) as end_datetime,
-    ci.invoice_number 
+    ci.invoice_number
 ";
 $base_query_joins = "
     FROM alerts a
     LEFT JOIN tasks t ON t.alert_id = a.id AND t.status != 'Cancelada'
     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
-    LEFT JOIN check_ins ci ON a.check_in_id = ci.id 
+    LEFT JOIN check_ins ci ON a.check_in_id = ci.id
 ";
-$grouping = " GROUP BY a.id, t.assigned_to_group"; 
+$grouping = " GROUP BY a.id, t.assigned_to_group";
 
 $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
 
@@ -64,17 +107,18 @@ $manual_tasks_sql = "
     SELECT
         t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status,
         t.assigned_to_user_id, t.assigned_to_group, u.name as assigned_names,
-        t.start_datetime, t.end_datetime
+        t.start_datetime, t.end_datetime,
+        MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id
     FROM tasks t
     LEFT JOIN users u ON t.assigned_to_user_id = u.id
     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente' {$user_filter}
-    GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group), t.id)
+    GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group, t.created_at), t.id)
+    ORDER BY t.created_at DESC
 ";
 $manual_tasks_result = $conn->query($manual_tasks_sql);
 if ($manual_tasks_result) {
     while($row = $manual_tasks_result->fetch_assoc()) {
         $row['item_type'] = 'manual_task';
-        $row['user_task_id'] = $row['task_id']; 
         $all_pending_items[] = $row;
     }
 }
@@ -122,23 +166,22 @@ $high_priority_badge_count = count($panel_high_priority_items);
 $medium_priority_badge_count = count($panel_medium_priority_items);
 
 // --- OTRAS CONSULTAS DE DATOS ---
-
-// Consulta de Trazabilidad (Completadas)
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
-        "SELECT 
-            t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, 
-            t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, 
-            u_completed.name as completed_by, t.created_at, t.completed_at, 
+        "SELECT
+            t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority,
+            t.start_datetime, t.end_datetime, u_assigned.name as assigned_to,
+            u_completed.name as completed_by, t.created_at, t.completed_at,
             TIMEDIFF(t.completed_at, t.created_at) as response_time,
-            t.assigned_to_group, u_creator.name as created_by_name
-         FROM tasks t 
-         LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id 
-         LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id 
+            t.assigned_to_group, u_creator.name as created_by_name,
+            t.resolution_note
+         FROM tasks t
+         LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
+         LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id
          LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id
-         LEFT JOIN alerts a ON t.alert_id = a.id 
-         WHERE t.status = 'Completada' 
+         LEFT JOIN alerts a ON t.alert_id = a.id
+         WHERE t.status = 'Completada'
          GROUP BY t.id
          ORDER BY t.completed_at DESC"
     );
@@ -156,6 +199,45 @@ if ($_SESSION['user_role'] === 'Admin') {
         }
     }
 }
+
+// --- Historial individual para CADA usuario ---
+$user_completed_tasks = [];
+$stmt_user_tasks = $conn->prepare(
+    "SELECT
+        t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority,
+        t.start_datetime, t.end_datetime, u_assigned.name as assigned_to,
+        u_completed.name as completed_by, t.created_at, t.completed_at,
+        TIMEDIFF(t.completed_at, t.created_at) as response_time,
+        t.assigned_to_group, u_creator.name as created_by_name,
+        t.resolution_note
+     FROM tasks t
+     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
+     LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id
+     LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id
+     LEFT JOIN alerts a ON t.alert_id = a.id
+     WHERE t.status = 'Completada' AND (t.completed_by_user_id = ?) -- Filtro por quien completó
+     GROUP BY t.id
+     ORDER BY t.completed_at DESC"
+);
+$stmt_user_tasks->bind_param("i", $current_user_id);
+$stmt_user_tasks->execute();
+$user_tasks_result = $stmt_user_tasks->get_result();
+if ($user_tasks_result) {
+    while($row = $user_tasks_result->fetch_assoc()){
+        // Añadir lógica de prioridad final
+        $original_priority = $row['priority'];
+        $final_priority = $original_priority;
+        if (!empty($row['end_datetime'])) {
+            $end_time = new DateTime($row['end_datetime']);
+            $completed_time = new DateTime($row['completed_at']);
+            if ($completed_time > $end_time) { $final_priority = 'Alta'; }
+        }
+        $row['final_priority'] = $final_priority;
+        $user_completed_tasks[] = $row;
+    }
+}
+$stmt_user_tasks->close();
+
 $user_reminders = [];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
@@ -168,7 +250,7 @@ $today_collections_result = $conn->query("
         oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name,
         oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
         oc.created_at,
-        ci.invoice_number, 
+        ci.invoice_number,
         f.name as fund_name,
         u_dig.name as digitador_name,
         CASE
@@ -193,16 +275,16 @@ $today_collections_result = $conn->query("
 if ($today_collections_result) {
     while ($row = $today_collections_result->fetch_assoc()) {
         $today_collections[] = $row;
-        $total_recaudado_hoy += $row['total_counted']; 
+        $total_recaudado_hoy += $row['total_counted'];
     }
 }
 
 // Cierres Pendientes (Panel General)
 $cierres_pendientes_result = $conn->query("
-    SELECT COUNT(id) as total 
-    FROM check_ins 
-    WHERE status IN ('Procesado', 'Discrepancia') 
-    AND digitador_status IS NULL
+    SELECT COUNT(DISTINCT ci.id) as total
+    FROM check_ins ci
+    WHERE ci.status IN ('Procesado', 'Discrepancia')
+    AND ci.digitador_status IS NULL
 ");
 $cierres_pendientes_count = $cierres_pendientes_result->fetch_assoc()['total'] ?? 0;
 
@@ -233,16 +315,19 @@ if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initia
 // Historial Operador (Panel Operador y Digitador)
 $operator_history = [];
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
-    
-    $operator_id_filter = ""; 
+
+    $operator_id_filter = "";
+    if ($_SESSION['user_role'] === 'Operador') {
+        $operator_id_filter = "WHERE op.operator_id = " . $_SESSION['user_id'];
+    }
 
     $history_query = "
-        SELECT 
+        SELECT
             op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
             ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name
         FROM operator_counts op
         INNER JOIN (
-            SELECT MAX(id) as max_id
+            SELECT check_in_id, MAX(id) as max_id
             FROM operator_counts
             GROUP BY check_in_id
         ) as latest_oc ON op.id = latest_oc.max_id
@@ -264,13 +349,13 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
 // Historial Planillas Cerradas (Panel Digitador)
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
-    
+
     $digitador_filter = "WHERE ci.digitador_status IN ('Conforme', 'Cerrado')";
 
     $closed_history_result = $conn->query("
-        SELECT 
+        SELECT
             ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
-            oc.total_counted, oc.discrepancy, 
+            oc.total_counted, oc.discrepancy,
             oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
             u_op.name as operator_name,
             ci.closed_by_digitador_at, u_digitador.name as digitador_name,
@@ -306,21 +391,50 @@ $conn->close();
     <title>EAGLE 3.0 - Sistema de Alertas</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/xlsx/dist/xlsx.full.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jspdf@2.5.1/dist/jspdf.umd.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jspdf-autotable@3.5.23/dist/jspdf.plugin.autotable.min.js"></script>
+    <script src="js/jspdf.umd.min.js"></script>
+    <script src="js/jspdf-autotable.min.js"></script>
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Inter', sans-serif; }
-        .nav-tab { cursor: pointer; padding: 0.75rem 1.5rem; font-weight: 500; color: #4b5563; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
-        .nav-tab:hover { color: #111827; }
-        .nav-tab.active { color: #2563eb; border-bottom-color: #2563eb; }
+
+        .nav-tab { cursor: pointer; padding: 0.75rem 1.5rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
+
+        .nav-admin { color: #991b1b; } /* text-red-800 */
+        .nav-admin:hover { color: #dc2626; }
+        .nav-admin.active { color: #dc2626; border-bottom-color: #dc2626; background-color: #fee2e2; }
+
+        .nav-digitador { color: #1e40af; } /* text-blue-800 */
+        .nav-digitador:hover { color: #2563eb; }
+        .nav-digitador.active { color: #2563eb; border-bottom-color: #2563eb; background-color: #dbeafe; }
+
+        .nav-operador { color: #a16207; } /* text-yellow-800 */
+        .nav-operador:hover { color: #ca8a04; }
+        .nav-operador.active { color: #ca8a04; border-bottom-color: #ca8a04; background-color: #fefce8; }
+
+        .nav-checkinero { color: #15803d; } /* text-green-800 */
+        .nav-checkinero:hover { color: #16a34a; }
+        .nav-checkinero.active { color: #16a34a; border-bottom-color: #16a34a; background-color: #f0fdf4; }
+
         #user-modal-overlay, #reminders-panel, #task-notifications-panel, #medium-priority-panel { transition: opacity 0.3s ease; }
         .task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
         .task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
         .details-row { border-top: 1px solid #e5e7eb; }
         .sortable { transition: background-color: 0.2s; }
         .sortable:hover { background-color: #f3f4f6; }
+
+        /* *** NUEVO: Estilos para el Dropdown de Navegación *** */
+        .nav-dropdown { position: relative; }
+        .nav-dropdown-content { display: none; position: absolute; background-color: #f9f9f9; min-width: 160px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 10; border-radius: 0.5rem; overflow: hidden; }
+        /* *** MODIFICADO: Estilos aplicados a <a> en lugar de <button> *** */
+        .nav-dropdown-content a { color: black; padding: 12px 16px; text-decoration: none; display: block; font-weight: 500; cursor: pointer; }
+        .nav-dropdown-content a:hover { background-color: #f1f1f1; }
+        .nav-dropdown:hover .nav-dropdown-content { display: block; }
+        /* Aplicar color de rol al enlace del dropdown */
+        .nav-dropdown-content a.nav-admin:hover { background-color: #fee2e2; }
+        .nav-dropdown-content a.nav-digitador:hover { background-color: #dbeafe; }
+        .nav-dropdown-content a.nav-operador:hover { background-color: #fefce8; }
+        .nav-dropdown-content a.nav-checkinero:hover { background-color: #f0fdf4; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -329,19 +443,49 @@ $conn->close();
         <div id="user-modal" class="bg-white rounded-xl shadow-2xl w-full max-w-md">
             <div class="p-6">
                 <div class="flex justify-between items-center pb-3 border-b"><h3 id="modal-title" class="text-xl font-bold text-gray-900"></h3><button onclick="closeModal()" class="text-gray-400 hover:text-gray-600 text-3xl leading-none">&times;</button></div>
-                <form id="user-form" class="mt-6 space-y-4"><input type="hidden" id="user-id" name="id"><div><label for="user-name" class="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label><input type="text" id="user-name" name="name" class="w-full px-3 py-2 border border-gray-300 rounded-md" required></div><div><label for="user-email" class="block text-sm font-medium text-gray-700 mb-1">Email</label><input type="email" id="user-email" name="email" class="w-full px-3 py-2 border border-gray-300 rounded-md" required></div><div><label for="user-role" class="block text-sm font-medium text-gray-700 mb-1">Rol</label><select id="user-role" name="role" class="w-full px-3 py-2 border border-gray-300 rounded-md" required><option value="Operador">Operador</option><option value="Checkinero">Checkinero</option><option value="Digitador">Digitador</option><option value="Admin">Admin</option></select></div><div><label for="user-password" class="block text-sm font-medium text-gray-700 mb-1">Contraseña</label><input type="password" id="user-password" name="password" class="w-full px-3 py-2 border border-gray-300 rounded-md"><p id="password-hint" class="text-xs text-gray-500 mt-1"></p></div><div class="pt-4 flex justify-end space-x-3"><button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300">Cancelar</button><button type="submit" class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700">Guardar</button></div></form>
+                <form id="user-form" class="mt-6 space-y-4">
+                    <input type="hidden" id="user-id" name="id">
+                    <div><label for="user-name" class="block text-sm font-medium text-gray-700 mb-1">Nombre Completo</label><input type="text" id="user-name" name="name" class="w-full px-3 py-2 border border-gray-300 rounded-md" required></div>
+                    <div><label for="user-email" class="block text-sm font-medium text-gray-700 mb-1">Email</label><input type="email" id="user-email" name="email" class="w-full px-3 py-2 border border-gray-300 rounded-md" required></div>
+                    <div><label for="user-role" class="block text-sm font-medium text-gray-700 mb-1">Rol</label><select id="user-role" name="role" class="w-full px-3 py-2 border border-gray-300 rounded-md" required><option value="Operador">Operador</option><option value="Checkinero">Checkinero</option><option value="Digitador">Digitador</option><option value="Admin">Admin</option></select></div>
+                    <div>
+                        <label for="user-gender" class="block text-sm font-medium text-gray-700 mb-1">Sexo</label>
+                        <select id="user-gender" name="gender" class="w-full px-3 py-2 border border-gray-300 rounded-md" required>
+                            <option value="">Seleccionar...</option>
+                            <option value="M">Masculino</option>
+                            <option value="F">Femenino</option>
+                        </select>
+                    </div>
+                    <div><label for="user-password" class="block text-sm font-medium text-gray-700 mb-1">Contraseña</label><input type="password" id="user-password" name="password" class="w-full px-3 py-2 border border-gray-300 rounded-md"><p id="password-hint" class="text-xs text-gray-500 mt-1"></p></div>
+                    <div class="pt-4 flex justify-end space-x-3"><button type="button" onclick="closeModal()" class="px-4 py-2 bg-gray-200 text-gray-800 rounded-md hover:bg-gray-300">Cancelar</button><button type="submit" class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700">Guardar</button></div>
+                </form>
             </div>
         </div>
     </div>
 
     <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-full mx-auto">
-        <header class="flex flex-col sm:flex-row justify-between sm:items-center mb-6 border-b pb-4">
-             <div><h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1><p class="text-sm text-gray-500">Sistema Integrado de Operaciones y Alertas</p></div>
-            <div class="text-sm text-gray-600 mt-2 sm:mt-0 flex items-center space-x-4">
-                <div class="text-right">
-                    <p class="font-semibold">Bienvenido, <?php echo htmlspecialchars($_SESSION['user_name']); ?></p>
-                    <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
+
+        <header class="flex flex-col sm:flex-row justify-between sm:items-start mb-6 border-b pb-4">
+
+            <div>
+                <h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1>
+                <p class="text-sm text-gray-500 mb-2">Sistema Integrado de Operaciones y Alertas</p>
+
+                <div class="flex items-center space-x-2 mt-2">
+                    <span class="text-sm font-semibold text-gray-700">Hola</span>
+                    <span class="text-xs font-bold px-2.5 py-0.5 rounded-full <?php echo $role_color_class; ?>">
+                        <?php echo htmlspecialchars($displayRole); // *** USAR $displayRole AQUÍ *** ?>
+                    </span>
+                    <span class="text-sm font-bold text-gray-900">
+                        : <?php echo htmlspecialchars($_SESSION['user_name']); ?>
+                    </span>
                 </div>
+            </div>
+
+            <div class="text-sm text-gray-600 mt-2 sm:mt-0 flex items-center space-x-4">
+
+                <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
+
                 <div class="relative">
                     <button id="task-notification-button" onclick="toggleTaskNotifications()" class="relative text-gray-500 hover:text-gray-700">
                         <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
@@ -455,26 +599,38 @@ $conn->close();
         <nav class="mb-8">
             <div class="border-b border-gray-200">
                 <div class="-mb-px flex space-x-4 overflow-x-auto">
-                    <button id="tab-operaciones" class="nav-tab active" onclick="switchTab('operaciones')">Panel General</button>
+                    <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
 
-                    <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
-                        <button id="tab-checkinero" class="nav-tab" onclick="switchTab('checkinero')">Panel Check-in</button>
+                    <?php
+                    // Comprobar si el usuario tiene acceso a CUALQUIERA de los paneles de empleados
+                    $has_employee_panels = in_array($_SESSION['user_role'], ['Checkinero', 'Admin', 'Operador', 'Digitador']);
+                    ?>
+
+                    <?php if ($has_employee_panels): ?>
+                    <div class="nav-dropdown">
+                        <button class="nav-tab <?php echo $role_nav_class; ?>" onclick="void(0)"> Paneles de Empleados &or; </button>
+                        <div class="nav-dropdown-content">
+                            <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
+                                <a href="#" id="tab-checkinero" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('checkinero'); return false;">Panel Check-in</a>
+                            <?php endif; ?>
+                            <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
+                                <a href="#" id="tab-operador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('operador'); return false;">Panel Operador</a>
+                            <?php endif; ?>
+                            <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
+                                <a href="#" id="tab-digitador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('digitador'); return false;">Panel Digitador</a>
+                            <?php endif; ?>
+                        </div>
+                    </div>
                     <?php endif; ?>
 
-                    <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
-                        <button id="tab-operador" class="nav-tab" onclick="switchTab('operador')">Panel Operador</button>
-                    <?php endif; ?>
-
-                    <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
-                        <button id="tab-digitador" class="nav-tab" onclick="switchTab('digitador')">Panel Digitador</button>
-                    <?php endif; ?>
+                    <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
 
                     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                        <button id="tab-roles" class="nav-tab" onclick="switchTab('roles')">Gestión de Roles</button>
-                        <a href="manage_clients.php" class="nav-tab">Gestionar Clientes</a>
-                        <a href="manage_routes.php" class="nav-tab">Gestionar Rutas</a>
-                        <a href="manage_funds.php" class="nav-tab">Gestionar Fondos</a>
-                        <button id="tab-trazabilidad" class="nav-tab" onclick="switchTab('trazabilidad')">Trazabilidad</button>
+                        <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
+                        <a href="manage_clients.php" class="nav-tab <?php echo $role_nav_class; ?>">Gestionar Clientes</a>
+                        <a href="manage_routes.php" class="nav-tab <?php echo $role_nav_class; ?>">Gestionar Rutas</a>
+                        <a href="manage_funds.php" class="nav-tab <?php echo $role_nav_class; ?>">Gestionar Fondos</a>
+                        <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad (Admin)</button>
                     <?php endif; ?>
                 </div>
             </div>
@@ -499,8 +655,8 @@ $conn->close();
                                 $is_manual = $item['item_type'] === 'manual_task';
                                 $is_group_task = !empty($item['assigned_to_group']);
                                 $assigned_names = $item['assigned_names'] ?? 'N/A';
-                                
-                                $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'];
+
+                                $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'] ?? $item['id']; // Added $item['id'] as fallback
                                 $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
 
                                 $priority_to_use = $item['current_priority'];
@@ -511,21 +667,21 @@ $conn->close();
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                     <div class="flex justify-between items-start">
                                         <p class="font-semibold <?php echo $color['text']; ?> text-lg">
-                                            <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?> 
+                                            <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?>
                                             <?php if (!empty($item['invoice_number'])): ?>
                                                 <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
                                             <?php endif; ?>
                                             <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                         </p>
-                                        <?php if ($can_complete): ?>
-                                            <button onclick="completeTask(<?php echo $task_id_to_use; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
-                                        <?php endif; ?>
-                                    </div>
+                                        </div>
                                     <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
                                     <?php if (!empty($item['end_datetime'])): ?>
                                         <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                     <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
+                                        <?php if ($can_complete): ?>
+                                            <button onclick="toggleForm('complete-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
+                                        <?php endif; ?>
                                         <button onclick="toggleForm('assign-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                         <button onclick="toggleForm('reminder-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                         <div class="flex-grow text-right text-sm">
@@ -536,6 +692,11 @@ $conn->close();
                                             <?php endif; ?>
                                         </div>
                                     </div>
+                                </div>
+                                <div id="complete-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                    <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
+                                    <textarea id="resolution-note-<?php echo $task_id_to_use; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
+                                    <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
                                 </div>
                                 <div id="assign-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
@@ -553,7 +714,7 @@ $conn->close();
                                         </optgroup>
                                     </select>
                                     <textarea id="task-instruction-<?php echo $task_id_to_use; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                    <button onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                    <button type="button" onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                 </div>
                                 <div id="reminder-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
@@ -562,7 +723,7 @@ $conn->close();
                                             <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                         <?php endforeach; ?>
                                     </select>
-                                    <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                    <button type="button" onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
@@ -684,8 +845,8 @@ $conn->close();
                                         $is_manual = $item['item_type'] === 'manual_task';
                                         $is_group_task = !empty($item['assigned_to_group']);
                                         $assigned_names = $item['assigned_names'] ?? 'N/A';
-                                        
-                                        $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'];
+
+                                        $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'] ?? $item['id']; // Added $item['id'] as fallback
                                         $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
 
                                         $priority_to_use = $item['current_priority'];
@@ -702,15 +863,15 @@ $conn->close();
                                                     <?php endif; ?>
                                                     <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                                 </p>
-                                                <?php if ($can_complete): ?>
-                                                    <button onclick="completeTask(<?php echo $task_id_to_use; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
-                                                <?php endif; ?>
-                                            </div>
+                                                </div>
                                             <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
                                             <?php if (!empty($item['end_datetime'])): ?>
                                                 <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                             <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
+                                                <?php if ($can_complete): ?>
+                                                    <button onclick="toggleForm('complete-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
+                                                <?php endif; ?>
                                                 <button onclick="toggleForm('assign-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                                 <button onclick="toggleForm('reminder-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                                 <div class="flex-grow text-right text-sm">
@@ -721,6 +882,11 @@ $conn->close();
                                                     <?php endif; ?>
                                                 </div>
                                             </div>
+                                        </div>
+                                        <div id="complete-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                            <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
+                                            <textarea id="resolution-note-np-<?php echo $task_id_to_use; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
+                                            <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
                                         </div>
                                         <div id="assign-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
@@ -738,7 +904,7 @@ $conn->close();
                                                 </optgroup>
                                             </select>
                                             <textarea id="task-instruction-np-<?php echo $task_id_to_use; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                            <button onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                            <button type="button" onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                         </div>
                                         <div id="reminder-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
@@ -747,7 +913,7 @@ $conn->close();
                                                     <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                            <button type="button" onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                         </div>
                                     </div>
                                 <?php endforeach; endif; ?>
@@ -815,17 +981,7 @@ $conn->close();
                         <div class="overflow-auto max-h-[600px]">
                             <table class="w-full text-sm text-left">
                                 <thead class="bg-gray-50 sticky top-0">
-                                    <tr>
-                                        <th class="p-3">Planilla</th>
-                                        <th class="p-3">Sello</th>
-                                        <th class="p-3">Declarado</th>
-                                        <th class="p-3">Ruta</th>
-                                        <th class="p-3">Fecha de Registro</th>
-                                        <th class="p-3">Checkinero</th>
-                                        <th class="p-3">Cliente</th>
-                                        <th class="p-3">Fondo</th>
-                                    </tr>
-                                </thead>
+                                     </thead>
                                 <tbody id="checkins-table-body">
                                     </tbody>
                             </table>
@@ -914,17 +1070,7 @@ $conn->close();
                     <div class="overflow-auto max-h-[600px]">
                         <table class="w-full text-sm text-left">
                             <thead class="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th class="p-3">Planilla</th>
-                                    <th class="p-3">Sello</th>
-                                    <th class="p-3">Declarado</th>
-                                    <th class="p-3">Cliente</th>
-                                    <th class="p-3">Checkinero</th>
-                                    <th class="p-3">Fecha de Registro</th>
-                                    <th class="p-3">Estado</th>
-                                    <th class="p-3">Acción</th>
-                                </tr>
-                            </thead>
+                                </thead>
                             <tbody id="operator-checkins-table-body">
                                 </tbody>
                         </table>
@@ -962,48 +1108,50 @@ $conn->close();
                     <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión y Supervisión</h2>
                 </div>
 
-                <hr class="my-8 border-gray-300">
-
-                <h2 class="text-2xl font-bold text-gray-900 mb-6">Supervisión de Operaciones</h2>
-
-                <div id="operator-panel-digitador" class="hidden bg-blue-50 border border-blue-200 p-6 rounded-xl shadow-lg mb-8">
+                 <div class="mb-8 flex space-x-2">
+                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
+                    <button id="btn-supervision" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Supervisión de Conteos</button>
+                    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
+                    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
                 </div>
 
-                <div class="bg-white p-6 rounded-xl shadow-lg">
-                    <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
-                    <p class="text-sm text-gray-500 mb-4">Planillas pendientes de aprobación o rechazo.</p>
-                    <div class="overflow-auto max-h-[600px]">
-                        <table class="w-full text-sm text-left">
-                            <thead class="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th class="p-3">Revisar</th>
-                                    <th class="p-3">Planilla</th>
-                                    <th class="p-3">Cliente</th>
-                                    <th class="p-3">V. Declarado</th>
-                                    <th class="p-3">V. Contado</th>
-                                    <th class="p-3">Discrepancia</th>
-                                    <th class="p-3">Operador</th>
-                                    <th class="p-3">Fecha Conteo</th>
-                                </tr>
-                            </thead>
-                            <tbody id="operator-history-table-body-digitador"></tbody>
-                        </table>
+                <div id="panel-supervision" class="hidden">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-6">Supervisión de Operaciones</h2>
+                    <div id="operator-panel-digitador" class="hidden bg-blue-50 border border-blue-200 p-6 rounded-xl shadow-lg mb-8">
+                        </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
+                        <p class="text-sm text-gray-500 mb-4">Planillas procesadas por el operador que requieren aprobación o rechazo.</p>
+                        <div class="overflow-auto max-h-[600px]">
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th class="p-3">Revisar</th>
+                                        <th class="p-3">Planilla</th>
+                                        <th class="p-3">Cliente</th>
+                                        <th class="p-3">V. Declarado</th>
+                                        <th class="p-3">V. Contado</th>
+                                        <th class="p-3">Discrepancia</th>
+                                        <th class="p-3">Operador</th>
+                                        <th class="p-3">Fecha Conteo</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="operator-history-table-body-digitador"></tbody>
+                            </table>
+                        </div>
                     </div>
                 </div>
 
-                <hr class="my-8 border-gray-300">
-                
-                <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre e Informes</h2>
-
-                <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                    <div id="panel-cierre" class="bg-white p-6 rounded-xl shadow-lg">
-                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre por Fondo</h3>
-                        <p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas y proceder con el cierre.</p>
+                <div id="panel-cierre">
+                     <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre por Fondo</h2>
+                     <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre</h3>
+                        <p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas ('Conforme') y proceder con el cierre.</p>
                         <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
                             <div>
                                 <h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4>
                                 <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto">
-                                </div>
+                                    </div>
                             </div>
                             <div>
                                 <h4 class="font-semibold mb-2">2. Planillas a incluir en el cierre</h4>
@@ -1011,14 +1159,44 @@ $conn->close();
                                     <p class="text-gray-500 text-sm">Seleccione un fondo de la lista.</p>
                                 </div>
                                 <button id="close-fund-button" onclick="closeFund()" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-teal-600 mt-4 hidden">
-                                    Cerrar Fondo
+                                    Cerrar Fondo Seleccionado
                                 </button>
                             </div>
                         </div>
                     </div>
+                </div>
 
-                    <div id="panel-informes" class="bg-white p-6 rounded-xl shadow-lg">
-                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Generar Informes (PDF)</h3>
+                 <div id="panel-historial-cierre" class="hidden">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-6">Historial de Planillas Revisadas/Cerradas</h2>
+                    <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
+                        <h3 class="text-xl font-semibold mb-4">Historial</h3>
+                        <div class="overflow-auto max-h-[700px]">
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th class="p-3">Planilla</th>
+                                        <th class="p-3">Fondo</th>
+                                        <th class="p-3">Cierre</th>
+                                        <th class="p-3">Total Recaudado</th>
+                                        <th class="p-3">Discrepancia</th>
+                                        <th class="p-3">Estado Final</th>
+                                        <th class="p-3">Observaciones</th>
+                                        <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?>
+                                            <th class="p-3">Cerrada por</th>
+                                        <?php endif; ?>
+                                        <th class="p-3">Acciones</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="digitador-closed-history-body"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="panel-informes" class="hidden">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-6">Generar Informes</h2>
+                    <div class="bg-white p-6 rounded-xl shadow-lg">
+                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Informes por Fondo (PDF)</h3>
                         <p class="text-sm text-gray-500 mb-4">Seleccione un fondo cerrado para generar el informe PDF consolidado.</p>
                         <div class="overflow-auto max-h-[500px]">
                             <table class="w-full text-sm">
@@ -1031,47 +1209,63 @@ $conn->close();
                                     </tr>
                                 </thead>
                                 <tbody id="informes-table-body">
-                                </tbody>
+                                    </tbody>
                             </table>
                         </div>
                     </div>
                 </div>
+            </div>
+            <?php endif; ?>
 
+            <div id="content-mi-historial" class="hidden">
+                <h2 class="text-xl font-bold text-gray-900 mb-4">Mi Historial de Tareas Completadas</h2>
+                <p class="text-sm text-gray-500 mb-6">Este es un registro de todas las tareas (manuales y alertas) que tú has completado.</p>
 
-                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
-                    <h3 class="text-xl font-semibold mb-4">Historial de Planillas Cerradas (Aprobadas)</h3>
-                    <div class="overflow-auto max-h-[700px]">
-                        <table class="w-full text-sm text-left">
-                            <thead class="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th class="p-3">Planilla</th>
-                                    <th class="p-3">Fondo</th>
-                                    <th class="p-3">Cierre</th>
-                                    <th class="p-3">Total Recaudado</th>
-                                    <th class="p-3">Discrepancia</th>
-                                    <th class="p-3">Estado Final</th>
-                                    <th class="p-3">Observaciones</th>
-                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?>
-                                        <th class="p-3">Cerrada por</th>
-                                    <?php endif; ?>
-                                    <th class="p-3">Acciones</th>
+                <div class="bg-white rounded-xl shadow-sm overflow-hidden">
+                    <div class="overflow-x-auto">
+                        <table id="historial-individual-table" class="w-full text-sm">
+                            <thead class="bg-gray-50">
+                                <tr class="text-left">
+                                    <th class="px-6 py-3">Tarea</th>
+                                    <th class="px-6 py-3">Descripción</th>
+                                    <th class="px-6 py-3">Prioridad Inicial</th>
+                                    <th class="px-6 py-3">Prioridad Final</th>
+                                    <th class="px-6 py-3">Asignado por</th>
+                                    <th class="px-6 py-3">Check por</th>
+                                    <th class="px-6 py-3">Fecha Inicio</th>
+                                    <th class="px-6 py-3">Fecha Fin</th>
+                                    <th class="px-6 py-3">Tiempo Resp.</th>
+                                    <th class="px-6 py-3">Observaciones de Cierre</th>
                                 </tr>
                             </thead>
-                            <tbody id="digitador-closed-history-body"></tbody>
+                            <tbody id="historial-individual-tbody">
+                                </tbody>
                         </table>
                     </div>
                 </div>
             </div>
-            <?php endif; ?>
+
+
             <?php if ($_SESSION['user_role'] === 'Admin'): ?>
             <div id="content-roles" class="hidden">
                  <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold">Gestionar Usuarios</h2><button onclick="openModal()" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg">Agregar Usuario</button></div>
                 <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-                    <table class="w-full text-sm"><thead class="bg-gray-50"><tr class="text-left"><th class="px-6 py-3">Nombre</th><th class="px-6 py-3">Email</th><th class="px-6 py-3">Rol</th><th class="px-6 py-3 text-center">Acciones</th></tr></thead><tbody id="user-table-body"></tbody></table>
+                    <table class="w-full text-sm">
+                        <thead class="bg-gray-50">
+                            <tr class="text-left">
+                                <th class="px-6 py-3">Nombre</th>
+                                <th class="px-6 py-3">Email</th>
+                                <th class="px-6 py-3">Rol</th>
+                                <th class="px-6 py-3 text-center">Sexo</th>
+                                <th class="px-6 py-3 text-center">Acciones</th>
+                            </tr>
+                        </thead>
+                        <tbody id="user-table-body"></tbody>
+                    </table>
                 </div>
             </div>
             <div id="content-trazabilidad" class="hidden">
-                <h2 class="text-xl font-bold text-gray-900 mb-4">Trazabilidad de Tareas Completadas</h2>
+                <h2 class="text-xl font-bold text-gray-900 mb-4">Trazabilidad de Tareas Completadas (Admin)</h2>
 
                 <div class="bg-white p-4 rounded-xl shadow-sm mb-6">
                     <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
@@ -1132,6 +1326,7 @@ $conn->close();
                                     <th class="px-6 py-3">Asignado a</th>
                                     <th class="px-6 py-3">Asignado por</th>
                                     <th class="px-6 py-3">Check por</th>
+                                    <th class="px-6 py-3">Observaciones de Cierre</th>
                                     <th class="px-6 py-3">Acciones</th>
                                 </tr>
                             </thead>
@@ -1155,8 +1350,9 @@ $conn->close();
     const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
+    const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
 
-    let selectedFundForClosure = null; 
+    let selectedFundForClosure = null;
 
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -1177,14 +1373,14 @@ $conn->close();
         form.classList.toggle('active');
     }
 
-    function toggleBreakdown(id) { 
+    function toggleBreakdown(id) {
         const row = document.getElementById(`breakdown-row-${id}`);
         const content = document.getElementById(`breakdown-content-${id}`);
         if (row && content) {
-            row.classList.toggle('hidden'); 
-            setTimeout(() => { 
-                content.classList.toggle('active'); 
-            }, 10);
+            row.classList.toggle('hidden');
+            setTimeout(() => {
+                content.classList.toggle('active');
+            }, 10); // Pequeño delay para asegurar que el display: none se aplique antes de la transición
         }
     }
 
@@ -1213,17 +1409,31 @@ $conn->close();
         }
     }
 
-    async function completeTask(taskId) {
+    async function completeTask(taskId, formIdPrefix) {
         if (!taskId) {
             alert('Error: No se pudo identificar la tarea a completar.');
             return;
         }
+
+        const noteTextarea = document.getElementById(`resolution-note-${formIdPrefix}`);
+        const resolution_note = noteTextarea ? noteTextarea.value : ''; // Manejar caso donde no existe el textarea
+
+        if (!resolution_note.trim()) {
+            alert('Por favor, ingrese una observación de cierre.');
+            if (noteTextarea) noteTextarea.focus();
+            return;
+        }
+
         if (!confirm('¿Estás seguro de que quieres marcar esta tarea como completada?')) return;
+
         try {
             const response = await fetch(`${apiUrlBase}/task_api.php`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ task_id: taskId })
+                body: JSON.stringify({
+                    task_id: taskId,
+                    resolution_note: resolution_note
+                })
             });
             const result = await response.json();
             if (result.success) {
@@ -1310,11 +1520,15 @@ $conn->close();
             document.getElementById('user-name').value = user.name;
             document.getElementById('user-email').value = user.email;
             document.getElementById('user-role').value = user.role;
+            // *** MODIFICADO: Rellenar género al editar ***
+            document.getElementById('user-gender').value = user.gender;
             userPasswordInput.required = false;
             passwordHint.textContent = 'Dejar en blanco para no cambiar.';
         } else {
             modalTitle.textContent = 'Agregar Nuevo Usuario';
             userIdInput.value = '';
+             // *** MODIFICADO: Resetear género al agregar ***
+            document.getElementById('user-gender').value = '';
             userPasswordInput.required = true;
             passwordHint.textContent = 'La contraseña es requerida.';
         }
@@ -1343,29 +1557,78 @@ $conn->close();
         } catch (error) { alert('Error de conexión.'); }
     }
 
+    // *** NUEVA: Función para obtener nombre de rol en JS ***
+    function getRoleDisplayNameJS(role, gender) {
+        if (gender === 'F') {
+            switch (role) {
+                case 'Digitador': return 'Digitadora';
+                case 'Operador': return 'Operadora';
+                case 'Checkinero': return 'Checkinera';
+                default: return role;
+            }
+        }
+        return role;
+    }
+
+    // *** MODIFICADO: populateUserTable para mostrar género y rol femenino ***
     function populateUserTable(users) {
         const tbody = document.getElementById('user-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!users || users.length === 0) { tbody.innerHTML = '<tr><td colspan="4" class="p-6 text-center">No hay usuarios.</td></tr>'; return; }
+        if (!users || users.length === 0) {
+             tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center">No hay usuarios.</td></tr>'; // Colspan a 5
+             return;
+        }
         users.forEach(user => {
-            const userJson = JSON.stringify({id: user.id, name: user.name, email: user.email, role: user.role}).replace(/'/g, "&apos;");
-            tbody.innerHTML += `<tr id="user-row-${user.id}"><td class="px-6 py-4">${user.name}</td><td class="px-6 py-4">${user.email}</td><td class="px-6 py-4"><span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">${user.role}</span></td><td class="px-6 py-4 text-center"><button onclick='openModal(${userJson})' class="font-medium text-blue-600">Editar</button><button onclick="deleteUser(${user.id})" class="font-medium text-red-600 ml-4">Eliminar</button></td></tr>`;
+            // Incluir gender en userJson
+            const userJson = JSON.stringify({id: user.id, name: user.name, email: user.email, role: user.role, gender: user.gender}).replace(/'/g, "&apos;");
+            // Obtener nombre a mostrar
+            const displayRole = getRoleDisplayNameJS(user.role, user.gender);
+            // Agregamos la columna de Sexo a la tabla
+            tbody.innerHTML += `
+                <tr id="user-row-${user.id}">
+                    <td class="px-6 py-4">${user.name}</td>
+                    <td class="px-6 py-4">${user.email}</td>
+                    <td class="px-6 py-4"><span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">${displayRole}</span></td>
+                    <td class="px-6 py-4 text-center">${user.gender || 'N/A'}</td> <td class="px-6 py-4 text-center">
+                        <button onclick='openModal(${userJson})' class="font-medium text-blue-600">Editar</button>
+                        <button onclick="deleteUser(${user.id})" class="font-medium text-red-600 ml-4">Eliminar</button>
+                    </td>
+                </tr>`;
         });
     }
 
     function switchTab(tabName) {
         sessionStorage.setItem('activeTab', tabName);
-        
-        const contentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'roles', 'trazabilidad'];
+
+        const contentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'mi-historial', 'roles', 'trazabilidad'];
+        // Quitar 'active' de todos los botones y enlaces de navegación
         document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+        // Ocultar todos los paneles de contenido
         contentPanels.forEach(panel => {
             const content = document.getElementById(`content-${panel}`);
-            if (content) content.classList.toggle('hidden', panel !== tabName);
+            if (content) content.classList.add('hidden');
         });
-        const activeTab = document.getElementById(`tab-${tabName}`);
-        if(activeTab) activeTab.classList.add('active');
+        // Mostrar el panel de contenido activo
+        const activeContent = document.getElementById(`content-${tabName}`);
+        if (activeContent) activeContent.classList.remove('hidden');
+
+        // Añadir 'active' al botón o enlace de la pestaña activa
+        const activeTabElement = document.getElementById(`tab-${tabName}`);
+        if(activeTabElement) {
+             activeTabElement.classList.add('active');
+             // Si el elemento activo está dentro de un dropdown, también marca el botón del dropdown como activo (visualmente)
+            const dropdown = activeTabElement.closest('.nav-dropdown');
+            if (dropdown) {
+                const dropdownButton = dropdown.querySelector('button.nav-tab');
+                if (dropdownButton) {
+                    // Quizás quieras añadir una clase visual diferente para el dropdown activo, o no hacer nada.
+                    // dropdownButton.classList.add('active'); // Opcional: dependerá del diseño deseado
+                }
+            }
+        }
     }
+
 
     function formatCurrency(value) {
         if (value === null || value === undefined) return '$ 0';
@@ -1444,8 +1707,8 @@ $conn->close();
 
     function populateOperatorCheckinsTable(checkins) {
         const tbody = document.getElementById('operator-checkins-table-body');
-        if (!tbody) return; 
-        
+        if (!tbody) return;
+
         tbody.innerHTML = '';
         const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
 
@@ -1486,12 +1749,12 @@ $conn->close();
         const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        
-        const showOperatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Operador');
+
+        const showOperatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador'); // Digitador también puede ver
         const colspan = showOperatorColumn ? (currentUserRole === 'Admin' ? 9 : 8) : 7;
 
         if (!historyData || historyData.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return; 
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return;
         }
 
         historyData.forEach(item => {
@@ -1528,9 +1791,11 @@ $conn->close();
         const clientSelect = document.getElementById('client_id');
         clientSelect.value = checkinData.client_id;
 
+        // Esperar a que los fondos se carguen después de seleccionar el cliente
         await new Promise(resolve => {
             clientSelect.dispatchEvent(new Event('change'));
-            setTimeout(resolve, 500);
+            // Usar un temporizador más largo o una mejor forma de esperar si la carga de fondos es lenta
+            setTimeout(resolve, 300); // Ajusta si es necesario
         });
 
         document.getElementById('fund_id').value = checkinData.fund_id;
@@ -1652,9 +1917,12 @@ $conn->close();
         event.preventDefault();
         const payload = {
             check_in_id: document.getElementById('op-checkin-id').value,
-            bills_100k: document.querySelector('#denomination-form [data-value="100000"] .denomination-qty').value, bills_50k: document.querySelector('#denomination-form [data-value="50000"] .denomination-qty').value,
-            bills_20k: document.querySelector('#denomination-form [data-value="20000"] .denomination-qty').value, bills_10k: document.querySelector('#denomination-form [data-value="10000"] .denomination-qty').value,
-            bills_5k: document.querySelector('#denomination-form [data-value="5000"] .denomination-qty').value, bills_2k: document.querySelector('#denomination-form [data-value="2000"] .denomination-qty').value,
+            bills_100k: parseInt(document.querySelector('#denomination-form [data-value="100000"] .denomination-qty').value) || 0,
+            bills_50k: parseInt(document.querySelector('#denomination-form [data-value="50000"] .denomination-qty').value) || 0,
+            bills_20k: parseInt(document.querySelector('#denomination-form [data-value="20000"] .denomination-qty').value) || 0,
+            bills_10k: parseInt(document.querySelector('#denomination-form [data-value="10000"] .denomination-qty').value) || 0,
+            bills_5k: parseInt(document.querySelector('#denomination-form [data-value="5000"] .denomination-qty').value) || 0,
+            bills_2k: parseInt(document.querySelector('#denomination-form [data-value="2000"] .denomination-qty').value) || 0,
             coins: parseFloat(document.getElementById('coins-value').value) || 0,
             total_counted: 0, discrepancy: 0, observations: document.getElementById('observations').value
         };
@@ -1670,13 +1938,17 @@ $conn->close();
         } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
     }
 
+    // --- Funciones de Trazabilidad ---
+    function getPriorityClass(priority) { if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800'; if (priority === 'Media') return 'bg-yellow-100 text-yellow-800'; return 'bg-gray-100 text-gray-800'; }
+    function formatDate(dateString) { if (!dateString) return ''; const date = new Date(dateString); return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true }); }
+
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-    
+
     function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
         tbody.innerHTML = '';
-        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="11" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
-        
+        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="12" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
+
         tasks.forEach(task => {
             let assignedTo = '';
             if (task.assigned_to_group) {
@@ -1696,30 +1968,73 @@ $conn->close();
                                     <td class="px-6 py-4">${assignedTo}</td>
                                     <td class="px-6 py-4">${task.created_by_name || 'Sistema'}</td>
                                     <td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.resolution_note || ''}">${task.resolution_note || 'N/A'}</td>
                                     <td class="px-6 py-4 text-center"><button onclick="deleteTask(${task.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>
                                </tr>`;
         });
     }
 
-    function getPriorityClass(priority) { if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800'; if (priority === 'Media') return 'bg-yellow-100 text-yellow-800'; return 'bg-gray-100 text-gray-800'; }
-    function formatDate(dateString) { if (!dateString) return ''; const date = new Date(dateString); return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true }); }
     function applyTrazabilidadFilters() {
         const startDate = document.getElementById('filter-start-date').value, endDate = document.getElementById('filter-end-date').value, user = document.getElementById('filter-user').value, checker = document.getElementById('filter-checker').value, priority = document.getElementById('filter-priority').value;
         let filteredTasks = completedTasksData.filter(task => {
-            let isValid = true; const taskStartDate = task.created_at.split(' ')[0];
-            if (startDate && taskStartDate < startDate) isValid = false; if (endDate && taskStartDate > endDate) isValid = false; if (user && task.assigned_to !== user) isValid = false; if (checker && task.completed_by !== checker) isValid = false; if (priority && task.final_priority !== priority) isValid = false;
+            let isValid = true; const taskStartDate = task.created_at.split(' ')[0]; const taskEndDate = task.completed_at ? task.completed_at.split(' ')[0] : null;
+            if (startDate && taskEndDate && taskEndDate < startDate) isValid = false;
+            if (endDate && taskStartDate > endDate) isValid = false;
+            if (user && task.assigned_to !== user) isValid = false;
+            if (checker && task.completed_by !== checker) isValid = false;
+            if (priority && task.final_priority !== priority) isValid = false;
             return isValid;
         });
         populateTrazabilidadTable(filteredTasks);
     }
     function sortTableByDate(column) {
         const header = document.querySelector(`th[data-column-name="${column}"]`), currentDirection = header.dataset.sortDir || 'none', nextDirection = (currentDirection === 'desc') ? 'asc' : 'desc';
-        completedTasksData.sort((a, b) => { const dateA = new Date(a[column]).getTime(), dateB = new Date(b[column]).getTime(); if (isNaN(dateA)) return 1; if (isNaN(dateB)) return -1; return nextDirection === 'asc' ? dateA - dateB : dateB - dateA; });
+        // Usar los datos filtrados actualmente en la tabla para ordenar
+        let currentTableData = [];
+        const tableRows = document.querySelectorAll('#trazabilidad-tbody tr');
+        if (tableRows.length > 0 && !tableRows[0].querySelector('td[colspan="12"]')) { // Excluir la fila "No hay tareas"
+            tableRows.forEach(row => {
+                 // Buscar la tarea correspondiente en completedTasksData (esto podría ser ineficiente para tablas grandes)
+                 // Se podría mejorar almacenando el ID de la tarea en el TR o buscando de forma más eficiente.
+                 const taskTitle = row.cells[0].textContent; // Asumiendo que el título es único para buscar
+                 const task = completedTasksData.find(t => (t.title || '') === taskTitle); // Simplificación, puede fallar si hay títulos duplicados
+                 if (task) currentTableData.push(task);
+            });
+        } else {
+             currentTableData = completedTasksData; // Si no hay filtros o no hay datos, ordenar todo
+        }
+
+        currentTableData.sort((a, b) => { const dateA = new Date(a[column]).getTime(), dateB = new Date(b[column]).getTime(); if (isNaN(dateA)) return 1; if (isNaN(dateB)) return -1; return nextDirection === 'asc' ? dateA - dateB : dateB - dateA; });
         document.querySelectorAll('th.sortable').forEach(th => { const iconSpan = th.querySelector('span'); if (th === header) { th.dataset.sortDir = nextDirection; iconSpan.textContent = nextDirection === 'asc' ? ' ▲' : ' ▼'; } else { delete th.dataset.sortDir; iconSpan.textContent = ''; } });
-        applyTrazabilidadFilters();
+        populateTrazabilidadTable(currentTableData); // Poblar con los datos ordenados
     }
     function exportToExcel() { const table = document.getElementById("trazabilidad-table"), wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" }); XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx"); }
     <?php endif; ?>
+
+    // *** MODIFICADO: populateUserHistoryTable para incluir "Check por" ***
+    function populateUserHistoryTable(tasks) {
+        const tbody = document.getElementById('historial-individual-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!tasks || tasks.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" class="p-6 text-center text-gray-500">No has completado ninguna tarea todavía.</td></tr>'; // Colspan a 10
+            return;
+        }
+
+        tasks.forEach(task => {
+            tbody.innerHTML += `<tr class="border-b">
+                                    <td class="px-6 py-4 font-medium">${task.title || ''}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td>
+                                    <td class="px-6 py-4">${task.created_by_name || 'Sistema'}</td>
+                                    <td class="px-6 py-4 font-semibold">${task.completed_by || 'N/A'}</td> <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td>
+                                    <td class="px-6 py-4 font-mono">${task.response_time || ''}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.resolution_note || ''}">${task.resolution_note || 'N/A'}</td>
+                               </tr>`;
+        });
+    }
 
     function flagForReview(checkbox) {
         const panel = document.getElementById('operator-panel-digitador');
@@ -1754,13 +2069,14 @@ $conn->close();
             if (response.ok && result.success) {
                 alert(result.message);
             } else {
-                alert('Error: ' + result.error);
+                 // Mejor manejo de errores: muestra el mensaje de la API si existe
+                 alert('Error: ' + (result.error || `Error ${response.status} - ${response.statusText}`));
             }
         } catch (error) {
             console.error('Error al enviar la revisión:', error);
             alert('Error de conexión.');
         } finally {
-            location.reload();
+            location.reload(); // Recargar siempre para reflejar cambios
         }
     }
 
@@ -1777,7 +2093,7 @@ $conn->close();
         if (!tbody) return;
         tbody.innerHTML = '';
         if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`; return; }
-        
+
         pendingReview.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
             const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
@@ -1790,9 +2106,9 @@ $conn->close();
     const tbody = document.getElementById('digitador-closed-history-body');
     if (!tbody) return;
     tbody.innerHTML = '';
-    
+
     const showCerradaPorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador');
-    const colspan = showCerradaPorColumn ? 9 : 8; 
+    const colspan = showCerradaPorColumn ? 9 : 8;
 
     if (!history || history.length === 0) {
         tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`;
@@ -1800,7 +2116,7 @@ $conn->close();
     }
     history.forEach(item => {
         const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-        
+
         let actionButtons = `<button onclick="toggleBreakdown('hist-${item.id}')" class="text-blue-600 text-xs font-semibold">Desglose</button>`;
         if (currentUserRole === 'Admin') {
             actionButtons += `<button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs ml-2">Eliminar</button>`;
@@ -1814,7 +2130,7 @@ $conn->close();
         let statusBadge = '';
         if (item.digitador_status === 'Conforme') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`; }
         else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`; }
-        else { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">${item.digitador_status || 'N/A'}</span>`; }
+        else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
 
         const row = `
             <tr class="border-b hover:bg-gray-50">
@@ -1899,51 +2215,48 @@ $conn->close();
     }
 
 
-    // --- LÓGICA REFACTORIZADA PARA CIERRE Y REPORTES POR FONDO ---
-    const btnLlegadas = document.getElementById('btn-llegadas');
+    // --- LÓGICA PARA SUB-PESTAÑAS DEL DIGITADOR ---
+    const btnSupervision = document.getElementById('btn-supervision');
     const btnCierre = document.getElementById('btn-cierre');
+    const btnHistorialCierre = document.getElementById('btn-historial-cierre');
     const btnInformes = document.getElementById('btn-informes');
-    const panelLlegadas = document.getElementById('panel-llegadas');
+    const panelSupervision = document.getElementById('panel-supervision');
     const panelCierre = document.getElementById('panel-cierre');
+    const panelHistorialCierre = document.getElementById('panel-historial-cierre');
     const panelInformes = document.getElementById('panel-informes');
-    
-    if (btnLlegadas) {
-        const setActiveButton = (activeBtn) => {
-            [btnLlegadas, btnCierre, btnInformes].forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
-            activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700');
+    const digitadorSubPanels = [panelSupervision, panelCierre, panelHistorialCierre, panelInformes];
+    const digitadorSubButtons = [btnSupervision, btnCierre, btnHistorialCierre, btnInformes];
+
+    if (btnSupervision) { // Asegurarse de que estamos en la vista de digitador/admin
+        const setActiveDigitadorButton = (activeBtn) => {
+            digitadorSubButtons.forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
+            if(activeBtn) { activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700'); }
         };
-        const showPanel = (activePanel) => {
-            [panelLlegadas, panelCierre, panelInformes].forEach(panel => { if(panel) panel.classList.add('hidden'); });
+        const showDigitadorPanel = (activePanel) => {
+            digitadorSubPanels.forEach(panel => { if(panel) panel.classList.add('hidden'); });
             if (activePanel) activePanel.classList.remove('hidden');
         };
 
-        btnLlegadas.addEventListener('click', () => { setActiveButton(btnLlegadas); showPanel(panelLlegadas); loadLlegadas(); });
-        btnCierre.addEventListener('click', () => { setActiveButton(btnCierre); showPanel(panelCierre); loadFundsForCierre(); });
-        btnInformes.addEventListener('click', () => { setActiveButton(btnInformes); showPanel(panelInformes); loadInformes(); });
-        
+        btnSupervision.addEventListener('click', () => { setActiveDigitadorButton(btnSupervision); showDigitadorPanel(panelSupervision); sessionStorage.setItem('activeDigitadorSubTab', 'supervision'); });
+        btnCierre.addEventListener('click', () => { setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre); sessionStorage.setItem('activeDigitadorSubTab', 'cierre'); loadFundsForCierre(); });
+        btnHistorialCierre.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); /* Podrías recargar aquí si es necesario */ });
+        btnInformes.addEventListener('click', () => { setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes); sessionStorage.setItem('activeDigitadorSubTab', 'informes'); loadInformes(); });
+
         const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
-        if (savedSubTab === 'llegadas') {
-             setActiveButton(btnLlegadas); showPanel(panelLlegadas);
+        if (savedSubTab === 'supervision') {
+             setActiveDigitadorButton(btnSupervision); showDigitadorPanel(panelSupervision);
+        } else if (savedSubTab === 'historial') {
+            setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre);
         } else if (savedSubTab === 'informes') {
-             setActiveButton(btnInformes); showPanel(panelInformes);
-        } else {
-             setActiveButton(btnCierre); showPanel(panelCierre);
+             setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes);
+        } else { // Por defecto o 'cierre'
+             setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre);
         }
     }
+    // --- FIN LÓGICA SUB-PESTAÑAS ---
 
-    async function loadLlegadas() {
-        sessionStorage.setItem('activeDigitadorSubTab', 'llegadas');
-        const tbody = document.getElementById('llegadas-table-body'); if (!tbody) return; tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-sm text-gray-500">Cargando...</td></tr>';
-        try {
-            const response = await fetch(`${apiUrlBase}/digitador_llegadas_api.php`);
-            const llegadas = await response.json(); tbody.innerHTML = '';
-            if (llegadas.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay llegadas pendientes.</td></tr>'; return; }
-            llegadas.forEach(item => { tbody.innerHTML += `<tr class="border-b"><td class="p-3 font-mono">${item.invoice_number}</td> <td class="p-3 font-mono">${item.seal_number}</td><td class="p-3">${formatCurrency(item.declared_value)}</td> <td class="p-3">${item.route_name}</td><td class="p-3 text-xs">${new Date(item.created_at).toLocaleString('es-CO')}</td><td class="p-3">${item.checkinero_name}</td> <td class="p-3">${item.client_name}</td> <td class="p-3">${item.fund_name || 'N/A'}</td></tr>`; });
-        } catch (error) { console.error('Error cargando llegadas:', error); tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-red-500">Error al cargar datos.</td></tr>'; }
-    }
 
     async function loadFundsForCierre() {
-        sessionStorage.setItem('activeDigitadorSubTab', 'cierre');
         const container = document.getElementById('funds-list-container');
         if (!container) return;
         container.innerHTML = '<p class="text-center text-sm text-gray-500">Cargando fondos...</p>';
@@ -1972,13 +2285,13 @@ $conn->close();
     }
 
     async function loadServicesForFund(fundId, element) {
-        selectedFundForClosure = fundId; 
+        selectedFundForClosure = fundId;
         document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400'));
         element.classList.add('bg-blue-100', 'border-blue-400');
-        
+
         const container = document.getElementById('services-list-container');
         container.innerHTML = '<p class="text-center text-sm text-gray-500">Cargando planillas...</p>';
-        
+
         try {
             const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=get_services_for_closing&fund_id=${fundId}`);
             const services = await response.json();
@@ -1988,7 +2301,7 @@ $conn->close();
                 document.getElementById('close-fund-button').classList.add('hidden');
                 return;
             }
-            
+
             let total = 0;
             services.forEach(service => {
                 total += parseFloat(service.total_counted);
@@ -2018,7 +2331,7 @@ $conn->close();
             return;
         }
         if (!confirm('¿Está seguro de que desea cerrar este fondo? Todas las planillas aprobadas se marcarán como cerradas y pasarán a informes.')) return;
-        
+
         try {
             const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_fund`, {
                 method: 'POST',
@@ -2039,11 +2352,10 @@ $conn->close();
     }
 
     async function loadInformes() {
-        sessionStorage.setItem('activeDigitadorSubTab', 'informes');
         const tbody = document.getElementById('informes-table-body');
         if (!tbody) return;
         tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-sm text-gray-500">Cargando informes...</td></tr>';
-        
+
         try {
             const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=list_closed_funds`);
             const funds = await response.json();
@@ -2058,7 +2370,7 @@ $conn->close();
                                         <td class="p-3">${fund.client_name}</td>
                                         <td class="p-3 text-xs">${new Date(fund.last_close_date).toLocaleString('es-CO')}</td>
                                         <td class="p-3 text-center">
-                                            <button onclick="generatePDF(${fund.id}, '${fund.fund_name}', '${fund.client_name}')" class="bg-green-600 text-white font-bold py-1 px-3 rounded-md hover:bg-green-700 text-xs">
+                                            <button onclick="generatePDF(${fund.id}, '${fund.fund_name.replace(/'/g, "\\'")}', '${fund.client_name.replace(/'/g, "\\'")}')" class="bg-green-600 text-white font-bold py-1 px-3 rounded-md hover:bg-green-700 text-xs">
                                                 Generar PDF
                                             </button>
                                         </td>
@@ -2076,17 +2388,17 @@ $conn->close();
             return;
         }
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF(); 
+        const doc = new jsPDF();
 
         if (typeof doc.autoTable === 'undefined') {
             alert('Error: La extensión autoTable para PDF no se cargó.');
             return;
         }
-        
+
         try {
             const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=get_report_details&fund_id=${fundId}`);
             const planillas = await response.json();
-            
+
             if (planillas.length === 0) {
                 alert('No se encontraron datos para este informe.');
                 return;
@@ -2106,14 +2418,14 @@ $conn->close();
                     `$5.000: ${p.bills_5k || 0}`,
                     `$2.000: ${p.bills_2k || 0}`,
                     `Monedas: ${formatCurrency(p.coins)}`
-                ].join('\n'); 
+                ].join('\n');
 
                 body.push([
                     p.planilla,
                     formatCurrency(p.total),
                     formatCurrency(p.discrepancy),
                     p.operador,
-                    desgloseText 
+                    desgloseText
                 ]);
                 totalContado += parseFloat(p.total);
                 totalDiscrepancia += parseFloat(p.discrepancy);
@@ -2123,7 +2435,7 @@ $conn->close();
                 { content: 'TOTALES', styles: { fontStyle: 'bold', halign: 'right' } },
                 { content: formatCurrency(totalContado), styles: { fontStyle: 'bold' } },
                 { content: formatCurrency(totalDiscrepancia), styles: { fontStyle: 'bold', textColor: totalDiscrepancia != 0 ? [220, 38, 38] : [22, 163, 74] } },
-                { content: '', colSpan: 2 } 
+                { content: '', colSpan: 2 }
             ]);
 
             doc.setFontSize(18);
@@ -2145,14 +2457,14 @@ $conn->close();
                     4: { fontSize: 8, cellWidth: 'auto' }
                 }
             });
-            
+
             const pageCount = doc.internal.getNumberOfPages();
             for(let i = 1; i <= pageCount; i++) {
                 doc.setPage(i);
                 doc.setFontSize(9);
                 doc.text(`Generado por EAGLE 3.0 - Página ${i} de ${pageCount}`, 14, doc.internal.pageSize.height - 10);
             }
-            
+
             doc.save(`Informe_Fondo_${fundName.replace(/ /g, '_')}.pdf`);
 
         } catch (error) {
@@ -2160,16 +2472,20 @@ $conn->close();
             alert('No se pudo generar el informe en PDF.');
         }
     }
-    // --- FIN DE LA LÓGICA DE CIERRE Y REPORTES ---
 
 
     document.addEventListener('DOMContentLoaded', () => {
         const savedTab = sessionStorage.getItem('activeTab');
         if (savedTab) {
             switchTab(savedTab);
+        } else {
+             switchTab('operaciones'); // Asegurarse de que una pestaña esté activa por defecto
         }
 
-        if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); }
+        if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); console.log('Admin Users Data:', adminUsersData); } // Añadido console.log
+
+        populateUserHistoryTable(userCompletedTasksData);
+
         if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
             populateTrazabilidadTable(completedTasksData);
         }
@@ -2199,10 +2515,17 @@ $conn->close();
         }
 
         if (document.getElementById('content-digitador')) {
-            loadFundsForCierre();
-            loadInformes();
+            // Inicializar las sub-pestañas del digitador
+            const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
+             if (savedSubTab === 'supervision' && btnSupervision) { btnSupervision.click(); }
+             else if (savedSubTab === 'historial' && btnHistorialCierre) { btnHistorialCierre.click(); }
+             else if (savedSubTab === 'informes' && btnInformes) { btnInformes.click(); }
+             else if (btnCierre) { btnCierre.click(); } // Por defecto
+
+            // Cargar datos iniciales necesarios para las tablas del digitador
             populateOperatorHistoryForDigitador(operatorHistoryData);
             populateDigitadorClosedHistory(digitadorClosedHistory);
+            // Las funciones loadFundsForCierre y loadInformes se llaman al hacer clic en sus botones
         }
 
         updateReminderCount();
@@ -2219,8 +2542,10 @@ $conn->close();
             const getLocalISOString = (date) => { const pad = (num) => num.toString().padStart(2, '0'); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`; };
             const now = new Date(), nowString = getLocalISOString(now);
             startDateInput.min = nowString; endDateInput.min = nowString;
-            if (!startDateInput.value) startDateInput.value = nowString; if (!endDateInput.value) endDateInput.value = nowString;
-            startDateInput.addEventListener('input', () => { if (startDateInput.value) { endDateInput.min = startDateInput.value; if (endDateInput.value < startDateInput.value) endDateInput.value = startDateInput.value; } });
+            // No establecer valor por defecto para permitir que estén vacíos si el usuario no los toca
+            // if (!startDateInput.value) startDateInput.value = nowString;
+            // if (!endDateInput.value) endDateInput.value = nowString;
+            startDateInput.addEventListener('input', () => { if (startDateInput.value) { endDateInput.min = startDateInput.value; if (endDateInput.value && endDateInput.value < startDateInput.value) endDateInput.value = startDateInput.value; } });
         }
     });
     </script>
