@@ -54,14 +54,12 @@ if ($method === 'POST') {
         $stmt_insert->execute();
         $stmt_insert->close();
 
-        // Lógica estándar: marca como Procesado o Discrepancia. No auto-aprueba.
         $new_status = ($data['discrepancy'] == 0) ? 'Procesado' : 'Discrepancia';
         $stmt_update = $conn->prepare("UPDATE check_ins SET status = ? WHERE id = ?");
         $stmt_update->bind_param("si", $new_status, $data['check_in_id']);
         $stmt_update->execute();
         $stmt_update->close();
 
-        // Generar alerta solo si hay discrepancia
         if ($data['discrepancy'] != 0) {
             $check_in_id = $data['check_in_id'];
             $res = $conn->query("SELECT invoice_number FROM check_ins WHERE id = $check_in_id");
@@ -77,19 +75,24 @@ if ($method === 'POST') {
             $alert_id = $stmt_alert->insert_id;
             $stmt_alert->close();
 
-            // Asignar tarea de alerta a todos los digitadores
+            // --- CAMBIO AQUÍ: Asignar Tareas a Grupo 'Digitador' ---
             $digitadores_res = $conn->query("SELECT id FROM users WHERE role = 'Digitador'");
             if ($digitadores_res->num_rows > 0 && $alert_id) {
-                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, instruction, type, status) VALUES (?, ?, ?, 'Asignacion', 'Pendiente')");
+                // Prepara la consulta para insertar la tarea con el campo 'assigned_to_group'
+                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, assigned_to_group, instruction, type, status) VALUES (?, ?, ?, ?, 'Asignacion', 'Pendiente')");
                 $instruction = "Realizar seguimiento a la discrepancia, contactar a los responsables y documentar la resolución.";
+                $digitador_group_name = 'Digitador'; // Nombre del grupo
+                
                 while($row = $digitadores_res->fetch_assoc()) {
                     $digitador_id = $row['id'];
-                    $stmt_task->bind_param("iis", $alert_id, $digitador_id, $instruction);
+                    // Asigna a la vez al usuario individual Y al grupo
+                    $stmt_task->bind_param("iiss", $alert_id, $digitador_id, $digitador_group_name, $instruction);
                     $stmt_task->execute();
                 }
                 $stmt_task->close();
                 $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = $alert_id");
             }
+            // --- FIN DEL CAMBIO ---
         }
         
         $conn->commit();

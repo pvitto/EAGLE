@@ -23,14 +23,21 @@ $all_pending_items = [];
 
 $user_filter = '';
 if ($current_user_role !== 'Admin') {
-    $user_filter = " AND t.assigned_to_user_id = {$current_user_id}";
+    $user_filter = " AND (t.assigned_to_user_id = {$current_user_id} OR t.assigned_to_group = '{$current_user_role}')";
 }
 
 // 1. Cargar Alertas Pendientes
 $base_query_fields = "
-    a.*, t.id as task_id, t.status as task_status, t.assigned_to_user_id, t.assigned_to_group,
-    u_assigned.name as assigned_to_name, t.type as task_type, t.instruction as task_instruction,
-    t.start_datetime, t.end_datetime, GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as group_members,
+    a.*, 
+    MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id,
+    MAX(t.id) as any_task_id,
+    MAX(t.status) as task_status, 
+    t.assigned_to_group,
+    GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as assigned_names, 
+    t.type as task_type, 
+    MAX(t.instruction) as instruction,
+    MAX(t.start_datetime) as start_datetime, 
+    MAX(t.end_datetime) as end_datetime,
     ci.invoice_number 
 ";
 $base_query_joins = "
@@ -39,16 +46,10 @@ $base_query_joins = "
     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
     LEFT JOIN check_ins ci ON a.check_in_id = ci.id 
 ";
-$grouping = " GROUP BY a.id, IF(t.assigned_to_group IS NOT NULL, t.assigned_to_group, t.id)";
+$grouping = " GROUP BY a.id, t.assigned_to_group"; 
+
 $alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
-if ($current_user_role === 'Digitador') {
-    $alerts_sql = "
-        SELECT {$base_query_fields} {$base_query_joins}
-        WHERE a.status NOT IN ('Resuelta', 'Cancelada')
-        AND (t.assigned_to_user_id = {$current_user_id} OR a.suggested_role = 'Digitador')
-        {$grouping}
-    ";
-}
+
 $alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
@@ -61,9 +62,8 @@ if ($alerts_result) {
 $manual_tasks_sql = "
     SELECT
         t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status,
-        t.assigned_to_user_id, t.assigned_to_group, u.name as assigned_to_name,
-        t.start_datetime, t.end_datetime,
-        GROUP_CONCAT(DISTINCT u.name SEPARATOR ', ') as group_members
+        t.assigned_to_user_id, t.assigned_to_group, u.name as assigned_names,
+        t.start_datetime, t.end_datetime
     FROM tasks t
     LEFT JOIN users u ON t.assigned_to_user_id = u.id
     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente' {$user_filter}
@@ -73,6 +73,7 @@ $manual_tasks_result = $conn->query($manual_tasks_sql);
 if ($manual_tasks_result) {
     while($row = $manual_tasks_result->fetch_assoc()) {
         $row['item_type'] = 'manual_task';
+        $row['user_task_id'] = $row['task_id']; 
         $all_pending_items[] = $row;
     }
 }
@@ -114,6 +115,13 @@ usort($main_non_priority_items, function($a, $b) use ($priority_order) { return 
 usort($panel_high_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 usort($panel_medium_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
 
+// --- CAMBIO AQUÍ: LÍNEAS RESTAURADAS ---
+$total_alerts_count_for_user = count($all_pending_items);
+$priority_summary_count = count($main_priority_items);
+$high_priority_badge_count = count($panel_high_priority_items);
+$medium_priority_badge_count = count($panel_medium_priority_items);
+// --- FIN DEL CAMBIO ---
+
 // --- OTRAS CONSULTAS DE DATOS ---
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
@@ -138,8 +146,7 @@ $user_reminders = [];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
 
-
-// --- CAMBIO AQUÍ: Consulta de Recaudos del Día corregida y con más datos ---
+// Recaudos del Día (Panel General)
 $today_collections = [];
 $total_recaudado_hoy = 0;
 $today_collections_result = $conn->query("
@@ -172,12 +179,11 @@ $today_collections_result = $conn->query("
 if ($today_collections_result) {
     while ($row = $today_collections_result->fetch_assoc()) {
         $today_collections[] = $row;
-        $total_recaudado_hoy += $row['total_counted']; // Sumar al total
+        $total_recaudado_hoy += $row['total_counted']; 
     }
 }
-// --- FIN DEL CAMBIO ---
 
-// --- CAMBIO AQUÍ: Conteo dinámico de Cierres Pendientes ---
+// Cierres Pendientes (Panel General)
 $cierres_pendientes_result = $conn->query("
     SELECT COUNT(id) as total 
     FROM check_ins 
@@ -185,13 +191,7 @@ $cierres_pendientes_result = $conn->query("
     AND digitador_status IS NULL
 ");
 $cierres_pendientes_count = $cierres_pendientes_result->fetch_assoc()['total'] ?? 0;
-// --- FIN DEL CAMBIO ---
 
-
-$total_alerts_count_for_user = count($all_pending_items);
-$priority_summary_count = count($main_priority_items);
-$high_priority_badge_count = count($panel_high_priority_items);
-$medium_priority_badge_count = count($panel_medium_priority_items);
 $all_clients = [];
 $clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
 if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
@@ -199,6 +199,7 @@ $all_routes = [];
 $routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
 if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
+// Check-ins (Para Panel Checkinero y Operador)
 $initial_checkins = [];
 $checkins_result = $conn->query("
     SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.id as fund_id, f.name as fund_name,
@@ -215,9 +216,11 @@ $checkins_result = $conn->query("
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
 
 
+// Historial Operador (Panel Operador y Digitador)
 $operator_history = [];
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
-    $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . $_SESSION['user_id'] : "";
+    
+    $operator_id_filter = ""; 
 
     $history_query = "
         SELECT 
@@ -244,16 +247,11 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     }
 }
 
+// Historial Planillas Cerradas (Panel Digitador)
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
     
-    $status_filter = "ci.digitador_status IN ('Conforme', 'Cerrado')";
-
-    if ($current_user_role === 'Digitador') {
-        $digitador_filter = "WHERE {$status_filter} AND ci.closed_by_digitador_id = " . $current_user_id;
-    } else { // Admin
-        $digitador_filter = "WHERE {$status_filter}";
-    }
+    $digitador_filter = "WHERE ci.digitador_status IN ('Conforme', 'Cerrado')";
 
     $closed_history_result = $conn->query("
         SELECT 
@@ -338,7 +336,7 @@ $conn->close();
                         <?php endif; ?>
                     </button>
                     <div id="task-notifications-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
-                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Pirodidad ALTA/CRITICA</h4>
+                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
                         <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto">
                            <?php if(empty($panel_high_priority_items)): ?>
                                 <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
@@ -357,9 +355,9 @@ $conn->close();
                                             <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">
                                                 Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?>
                                             </p>
-                                        <?php elseif (!empty($item['assigned_to_name'])): ?>
+                                        <?php elseif (!empty($item['assigned_names'])): ?>
                                             <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">
-                                                Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?>
+                                                Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?>
                                             </p>
                                         <?php endif; ?>
                                     <?php endif; ?>
@@ -398,9 +396,9 @@ $conn->close();
                                             <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">
                                                 Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?>
                                             </p>
-                                        <?php elseif (!empty($item['assigned_to_name'])): ?>
+                                        <?php elseif (!empty($item['assigned_names'])): ?>
                                             <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">
-                                                Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?>
+                                                Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?>
                                             </p>
                                         <?php endif; ?>
                                     <?php endif; ?>
@@ -476,6 +474,7 @@ $conn->close();
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Alertas Activas</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">❗</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo $total_alerts_count_for_user; ?></p><p class="text-sm text-gray-500 mt-2"><?php echo $priority_summary_count; ?> Prioritarias</p></div>
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Tasa de Cumplimiento</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">📈</div></div><p class="text-3xl font-bold text-gray-900 mt-2">94%</p><p class="text-sm text-green-600 mt-2">▲ 3% vs semana pasada</p></div>
                 </div>
+
                 <div class="grid grid-cols-1 lg:grid-cols-3 gap-8">
                     <div class="lg:col-span-2 space-y-4">
                         <h2 class="text-xl font-bold text-gray-900">Alertas y Tareas Prioritarias</h2>
@@ -484,14 +483,17 @@ $conn->close();
                         <?php else: foreach ($main_priority_items as $item): ?>
                             <?php
                                 $is_manual = $item['item_type'] === 'manual_task';
-                                $id = $is_manual ? $item['task_id'] : $item['id'];
                                 $is_group_task = !empty($item['assigned_to_group']);
-                                $is_assigned = $item['assigned_to_user_id'] !== null;
+                                $assigned_names = $item['assigned_names'] ?? 'N/A';
+                                
+                                $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'];
+                                $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
+
                                 $priority_to_use = $item['current_priority'];
                                 $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
                                 $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                             ?>
-                            <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $id; ?>">
+                            <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                     <div class="flex justify-between items-start">
                                         <p class="font-semibold <?php echo $color['text']; ?> text-lg">
@@ -501,8 +503,8 @@ $conn->close();
                                             <?php endif; ?>
                                             <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                         </p>
-                                        <?php if ($is_assigned && !$is_group_task && isset($item['task_status']) && $item['task_status'] === 'Pendiente'): ?>
-                                            <button onclick="completeTask(<?php echo $item['task_id']; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
+                                        <?php if ($can_complete): ?>
+                                            <button onclick="completeTask(<?php echo $task_id_to_use; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
                                         <?php endif; ?>
                                     </div>
                                     <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
@@ -510,20 +512,20 @@ $conn->close();
                                         <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                     <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
-                                        <button onclick="toggleForm('assign-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_assigned || $is_group_task) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                        <button onclick="toggleForm('reminder-form-<?php echo $id; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                        <button onclick="toggleForm('assign-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                        <button onclick="toggleForm('reminder-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                         <div class="flex-grow text-right text-sm">
                                             <?php if($is_group_task): ?>
                                                 <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
-                                            <?php elseif($is_assigned): ?>
-                                                <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?></span>
+                                            <?php else: ?>
+                                                <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
                                             <?php endif; ?>
                                         </div>
                                     </div>
                                 </div>
-                                <div id="assign-form-<?php echo $id; ?>" class="task-form bg-gray-50 px-4">
-                                    <h4 class="text-sm font-semibold mb-2"><?php echo ($is_assigned || $is_group_task) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                    <select id="assign-user-<?php echo $id; ?>" class="w-full p-2 text-sm border rounded-md">
+                                <div id="assign-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                    <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
+                                    <select id="assign-user-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
                                         <optgroup label="Grupos">
                                             <option value="group-todos">Todos los Usuarios</option>
                                             <option value="group-Operador">Todos los Operadores</option>
@@ -531,33 +533,27 @@ $conn->close();
                                             <option value="group-Digitador">Todos los Digitadores</option>
                                         </optgroup>
                                         <optgroup label="Usuarios Individuales">
-                                            <?php
-                                            $suggested_role = !$is_manual ? ($item['suggested_role'] ?? null) : null;
-                                            foreach ($all_users as $user) {
-                                                if (!$suggested_role || $user['role'] === $suggested_role) {
-                                                    $selected = ($user['id'] == $item['assigned_to_user_id'] && !$is_group_task) ? 'selected' : '';
-                                                    echo "<option value='{$user['id']}' {$selected}>" . htmlspecialchars($user['name']) . " ({$user['role']})</option>";
-                                                }
-                                            }
-                                            ?>
+                                            <?php foreach ($all_users as $user): ?>
+                                                <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option>
+                                            <?php endforeach; ?>
                                         </optgroup>
                                     </select>
-                                    <textarea id="task-instruction-<?php echo $id; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['task_instruction'] ?? ''); ?></textarea>
-                                    <button onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $is_manual ? $id : ($item['task_id'] ?? 'null'); ?>, '<?php echo $id; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                    <textarea id="task-instruction-<?php echo $task_id_to_use; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                                    <button onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                 </div>
-                                <div id="reminder-form-<?php echo $id; ?>" class="task-form bg-gray-50 px-4">
+                                <div id="reminder-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                    <select id="reminder-user-<?php echo $id; ?>" class="w-full p-2 text-sm border rounded-md">
+                                    <select id="reminder-user-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
                                         <?php foreach ($all_users as $user): ?>
                                             <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                         <?php endforeach; ?>
                                     </select>
-                                    <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $is_manual ? $id : ($item['task_id'] ?? 'null'); ?>, '<?php echo $id; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                    <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
 
-                        <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
+                       <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
                          <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
                          <div class="overflow-x-auto">
                             <table class="w-full text-sm text-left">
@@ -672,14 +668,17 @@ $conn->close();
                                 <?php else: foreach ($main_non_priority_items as $item): ?>
                                     <?php
                                         $is_manual = $item['item_type'] === 'manual_task';
-                                        $id = $is_manual ? $item['task_id'] : $item['id'];
                                         $is_group_task = !empty($item['assigned_to_group']);
-                                        $is_assigned = $item['assigned_to_user_id'] !== null;
+                                        $assigned_names = $item['assigned_names'] ?? 'N/A';
+                                        
+                                        $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'];
+                                        $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
+
                                         $priority_to_use = $item['current_priority'];
                                         $color_map = ['Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']];
                                         $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                                     ?>
-                                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $id; ?>">
+                                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
                                         <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                             <div class="flex justify-between items-start">
                                                 <p class="font-semibold <?php echo $color['text']; ?> text-md">
@@ -689,8 +688,8 @@ $conn->close();
                                                     <?php endif; ?>
                                                     <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                                 </p>
-                                                <?php if ($is_assigned && !$is_group_task && isset($item['task_status']) && $item['task_status'] === 'Pendiente'): ?>
-                                                    <button onclick="completeTask(<?php echo $item['task_id']; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
+                                                <?php if ($can_complete): ?>
+                                                    <button onclick="completeTask(<?php echo $task_id_to_use; ?>)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
                                                 <?php endif; ?>
                                             </div>
                                             <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
@@ -698,20 +697,20 @@ $conn->close();
                                                 <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                             <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
-                                                <button onclick="toggleForm('assign-form-np-<?php echo $id; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_assigned || $is_group_task) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                                <button onclick="toggleForm('reminder-form-np-<?php echo $id; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                                <button onclick="toggleForm('assign-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                                <button onclick="toggleForm('reminder-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                                 <div class="flex-grow text-right text-sm">
                                                     <?php if($is_group_task): ?>
                                                         <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
-                                                    <?php elseif($is_assigned): ?>
-                                                        <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($item['assigned_to_name']); ?></span>
+                                                    <?php else: ?>
+                                                        <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
                                                     <?php endif; ?>
                                                 </div>
                                             </div>
                                         </div>
-                                        <div id="assign-form-np-<?php echo $id; ?>" class="task-form bg-gray-50 px-4">
-                                            <h4 class="text-sm font-semibold mb-2"><?php echo ($is_assigned || $is_group_task) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                            <select id="assign-user-np-<?php echo $id; ?>" class="w-full p-2 text-sm border rounded-md">
+                                        <div id="assign-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                            <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
+                                            <select id="assign-user-np-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
                                                 <optgroup label="Grupos">
                                                     <option value="group-todos">Todos los Usuarios</option>
                                                     <option value="group-Operador">Todos los Operadores</option>
@@ -719,28 +718,22 @@ $conn->close();
                                                     <option value="group-Digitador">Todos los Digitadores</option>
                                                 </optgroup>
                                                 <optgroup label="Usuarios Individuales">
-                                                    <?php
-                                                    $suggested_role = !$is_manual ? ($item['suggested_role'] ?? null) : null;
-                                                    foreach ($all_users as $user) {
-                                                        if (!$suggested_role || $user['role'] === $suggested_role) {
-                                                            $selected = ($user['id'] == $item['assigned_to_user_id'] && !$is_group_task) ? 'selected' : '';
-                                                            echo "<option value='{$user['id']}' {$selected}>" . htmlspecialchars($user['name']) . " ({$user['role']})</option>";
-                                                        }
-                                                    }
-                                                    ?>
+                                                    <?php foreach ($all_users as $user): ?>
+                                                        <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option>
+                                                    <?php endforeach; ?>
                                                 </optgroup>
                                             </select>
-                                            <textarea id="task-instruction-np-<?php echo $id; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['task_instruction'] ?? ''); ?></textarea>
-                                            <button onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $is_manual ? $id : ($item['task_id'] ?? 'null'); ?>, 'np-<?php echo $id; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                            <textarea id="task-instruction-np-<?php echo $task_id_to_use; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                                            <button onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                         </div>
-                                        <div id="reminder-form-np-<?php echo $id; ?>" class="task-form bg-gray-50 px-4">
+                                        <div id="reminder-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                            <select id="reminder-user-np-<?php echo $id; ?>" class="w-full p-2 text-sm border rounded-md">
+                                            <select id="reminder-user-np-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
                                                 <?php foreach ($all_users as $user): ?>
                                                     <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $is_manual ? $id : ($item['task_id'] ?? 'null'); ?>, 'np-<?php echo $id; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                            <button onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                         </div>
                                     </div>
                                 <?php endforeach; endif; ?>
@@ -936,7 +929,7 @@ $conn->close();
                                     <th class="p-3">V. Declarado</th>
                                     <th class="p-3">V. Contado</th>
                                     <th class="p-3">Discrepancia</th>
-                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Operador</th><?php endif; ?>
+                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Operador'])): ?><th class="p-3">Operador</th><?php endif; ?>
                                     <th class="p-3">Fecha Conteo</th>
                                     <th class="p-3">Observaciones</th>
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Acciones</th><?php endif; ?>
@@ -1044,7 +1037,7 @@ $conn->close();
                                     <th class="p-3">Discrepancia</th>
                                     <th class="p-3">Estado Final</th>
                                     <th class="p-3">Observaciones</th>
-                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?>
                                         <th class="p-3">Cerrada por</th>
                                     <?php endif; ?>
                                     <th class="p-3">Acciones</th>
@@ -1206,6 +1199,10 @@ $conn->close();
     }
 
     async function completeTask(taskId) {
+        if (!taskId) {
+            alert('Error: No se pudo identificar la tarea a completar.');
+            return;
+        }
         if (!confirm('¿Estás seguro de que quieres marcar esta tarea como completada?')) return;
         try {
             const response = await fetch(`${apiUrlBase}/task_api.php`, {
@@ -1474,14 +1471,17 @@ $conn->close();
         const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
-        const colspan = (currentUserRole === 'Admin') ? 9 : 8;
+        
+        const showOperatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Operador');
+        const colspan = showOperatorColumn ? (currentUserRole === 'Admin' ? 9 : 8) : 7;
+
         if (!historyData || historyData.length === 0) {
             tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return; 
         }
 
         historyData.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            const operatorColumn = (currentUserRole === 'Admin') ? `<td class="p-3">${item.operator_name}</td>` : '';
+            const operatorColumn = showOperatorColumn ? `<td class="p-3">${item.operator_name}</td>` : '';
             const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-3 text-center"><button onclick="deleteCheckIn(${item.check_in_id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
 
             tbody.innerHTML += `<tr class="border-b">
@@ -1756,7 +1756,8 @@ $conn->close();
     if (!tbody) return;
     tbody.innerHTML = '';
     
-    const colspan = (currentUserRole === 'Admin') ? 9 : 8; 
+    const showCerradaPorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador');
+    const colspan = showCerradaPorColumn ? 9 : 8; 
 
     if (!history || history.length === 0) {
         tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`;
@@ -1770,15 +1771,15 @@ $conn->close();
             actionButtons += `<button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs ml-2">Eliminar</button>`;
         }
 
-        let adminColumnCerradaPor = '';
-        if (currentUserRole === 'Admin') {
-            adminColumnCerradaPor = `<td class="p-3">${item.digitador_name || 'N/A'}</td>`;
+        let cerradaPorColumn = '';
+        if (showCerradaPorColumn) {
+            cerradaPorColumn = `<td class="p-3">${item.digitador_name || 'N/A'}</td>`;
         }
 
         let statusBadge = '';
-        if (item.digitador_status === 'Conforme') { statusBadge = `<span class="bg-green-100 text-green-800 text-xs font-medium px-2.5 py-1 rounded-full">Conforme</span>`; }
-        else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`; }
-        else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
+        if (item.digitador_status === 'Conforme') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`; }
+        else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">Cerrado</span>`; }
+        else { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">${item.digitador_status || 'N/A'}</span>`; }
 
         const row = `
             <tr class="border-b hover:bg-gray-50">
@@ -1789,7 +1790,7 @@ $conn->close();
                 <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
                 <td class="p-3">${statusBadge}</td>
                 <td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>
-                ${adminColumnCerradaPor}
+                ${cerradaPorColumn}
                 <td class="p-3 text-center">${actionButtons}</td>
             </tr>
         `;
@@ -2040,7 +2041,7 @@ $conn->close();
             return;
         }
         const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
+        const doc = new jsPDF(); 
 
         if (typeof doc.autoTable === 'undefined') {
             alert('Error: La extensión autoTable para PDF no se cargó.');
@@ -2124,6 +2125,7 @@ $conn->close();
             alert('No se pudo generar el informe en PDF.');
         }
     }
+    // --- FIN DE LA LÓGICA DE CIERRE Y REPORTES ---
 
 
     document.addEventListener('DOMContentLoaded', () => {
