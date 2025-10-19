@@ -43,9 +43,9 @@ if ($method === 'POST') {
         $title = $task_data['title'] ?? null;
         $created_at = $task_data['created_at'] ?? null;
 
-        // 3. Lógica de cierre de grupo
+        // 3. --- LÓGICA DE CIERRE DE GRUPO ---
         if ($alert_id) {
-            // Es una alerta de discrepancia
+            // Es una alerta de discrepancia (que es grupal)
             // 3.a. Marcar la alerta principal como 'Resuelta'
             $stmt_alert = $conn->prepare("UPDATE alerts SET status = 'Resuelta' WHERE id = ?");
             $stmt_alert->bind_param("i", $alert_id);

@@ -78,9 +78,10 @@ if ($method === 'POST') {
             // --- CAMBIO AQUÍ: Asignar Tareas a Grupo 'Digitador' ---
             $digitadores_res = $conn->query("SELECT id FROM users WHERE role = 'Digitador'");
             if ($digitadores_res->num_rows > 0 && $alert_id) {
+                // Prepara la consulta para insertar la tarea con el campo 'assigned_to_group' y 'created_by_user_id'
                 $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, assigned_to_group, instruction, type, status, created_by_user_id) VALUES (?, ?, ?, ?, 'Asignacion', 'Pendiente', ?)");
                 $instruction = "Realizar seguimiento a la discrepancia, contactar a los responsables y documentar la resolución.";
-                $digitador_group_name = 'Digitador';
+                $digitador_group_name = 'Digitador'; // Nombre del grupo
                 
                 while($row = $digitadores_res->fetch_assoc()) {
                     $digitador_id = $row['id'];
@@ -91,6 +92,7 @@ if ($method === 'POST') {
                 $stmt_task->close();
                 $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = $alert_id");
             }
+            // --- FIN DEL CAMBIO ---
         }
         
         $conn->commit();

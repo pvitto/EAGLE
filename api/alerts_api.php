@@ -13,7 +13,7 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
-$creator_id = $_SESSION['user_id']; // <-- CAMBIO: Quién crea la tarea
+$creator_id = $_SESSION['user_id']; // <-- Quién crea la tarea
 
 if ($method === 'DELETE') {
     if (isset($_GET['reminder_id'])) {
@@ -142,7 +142,6 @@ if ($method === 'POST') {
 
     if ($type === 'Asignacion') {
         if ($task_id) {
-            // Re-asignar no cambia el creador original, solo el asignado
             $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL WHERE id = ?");
             $stmt->bind_param("isi", $user_id, $instruction, $task_id);
         } elseif ($alert_id) { 

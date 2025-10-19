@@ -3,8 +3,10 @@ session_start();
 require 'check_session.php';
 require 'db_connection.php';
 
+// Establecer la zona horaria correcta para Colombia
 date_default_timezone_set('America/Bogota');
 
+// Cargar todos los usuarios
 $all_users = [];
 $users_result = $conn->query("SELECT id, name, role, email FROM users ORDER BY name ASC");
 if ($users_result) {
@@ -19,6 +21,7 @@ $current_user_id = $_SESSION['user_id'];
 $current_user_role = $_SESSION['user_role'];
 $all_pending_items = [];
 
+// Filtro de usuario mejorado para GRUPOS
 $user_filter = '';
 if ($current_user_role !== 'Admin') {
     $user_filter = " AND (t.assigned_to_user_id = {$current_user_id} OR t.assigned_to_group = '{$current_user_role}')";
@@ -120,7 +123,7 @@ $medium_priority_badge_count = count($panel_medium_priority_items);
 
 // --- OTRAS CONSULTAS DE DATOS ---
 
-// --- CAMBIO AQUÍ: Consulta de Trazabilidad (Completadas) ---
+// Consulta de Trazabilidad (Completadas)
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
@@ -1099,7 +1102,7 @@ $conn->close();
                             </select>
                         </div>
                         <div>
-                            <label for="filter-priority" class="text-sm font-medium text-gray-700">P. Final</label>
+                            <label for="filter-priority" class="text-sm font-medium text-gray-700">Prioridad Final</label>
                             <select id="filter-priority" class="mt-1 w-full p-2 border rounded-md text-sm">
                                 <option value="">Todas</option>
                                 <option value="Alta">Alta</option>
@@ -1121,15 +1124,15 @@ $conn->close();
                                 <tr class="text-left">
                                     <th class="px-6 py-3">Tarea</th>
                                     <th class="px-6 py-3">Descripción</th>
-                                    <th class="px-6 py-3">P. Inicial</th>
-                                    <th class="px-6 py-3">P. Final</th>
+                                    <th class="px-6 py-3">Prioridad Inicial</th>
+                                    <th class="px-6 py-3">Prioridad Final</th>
                                     <th class="px-6 py-3 sortable cursor-pointer" data-column-name="created_at" onclick="sortTableByDate('created_at')">Hora Inicio <span class="text-gray-400"></span></th>
                                     <th class="px-6 py-3 sortable cursor-pointer" data-column-name="completed_at" onclick="sortTableByDate('completed_at')">Hora Fin <span class="text-gray-400"></span></th>
                                     <th class="px-6 py-3">Tiempo Resp.</th>
                                     <th class="px-6 py-3">Asignado a</th>
                                     <th class="px-6 py-3">Asignado por</th>
                                     <th class="px-6 py-3">Check por</th>
-                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="px-6 py-3">Acciones</th><?php endif; ?>
+                                    <th class="px-6 py-3">Acciones</th>
                                 </tr>
                             </thead>
                             <tbody id="trazabilidad-tbody">
@@ -1667,18 +1670,17 @@ $conn->close();
         } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
     }
 
-    // --- CAMBIO AQUÍ: Funciones de Trazabilidad movidas dentro del bloque Admin ---
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
     
     function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
         tbody.innerHTML = '';
         if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="11" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
+        
         tasks.forEach(task => {
-            // Lógica para mostrar Asignado A (Grupo o Usuario)
             let assignedTo = '';
             if (task.assigned_to_group) {
-                assignedTo = `Grupo ${task.assigned_to_group}`;
+                assignedTo = `<span class="font-medium text-purple-700">Grupo ${task.assigned_to_group}</span>`;
             } else if (task.assigned_to) {
                 assignedTo = task.assigned_to;
             }
@@ -1811,8 +1813,8 @@ $conn->close();
 
         let statusBadge = '';
         if (item.digitador_status === 'Conforme') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`; }
-        else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">Cerrado</span>`; }
-        else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
+        else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`; }
+        else { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">${item.digitador_status || 'N/A'}</span>`; }
 
         const row = `
             <tr class="border-b hover:bg-gray-50">
