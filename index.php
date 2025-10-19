@@ -67,60 +67,90 @@ switch ($current_user_role) {
 $all_pending_items = [];
 $user_filter = '';
 if ($current_user_role !== 'Admin') {
-    $user_filter = " AND (t.assigned_to_user_id = {$current_user_id} OR t.assigned_to_group = '{$current_user_role}')";
+    // Asegura que solo vea tareas asignadas directamente a él o a su grupo de rol
+    $user_filter = $conn->real_escape_string(" AND (t.assigned_to_user_id = {$current_user_id} OR (t.assigned_to_group = '{$current_user_role}' AND t.assigned_to_user_id IS NULL))");
+     // Corrección lógica: No mostrar tareas de grupo si ya están asignadas a alguien específico
 }
 
-// 1. Cargar Alertas Pendientes
-$base_query_fields = "
-    a.*,
-    MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id,
-    MAX(t.id) as any_task_id,
-    MAX(t.status) as task_status,
-    t.assigned_to_group,
-    GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as assigned_names,
-    t.type as task_type,
-    MAX(t.instruction) as instruction,
-    MAX(t.start_datetime) as start_datetime,
-    MAX(t.end_datetime) as end_datetime,
-    ci.invoice_number
-";
-$base_query_joins = "
-    FROM alerts a
-    LEFT JOIN tasks t ON t.alert_id = a.id AND t.status != 'Cancelada'
-    LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
-    LEFT JOIN check_ins ci ON a.check_in_id = ci.id
-";
-$grouping = " GROUP BY a.id, t.assigned_to_group";
 
-$alerts_sql = "SELECT {$base_query_fields} {$base_query_joins} WHERE a.status NOT IN ('Resuelta', 'Cancelada') {$user_filter} {$grouping}";
+// 1. Cargar Alertas Pendientes (Asegura que solo se muestre una instancia por alerta, priorizando la asignada al usuario)
+$alerts_sql = "
+SELECT a.*,
+       t.id AS task_id,
+       t.status AS task_status,
+       t.assigned_to_group,
+       t.assigned_to_user_id,
+       CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END as user_task_id,
+       GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as assigned_names,
+       t.type AS task_type,
+       t.instruction,
+       t.start_datetime,
+       t.end_datetime,
+       ci.invoice_number
+FROM alerts a
+LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' -- Solo tareas pendientes
+LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
+LEFT JOIN check_ins ci ON a.check_in_id = ci.id
+WHERE a.status = 'Asignada' -- Solo alertas que generaron tareas pendientes
+  {$user_filter} -- Aplica filtro de usuario/grupo si no es Admin
+GROUP BY a.id -- Agrupa por alerta para evitar duplicados de alerta
+ORDER BY FIELD(a.priority, 'Critica', 'Alta', 'Media', 'Baja'), a.created_at DESC
+";
+
 
 $alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
+        // Si no es admin y la tarea está asignada a un grupo Y a un usuario específico que NO es el actual, no la muestra
+        if ($current_user_role !== 'Admin' && !empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
+           continue;
+        }
+         // Si no es admin y la tarea está asignada solo a un usuario específico que NO es el actual, no la muestra
+         if ($current_user_role !== 'Admin' && empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
+            continue;
+         }
+
         $row['item_type'] = 'alert';
         $all_pending_items[] = $row;
     }
+} else {
+     error_log("Error en consulta de alertas: " . $conn->error);
 }
 
-// 2. Cargar Tareas Manuales Pendientes
+
+// 2. Cargar Tareas Manuales Pendientes (Agrupadas correctamente)
 $manual_tasks_sql = "
     SELECT
         t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status,
-        t.assigned_to_user_id, t.assigned_to_group, u.name as assigned_names,
+        t.assigned_to_user_id, t.assigned_to_group,
+        -- Correctamente obtener nombres asignados solo si no es grupo
+        CASE WHEN t.assigned_to_group IS NULL THEN u.name ELSE NULL END as assigned_names,
         t.start_datetime, t.end_datetime,
-        MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id
+        -- user_task_id solo si está asignada directamente a este usuario
+        CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END as user_task_id
     FROM tasks t
-    LEFT JOIN users u ON t.assigned_to_user_id = u.id
-    WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente' {$user_filter}
-    GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group, t.created_at), t.id)
-    ORDER BY t.created_at DESC
+    LEFT JOIN users u ON t.assigned_to_user_id = u.id -- Join para nombres individuales
+    WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente'
+      {$user_filter} -- Aplica filtro de usuario/grupo si no es Admin
+    ORDER BY FIELD(t.priority, 'Critica', 'Alta', 'Media', 'Baja'), t.created_at DESC
 ";
+
 $manual_tasks_result = $conn->query($manual_tasks_sql);
 if ($manual_tasks_result) {
     while($row = $manual_tasks_result->fetch_assoc()) {
+         // Si no es admin y la tarea está asignada a un grupo Y a un usuario específico que NO es el actual, no la muestra
+        if ($current_user_role !== 'Admin' && !empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
+           continue;
+        }
+         // Si no es admin y la tarea está asignada solo a un usuario específico que NO es el actual, no la muestra
+         if ($current_user_role !== 'Admin' && empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
+            continue;
+         }
         $row['item_type'] = 'manual_task';
         $all_pending_items[] = $row;
     }
+} else {
+     error_log("Error en consulta de tareas manuales: " . $conn->error);
 }
 
 // 3. Procesar y ordenar items, calculando prioridad actual
@@ -131,17 +161,28 @@ $panel_medium_priority_items = [];
 $now = new DateTime();
 
 foreach ($all_pending_items as $item) {
-    $original_priority = $item['priority'];
+    $original_priority = $item['priority'] ?? 'Media'; // Asignar prioridad por defecto si falta
     $current_priority = $original_priority;
 
     if (!empty($item['end_datetime'])) {
-        $end_time = new DateTime($item['end_datetime']);
-        $diff_minutes = ($now->getTimestamp() - $end_time->getTimestamp()) / 60;
+        try {
+           $end_time = new DateTime($item['end_datetime']);
+           $diff_minutes = ($now->getTimestamp() - $end_time->getTimestamp()) / 60;
 
-        if ($diff_minutes >= 0) { $current_priority = 'Alta'; }
-        elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) { $current_priority = 'Media'; }
+            if ($diff_minutes >= 0) { $current_priority = 'Alta'; }
+            elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) { $current_priority = 'Media'; }
+        } catch (Exception $e) {
+            // Manejar error si la fecha no es válida, opcionalmente loguear el error
+             error_log("Fecha inválida en item: " . ($item['id'] ?? 'N/A') . " - " . $item['end_datetime']);
+        }
     }
     $item['current_priority'] = $current_priority;
+
+    // Asignar user_task_id si es una tarea de grupo y el usuario pertenece al grupo
+    if (empty($item['user_task_id']) && !empty($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role) {
+         $item['user_task_id'] = $item['task_id'] ?? $item['id']; // Usar el ID de la tarea o alerta
+    }
+
 
     if ($current_priority === 'Critica' || $current_priority === 'Alta') {
         $main_priority_items[] = $item;
@@ -155,10 +196,24 @@ foreach ($all_pending_items as $item) {
 }
 
 $priority_order = ['Critica' => 4, 'Alta' => 3, 'Media' => 2, 'Baja' => 1];
-usort($main_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
-usort($main_non_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
-usort($panel_high_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
-usort($panel_medium_priority_items, function($a, $b) use ($priority_order) { return ($priority_order[$b['current_priority']] ?? 0) <=> ($priority_order[$a['current_priority']] ?? 0); });
+// Función de comparación robusta
+$sortFunction = function($a, $b) use ($priority_order) {
+    $priorityA = $priority_order[$a['current_priority']] ?? 0;
+    $priorityB = $priority_order[$b['current_priority']] ?? 0;
+    if ($priorityB !== $priorityA) {
+        return $priorityB <=> $priorityA;
+    }
+    // Si la prioridad es la misma, ordenar por fecha de creación (más reciente primero)
+    $dateA = isset($a['created_at']) ? strtotime($a['created_at']) : 0;
+    $dateB = isset($b['created_at']) ? strtotime($b['created_at']) : 0;
+    return $dateB <=> $dateA;
+};
+
+usort($main_priority_items, $sortFunction);
+usort($main_non_priority_items, $sortFunction);
+usort($panel_high_priority_items, $sortFunction);
+usort($panel_medium_priority_items, $sortFunction);
+
 
 $total_alerts_count_for_user = count($all_pending_items);
 $priority_summary_count = count($main_priority_items);
@@ -182,21 +237,30 @@ if ($_SESSION['user_role'] === 'Admin') {
          LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id
          LEFT JOIN alerts a ON t.alert_id = a.id
          WHERE t.status = 'Completada'
-         GROUP BY t.id
+         -- GROUP BY t.id -- No agrupar aquí, queremos todas las filas completadas
          ORDER BY t.completed_at DESC"
     );
     if ($completed_result) {
         while($row = $completed_result->fetch_assoc()){
             $original_priority = $row['priority'];
             $final_priority = $original_priority;
-            if (!empty($row['end_datetime'])) {
-                $end_time = new DateTime($row['end_datetime']);
-                $completed_time = new DateTime($row['completed_at']);
-                if ($completed_time > $end_time) { $final_priority = 'Alta'; }
-            }
+             // Lógica de prioridad final basada en end_datetime y completed_at
+             if (!empty($row['end_datetime']) && !empty($row['completed_at'])) {
+                 try {
+                     $end_time = new DateTime($row['end_datetime']);
+                     $completed_time = new DateTime($row['completed_at']);
+                     if ($completed_time > $end_time) {
+                         $final_priority = 'Alta'; // O 'Critica' según tu lógica
+                     }
+                 } catch (Exception $e) {
+                     // Manejar fecha inválida si es necesario
+                 }
+             }
             $row['final_priority'] = $final_priority;
             $completed_tasks[] = $row;
         }
+    } else {
+         error_log("Error en consulta de tareas completadas (Admin): " . $conn->error);
     }
 }
 
@@ -216,7 +280,7 @@ $stmt_user_tasks = $conn->prepare(
      LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id
      LEFT JOIN alerts a ON t.alert_id = a.id
      WHERE t.status = 'Completada' AND (t.completed_by_user_id = ?) -- Filtro por quien completó
-     GROUP BY t.id
+     -- GROUP BY t.id -- No agrupar aquí, queremos todas las filas completadas por el usuario
      ORDER BY t.completed_at DESC"
 );
 $stmt_user_tasks->bind_param("i", $current_user_id);
@@ -227,14 +291,18 @@ if ($user_tasks_result) {
         // Añadir lógica de prioridad final
         $original_priority = $row['priority'];
         $final_priority = $original_priority;
-        if (!empty($row['end_datetime'])) {
-            $end_time = new DateTime($row['end_datetime']);
-            $completed_time = new DateTime($row['completed_at']);
-            if ($completed_time > $end_time) { $final_priority = 'Alta'; }
+         if (!empty($row['end_datetime']) && !empty($row['completed_at'])) {
+             try {
+                $end_time = new DateTime($row['end_datetime']);
+                $completed_time = new DateTime($row['completed_at']);
+                if ($completed_time > $end_time) { $final_priority = 'Alta'; }
+             } catch (Exception $e) { /* Manejar error */ }
         }
         $row['final_priority'] = $final_priority;
         $user_completed_tasks[] = $row;
     }
+} else {
+     error_log("Error en consulta de historial de usuario: " . $conn->error);
 }
 $stmt_user_tasks->close();
 
@@ -245,6 +313,7 @@ if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_re
 // Recaudos del Día (Panel General)
 $today_collections = [];
 $total_recaudado_hoy = 0;
+// *** MODIFICADO: Usar MAX(id) para obtener el último conteo por check_in_id en el día actual ***
 $today_collections_result = $conn->query("
     SELECT
         oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name,
@@ -263,13 +332,17 @@ $today_collections_result = $conn->query("
             ELSE ci.status
         END AS final_status
     FROM operator_counts oc
+    INNER JOIN (
+         SELECT check_in_id, MAX(id) as max_oc_id
+         FROM operator_counts
+         WHERE DATE(created_at) = CURDATE()
+         GROUP BY check_in_id
+    ) latest_oc ON oc.id = latest_oc.max_oc_id
     JOIN check_ins ci ON oc.check_in_id = ci.id
     JOIN clients c ON ci.client_id = c.id
     JOIN users u_op ON oc.operator_id = u_op.id
     LEFT JOIN funds f ON ci.fund_id = f.id
     LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id
-    WHERE DATE(oc.created_at) = CURDATE()
-    GROUP BY oc.id
     ORDER BY oc.created_at DESC
 ");
 if ($today_collections_result) {
@@ -277,6 +350,8 @@ if ($today_collections_result) {
         $today_collections[] = $row;
         $total_recaudado_hoy += $row['total_counted'];
     }
+} else {
+     error_log("Error en consulta de recaudos del día: " . $conn->error);
 }
 
 // Cierres Pendientes (Panel General)
@@ -306,10 +381,17 @@ $checkins_result = $conn->query("
     JOIN routes r ON ci.route_id = r.id
     JOIN users u ON ci.checkinero_id = u.id
     LEFT JOIN funds f ON ci.fund_id = f.id
-    WHERE ci.status IN ('Pendiente', 'Rechazado', 'Procesado', 'Discrepancia')
+    WHERE ci.status IN ('Pendiente', 'Rechazado') OR ci.digitador_status IS NULL -- Mostrar pendientes, rechazados y los que aún no cierra el digitador
     ORDER BY ci.correction_count DESC, ci.created_at DESC
 ");
-if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
+
+if ($checkins_result) {
+     while ($row = $checkins_result->fetch_assoc()) {
+         $initial_checkins[] = $row;
+     }
+} else {
+     error_log("Error cargando checkins iniciales: " . $conn->error);
+}
 
 
 // Historial Operador (Panel Operador y Digitador)
@@ -318,7 +400,7 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
 
     $operator_id_filter = "";
     if ($_SESSION['user_role'] === 'Operador') {
-        $operator_id_filter = "WHERE op.operator_id = " . $_SESSION['user_id'];
+        $operator_id_filter = "WHERE op.operator_id = " . intval($_SESSION['user_id']); // Usar intval para seguridad
     }
 
     $history_query = "
@@ -327,6 +409,7 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
             ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name
         FROM operator_counts op
         INNER JOIN (
+             -- Subconsulta para obtener solo el último conteo por check_in_id
             SELECT check_in_id, MAX(id) as max_id
             FROM operator_counts
             GROUP BY check_in_id
@@ -334,7 +417,7 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
         JOIN check_ins ci ON op.check_in_id = ci.id
         JOIN clients c ON ci.client_id = c.id
         JOIN users u ON op.operator_id = u.id
-        {$operator_id_filter}
+        {$operator_id_filter} -- Aplicar filtro si es operador
         ORDER BY op.created_at DESC
     ";
 
@@ -343,6 +426,8 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
         while($row = $history_result->fetch_assoc()) {
             $operator_history[] = $row;
         }
+    } else {
+         error_log("Error cargando historial de operador: " . $conn->error);
     }
 }
 
@@ -350,7 +435,8 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
 
-    $digitador_filter = "WHERE ci.digitador_status IN ('Conforme', 'Cerrado')";
+    // Mostrar Conforme, Cerrado y también los Rechazados por el digitador
+    $digitador_filter = "WHERE ci.digitador_status IN ('Conforme', 'Cerrado', 'Rechazado')";
 
     $closed_history_result = $conn->query("
         SELECT
@@ -376,12 +462,18 @@ if (in_array($current_user_role, ['Digitador', 'Admin'])) {
         LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id
         LEFT JOIN funds f ON ci.fund_id = f.id
         {$digitador_filter}
-        ORDER BY ci.closed_by_digitador_at DESC"
+        ORDER BY ci.closed_by_digitador_at DESC, ci.id DESC" // Ordenar por fecha de cierre y luego ID
     );
-    if($closed_history_result){ while($row = $closed_history_result->fetch_assoc()){ $digitador_closed_history[] = $row; } }
+    if($closed_history_result){
+         while($row = $closed_history_result->fetch_assoc()){
+              $digitador_closed_history[] = $row;
+         }
+    } else {
+         error_log("Error cargando historial cerrado de digitador: " . $conn->error);
+    }
 }
 
-$conn->close();
+$conn->close(); // Cerrar conexión al final de todas las consultas
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -396,11 +488,19 @@ $conn->close();
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        body { font-family: 'Inter', sans-serif; }
+html {
+  font-size: 10px; /* Prueba con 10px, ajusta si es necesario (original es 16px) */
+}
 
-        .nav-tab { cursor: pointer; padding: 0.75rem 1.5rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
+body {
+  font-family: 'Inter', sans-serif;
+  /* El tamaño de fuente del body ahora heredará o puedes ajustarlo si quieres */
+  /* font-size: 1rem; /* Esto sería 10px ahora */
+}
 
-        .nav-admin { color: #991b1b; } /* text-red-800 */
+       /* body { font-family: 'Inter', sans-serif; }*/
+
+      .nav-tab { cursor: pointer; padding: 0.25rem 1rem; /* Reducido aún más el padding vertical */ font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
         .nav-admin:hover { color: #dc2626; }
         .nav-admin.active { color: #dc2626; border-bottom-color: #dc2626; background-color: #fee2e2; }
 
@@ -420,21 +520,116 @@ $conn->close();
         .task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
         .task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
         .details-row { border-top: 1px solid #e5e7eb; }
-        .sortable { transition: background-color: 0.2s; }
+        .sortable { transition: background-color 0.2s; }
         .sortable:hover { background-color: #f3f4f6; }
 
-        /* *** NUEVO: Estilos para el Dropdown de Navegación *** */
-        .nav-dropdown { position: relative; }
-        .nav-dropdown-content { display: none; position: absolute; background-color: #f9f9f9; min-width: 160px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 10; border-radius: 0.5rem; overflow: hidden; }
-        /* *** MODIFICADO: Estilos aplicados a <a> en lugar de <button> *** */
-        .nav-dropdown-content a { color: black; padding: 12px 16px; text-decoration: none; display: block; font-weight: 500; cursor: pointer; }
-        .nav-dropdown-content a:hover { background-color: #f1f1f1; }
-        .nav-dropdown:hover .nav-dropdown-content { display: block; }
-        /* Aplicar color de rol al enlace del dropdown */
+        /* --- ESTILOS MEJORADOS PARA EL DROPDOWN DE NAVEGACIÓN --- */
+        .nav-dropdown {
+            position: relative; /* Contenedor relativo para el contenido absoluto */
+            display: inline-block; /* Para que se alinee con los otros botones */
+        }
+
+        .nav-dropdown-content {
+            display: none; /* Oculto por defecto */
+            position: absolute; /* Posicionado relativo al .nav-dropdown */
+            background-color: white; /* Fondo blanco como en el ejemplo */
+            min-width: 200px; /* Ancho mínimo, ajusta según necesidad */
+            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); /* Sombra como en el ejemplo */
+            z-index: 50; /* Asegura que esté por encima de otros elementos */
+            border-radius: 0.375rem; /* Esquinas redondeadas (md en Tailwind) */
+            overflow: hidden; /* Para que el contenido respete el borde redondeado */
+            top: 100%; /* Posiciona justo debajo del botón */
+            left: 0; /* Alinea a la izquierda del botón */
+            margin-top: 0.25rem; /* Pequeño espacio entre el botón y el dropdown (mt-1) */
+        }
+
+        /* Estilos para los enlaces dentro del dropdown */
+        .nav-dropdown-content a {
+            color: #374151; /* Color de texto gris oscuro (text-gray-700) */
+            padding: 0.75rem 1rem; /* Padding (py-3 px-4) */
+            text-decoration: none;
+            display: block;
+            font-weight: 500; /* semi-bold */
+            font-size: 0.875rem; /* text-sm */
+            white-space: nowrap; /* Evita que el texto se divida en líneas */
+            transition: background-color 0.15s ease-in-out; /* Transición suave */
+            cursor: pointer;
+            /* Aplicar los mismos estilos base que nav-tab para consistencia */
+            border-bottom: 3px solid transparent;
+        }
+
+        /* Efecto hover para los enlaces */
+        .nav-dropdown-content a:hover {
+            background-color: #f3f4f6; /* Fondo gris claro al pasar el mouse (bg-gray-100) */
+        }
+
+        /* Muestra el dropdown al hacer hover sobre el contenedor .nav-dropdown */
+        .nav-dropdown:hover .nav-dropdown-content {
+            display: block;
+        }
+
+        /* Opcional: Estilos específicos de rol al pasar el mouse sobre los enlaces */
         .nav-dropdown-content a.nav-admin:hover { background-color: #fee2e2; }
         .nav-dropdown-content a.nav-digitador:hover { background-color: #dbeafe; }
         .nav-dropdown-content a.nav-operador:hover { background-color: #fefce8; }
         .nav-dropdown-content a.nav-checkinero:hover { background-color: #f0fdf4; }
+
+        /* Ajuste para el botón principal del dropdown para que no cambie de fondo al hacer hover */
+        .nav-dropdown > button.nav-tab:hover {
+             /* Puedes resetear el color de fondo o mantener el que tiene por defecto */
+             /* background-color: transparent; /* O el color base si no es transparente */
+             /* Mantenemos el cambio de color de texto y borde si es necesario */
+        }
+        /* --- FIN DE ESTILOS MEJORADOS --- */
+
+        /* === INICIO DE NUEVOS ESTILOS FUSIONADOS === */
+        .sortable { cursor: pointer; } .sortable span { color: #9ca3af; }
+        /* Header Panel Button Styles */
+        /* Header Panel Button Styles - Modificado para apariencia de caja */
+.header-panel-button {
+  display: inline-block;
+  padding: 0.3rem 0.8rem;
+  margin-left: 0.5rem; /* Mantiene el espacio a la izquierda */
+  font-size: 0.8rem;
+  font-weight: 500;
+  border-radius: 0.375rem; /* Esquinas redondeadas */
+  border: 1px solid; /* Borde sólido por defecto, el color vendrá de la clase de rol */
+  cursor: pointer;
+  transition: all 0.2s;
+  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); /* Sombra sutil para efecto caja */
+  line-height: 1.5; /* Ajuste vertical del texto si es necesario */
+}
+.header-panel-button:hover {
+  opacity: 0.9; /* Hover más sutil */
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); /* Sombra ligeramente mayor en hover */
+}
+.header-panel-button.active {
+  box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.05); /* Sombra interior cuando está activo */
+  /* Puedes agregar otros estilos para el estado activo si lo deseas, como un borde más grueso */
+  /* border-width: 2px; */
+}
+
+/* Colores específicos de rol (borde más contrastante) */
+.header-panel-button.nav-checkinero { background-color: #dcfce7; border-color: #4ade80; color: #166534; } /* Borde verde más visible */
+.header-panel-button.nav-checkinero:hover { background-color: #bbf7d0; }
+.header-panel-button.nav-checkinero.active { background-color: #a7f3d0; border-color: #22c55e; } /* Borde más oscuro activo */
+
+.header-panel-button.nav-operador { background-color: #fef9c3; border-color: #facc15; color: #854d0e; } /* Borde amarillo más visible */
+.header-panel-button.nav-operador:hover { background-color: #fde68a; }
+.header-panel-button.nav-operador.active { background-color: #fde047; border-color: #eab308; } /* Borde más oscuro activo */
+
+.header-panel-button.nav-digitador { background-color: #dbeafe; border-color: #60a5fa; color: #1e40af; } /* Borde azul más visible */
+.header-panel-button.nav-digitador:hover { background-color: #bfdbfe; }
+.header-panel-button.nav-digitador.active { background-color: #93c5fd; border-color: #3b82f6; } /* Borde más oscuro activo */
+
+/* --- Fin de estilos de Header Panel Button --- */
+/* Alert Pop-up Styles */
+        #alert-popup-overlay { transition: opacity 0.3s ease; }
+        #alert-popup { transition: transform 0.3s ease, opacity 0.3s ease; }
+        /* Spinner for AJAX loading */
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        /* === FIN DE NUEVOS ESTILOS FUSIONADOS === */
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -463,179 +658,109 @@ $conn->close();
         </div>
     </div>
 
+       <div id="alert-popup-overlay" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 hidden z-[100]">
+        <div id="alert-popup" class="bg-white rounded-lg shadow-xl w-full max-w-lg transform scale-95 opacity-0">
+             <div id="alert-popup-header" class="p-4 border-b rounded-t-lg bg-red-100 border-red-200">
+                <div class="flex justify-between items-center">
+                    <h3 id="alert-popup-title" class="text-xl font-bold text-red-800">¡Nueva Alerta Prioritaria!</h3>
+                    <button onclick="closeAlertPopup()" class="text-red-400 hover:text-red-600 text-3xl leading-none">&times;</button>
+                </div>
+             </div>
+             <div class="p-6 space-y-3">
+                <p id="alert-popup-description" class="text-gray-700"></p>
+                <p class="text-sm text-gray-500">Por favor, revisa el panel de alertas para más detalles y acciones.</p>
+             </div>
+             <div class="p-4 bg-gray-50 border-t rounded-b-lg flex justify-end">
+                <button onclick="closeAlertPopup()" class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700">Entendido</button>
+             </div>
+        </div>
+    </div>
     <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-full mx-auto">
+        <header class="flex flex-col sm:flex-row justify-between sm:items-start mb-2 border-b pb-1">
+    <div>
+        <h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1>
+        <p class="text-sm text-gray-500 mb-2">Sistema Integrado de Operaciones y Alertas</p>
+        <div class="flex items-center space-x-2 mt-2">
+            <span class="text-sm font-semibold text-gray-700">Hola</span>
+            <span class="text-xs font-bold px-2.5 py-0.5 rounded-full <?php echo $role_color_class; ?>">
+                <?php echo htmlspecialchars($displayRole); ?>
+            </span>
+            <span class="text-sm font-bold text-gray-900">: <?php echo htmlspecialchars($_SESSION['user_name']); ?></span>
+        </div>
+    </div>
 
-        <header class="flex flex-col sm:flex-row justify-between sm:items-start mb-6 border-b pb-4">
-
-            <div>
-                <h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1>
-                <p class="text-sm text-gray-500 mb-2">Sistema Integrado de Operaciones y Alertas</p>
-
-                <div class="flex items-center space-x-2 mt-2">
-                    <span class="text-sm font-semibold text-gray-700">Hola</span>
-                    <span class="text-xs font-bold px-2.5 py-0.5 rounded-full <?php echo $role_color_class; ?>">
-                        <?php echo htmlspecialchars($displayRole); // *** USAR $displayRole AQUÍ *** ?>
-                    </span>
-                    <span class="text-sm font-bold text-gray-900">
-                        : <?php echo htmlspecialchars($_SESSION['user_name']); ?>
-                    </span>
-                </div>
-            </div>
-
-            <div class="text-sm text-gray-600 mt-2 sm:mt-0 flex items-center space-x-4">
-
-                <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
-
-                <div class="relative">
-                    <button id="task-notification-button" onclick="toggleTaskNotifications()" class="relative text-gray-500 hover:text-gray-700">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
-                        <?php if ($high_priority_badge_count > 0): ?>
-                        <span id="task-notification-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-red-500 text-white text-xs font-bold"><?php echo $high_priority_badge_count; ?></span>
-                        <?php endif; ?>
-                    </button>
-                    <div id="task-notifications-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
-                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
-                        <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto">
-                           <?php if(empty($panel_high_priority_items)): ?>
-                                <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
-                            <?php else: foreach($panel_high_priority_items as $item): ?>
-                                <?php $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange'; ?>
-                                <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
-                                    <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title']); ?>
-                                        <?php if (!empty($item['invoice_number'])): ?>
-                                            <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
-                                        <?php endif; ?>
-                                    </p>
-                                    <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
-
-                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                                        <?php if (!empty($item['assigned_to_group'])): ?>
-                                            <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">
-                                                Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?>
-                                            </p>
-                                        <?php elseif (!empty($item['assigned_names'])): ?>
-                                            <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">
-                                                Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?>
-                                            </p>
-                                        <?php endif; ?>
-                                    <?php endif; ?>
-
-                                    <?php if (!empty($item['end_datetime'])): ?>
-                                        <div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
-                                    <?php endif; ?>
-                                </div>
-                            <?php endforeach; endif; ?>
-                        </div>
-                    </div>
-                </div>
-                <div class="relative">
-                    <button id="medium-priority-button" onclick="toggleMediumPriority()" class="relative text-gray-500 hover:text-gray-700">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                        <?php if ($medium_priority_badge_count > 0): ?>
-                            <span id="medium-priority-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-yellow-500 text-white text-xs font-bold"><?php echo $medium_priority_badge_count; ?></span>
-                        <?php endif; ?>
-                    </button>
-                    <div id="medium-priority-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
-                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Prioridad Media</h4>
-                        <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto">
-                            <?php if(empty($panel_medium_priority_items)): ?>
-                                <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
-                            <?php else: foreach($panel_medium_priority_items as $item): ?>
-                                <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
-                                    <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title']); ?>
-                                        <?php if (!empty($item['invoice_number'])): ?>
-                                            <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
-                                        <?php endif; ?>
-                                    </p>
-                                    <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? $item['instruction'] : $item['description']); ?></p>
-
-                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                                        <?php if (!empty($item['assigned_to_group'])): ?>
-                                            <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">
-                                                Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?>
-                                            </p>
-                                        <?php elseif (!empty($item['assigned_names'])): ?>
-                                            <p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">
-                                                Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?>
-                                            </p>
-                                        <?php endif; ?>
-                                    <?php endif; ?>
-
-                                    <?php if (!empty($item['end_datetime'])): ?>
-                                        <div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
-                                    <?php endif; ?>
-                                </div>
-                            <?php endforeach; endif; ?>
-                        </div>
-                    </div>
-                </div>
-                <div class="relative">
-                    <button id="reminders-button" onclick="toggleReminders()" class="relative text-gray-500 hover:text-gray-700">
-                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                        <span id="reminders-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-blue-500 text-white text-xs font-bold hidden"></span>
-                    </button>
-                    <div id="reminders-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
-                        <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
-                        <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto">
-                            <?php if(empty($user_reminders)): ?>
-                                <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
-                            <?php else: foreach($user_reminders as $reminder): ?>
-                                <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
-                                    <div class="flex justify-between items-start">
-                                        <div>
-                                            <p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p>
-                                            <p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p>
-                                        </div>
-                                        <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
-                                    </div>
-                                </div>
-                            <?php endforeach; endif; ?>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </header>
-
-        <nav class="mb-8">
-            <div class="border-b border-gray-200">
-                <div class="-mb-px flex space-x-4 overflow-x-auto">
-                    <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
-
-                    <?php
-                    // Comprobar si el usuario tiene acceso a CUALQUIERA de los paneles de empleados
-                    $has_employee_panels = in_array($_SESSION['user_role'], ['Checkinero', 'Admin', 'Operador', 'Digitador']);
-                    ?>
-
-                    <?php if ($has_employee_panels): ?>
-                    <div class="nav-dropdown">
-                        <button class="nav-tab <?php echo $role_nav_class; ?>" onclick="void(0)"> Paneles de Empleados &or; </button>
-                        <div class="nav-dropdown-content">
-                            <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
-                                <a href="#" id="tab-checkinero" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('checkinero'); return false;">Panel Check-in</a>
-                            <?php endif; ?>
-                            <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
-                                <a href="#" id="tab-operador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('operador'); return false;">Panel Operador</a>
-                            <?php endif; ?>
-                            <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
-                                <a href="#" id="tab-digitador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('digitador'); return false;">Panel Digitador</a>
-                            <?php endif; ?>
-                        </div>
-                    </div>
+    <div class="mt-4 sm:mt-0 flex flex-col sm:items-end space-y-2">
+        <div class="flex items-center space-x-4">
+            <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
+            <div class="relative">
+                <button id="task-notification-button" onclick="toggleTaskNotifications()" class="relative text-gray-500 hover:text-gray-700">
+                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
+                    <?php if ($high_priority_badge_count > 0): ?>
+                    <span id="task-notification-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-red-500 text-white text-xs font-bold"><?php echo $high_priority_badge_count; ?></span>
                     <?php endif; ?>
-
-                    <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
-
-                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                        <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
-                        <a href="manage_clients.php" class="nav-tab <?php echo $role_nav_class; ?>">Gestionar Clientes</a>
-                        <a href="manage_routes.php" class="nav-tab <?php echo $role_nav_class; ?>">Gestionar Rutas</a>
-                        <a href="manage_funds.php" class="nav-tab <?php echo $role_nav_class; ?>">Gestionar Fondos</a>
-                        <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad (Admin)</button>
+                </button>
+                <div id="task-notifications-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                    <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
+                     <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto">
+                        <?php /* PHP loop for high priority items */ ?>
+                     </div>
+                </div>
+            </div>
+            <div class="relative">
+                 <button id="medium-priority-button" onclick="toggleMediumPriority()" class="relative text-gray-500 hover:text-gray-700">
+                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                     <?php if ($medium_priority_badge_count > 0): ?>
+                     <span id="medium-priority-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-yellow-500 text-white text-xs font-bold"><?php echo $medium_priority_badge_count; ?></span>
+                     <?php endif; ?>
+                 </button>
+                 <div id="medium-priority-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                    <h4 class="font-bold text-gray-800 mb-2">Alertas de Prioridad Media</h4>
+                     <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto">
+                        <?php /* PHP loop for medium priority items */ ?>
+                     </div>
+                 </div>
+            </div>
+            <div class="relative">
+                 <button id="reminders-button" onclick="toggleReminders()" class="relative text-gray-500 hover:text-gray-700">
+                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                     <span id="reminders-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-blue-500 text-white text-xs font-bold hidden"></span>
+                 </button>
+                 <div id="reminders-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                    <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
+                     <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto">
+                        <?php /* PHP loop for reminders */ ?>
+                     </div>
+                 </div>
+            </div>
+        </div>
+    <div class="mt-2 flex flex-wrap justify-start sm:justify-end space-x-2 sm:space-x-4">
+                    <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
+                        <button id="tab-checkinero" class="header-panel-button nav-checkinero shadow-sm" onclick="switchTab('checkinero')">Panel Check-in</button>
+                    <?php endif; ?>
+                    <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
+                        <button id="tab-operador" class="header-panel-button nav-operador shadow-sm" onclick="switchTab('operador')">Panel Operador</button>
+                    <?php endif; ?>
+                    <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
+                        <button id="tab-digitador" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button>
                     <?php endif; ?>
                 </div>
-            </div>
-        </nav>
-
+    </div>
+</header>
+        <nav class="mb-4">
+            <div class="border-b border-gray-200">
+                <div class="-mb-px flex space-x-4 overflow-x-auto">
+                    <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
+                    <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
+                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+                        <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
+                        <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
+                        <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
+                        <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
+                        <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </nav>
         <main>
             <div id="content-operaciones">
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -656,51 +781,56 @@ $conn->close();
                                 $is_group_task = !empty($item['assigned_to_group']);
                                 $assigned_names = $item['assigned_names'] ?? 'N/A';
 
-                                $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'] ?? $item['id']; // Added $item['id'] as fallback
+                                $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // ID principal de la tarea o alerta
+                                $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null'); // ID de la alerta original, si existe
+                                $task_id_specific = $item['task_id'] ?? $item['id']; // ID específico de esta instancia de tarea (puede ser igual a $task_id_to_use)
+
                                 $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
 
                                 $priority_to_use = $item['current_priority'];
                                 $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
                                 $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                             ?>
-                            <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
+                            <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_specific; ?>">
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                     <div class="flex justify-between items-start">
                                         <p class="font-semibold <?php echo $color['text']; ?> text-lg">
-                                            <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?>
+                                            <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?>
                                             <?php if (!empty($item['invoice_number'])): ?>
                                                 <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
                                             <?php endif; ?>
                                             <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                         </p>
                                         </div>
-                                    <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
+                                    <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
                                     <?php if (!empty($item['end_datetime'])): ?>
                                         <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                     <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                         <?php if ($can_complete): ?>
-                                            <button onclick="toggleForm('complete-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
+                                            <button onclick="toggleForm('complete-form-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
                                         <?php endif; ?>
-                                        <button onclick="toggleForm('assign-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                        <button onclick="toggleForm('reminder-form-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                        <button onclick="toggleForm('assign-form-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                        <button onclick="toggleForm('reminder-form-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                         <div class="flex-grow text-right text-sm">
                                             <?php if($is_group_task): ?>
                                                 <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
-                                            <?php else: ?>
+                                            <?php elseif (!empty($assigned_names)): ?>
                                                 <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
+                                            <?php else: ?>
+                                                <span class="font-semibold text-gray-500">Pendiente de Asignación</span>
                                             <?php endif; ?>
                                         </div>
                                     </div>
                                 </div>
-                                <div id="complete-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                <div id="complete-form-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
-                                    <textarea id="resolution-note-<?php echo $task_id_to_use; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
-                                    <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
+                                    <textarea id="resolution-note-<?php echo $task_id_specific; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
+                                    <button type="button" onclick="completeTask(<?php echo $task_id_specific; ?>, '<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
                                 </div>
-                                <div id="assign-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                <div id="assign-form-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                    <select id="assign-user-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
+                                    <select id="assign-user-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
                                         <optgroup label="Grupos">
                                             <option value="group-todos">Todos los Usuarios</option>
                                             <option value="group-Operador">Todos los Operadores</option>
@@ -713,17 +843,17 @@ $conn->close();
                                             <?php endforeach; ?>
                                         </optgroup>
                                     </select>
-                                    <textarea id="task-instruction-<?php echo $task_id_to_use; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                    <button type="button" onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                    <textarea id="task-instruction-<?php echo $task_id_specific; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                                    <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, '<?php echo $task_id_specific; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                 </div>
-                                <div id="reminder-form-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                <div id="reminder-form-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                    <select id="reminder-user-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
-                                        <?php foreach ($all_users as $user): ?>
+                                    <select id="reminder-user-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
+                                         <option value="">Seleccione usuario...</option> <?php foreach ($all_users as $user): ?>
                                             <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                         <?php endforeach; ?>
                                     </select>
-                                    <button type="button" onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                    <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, '<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
@@ -846,51 +976,56 @@ $conn->close();
                                         $is_group_task = !empty($item['assigned_to_group']);
                                         $assigned_names = $item['assigned_names'] ?? 'N/A';
 
-                                        $task_id_to_use = $item['user_task_id'] ?? $item['any_task_id'] ?? $item['task_id'] ?? $item['id']; // Added $item['id'] as fallback
+                                        $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // ID principal de la tarea o alerta
+                                        $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null'); // ID de la alerta original, si existe
+                                        $task_id_specific = $item['task_id'] ?? $item['id']; // ID específico de esta instancia de tarea
+
                                         $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
 
                                         $priority_to_use = $item['current_priority'];
                                         $color_map = ['Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']];
                                         $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                                     ?>
-                                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
+                                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_specific; ?>">
                                         <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                             <div class="flex justify-between items-start">
                                                 <p class="font-semibold <?php echo $color['text']; ?> text-md">
-                                                    <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title']); ?>
+                                                    <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?>
                                                     <?php if (!empty($item['invoice_number'])): ?>
                                                         <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
                                                     <?php endif; ?>
                                                     <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                                 </p>
                                                 </div>
-                                            <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? $item['instruction'] : $item['description']); ?></p>
+                                            <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
                                             <?php if (!empty($item['end_datetime'])): ?>
                                                 <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
                                             <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                                 <?php if ($can_complete): ?>
-                                                    <button onclick="toggleForm('complete-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
+                                                    <button onclick="toggleForm('complete-form-np-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
                                                 <?php endif; ?>
-                                                <button onclick="toggleForm('assign-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                                <button onclick="toggleForm('reminder-form-np-<?php echo $task_id_to_use; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                                <button onclick="toggleForm('assign-form-np-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                                <button onclick="toggleForm('reminder-form-np-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                                 <div class="flex-grow text-right text-sm">
-                                                    <?php if($is_group_task): ?>
+                                                     <?php if($is_group_task): ?>
                                                         <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
-                                                    <?php else: ?>
+                                                    <?php elseif (!empty($assigned_names)): ?>
                                                         <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
+                                                    <?php else: ?>
+                                                        <span class="font-semibold text-gray-500">Pendiente de Asignación</span>
                                                     <?php endif; ?>
                                                 </div>
                                             </div>
                                         </div>
-                                        <div id="complete-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                         <div id="complete-form-np-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
-                                            <textarea id="resolution-note-np-<?php echo $task_id_to_use; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
-                                            <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
+                                            <textarea id="resolution-note-np-<?php echo $task_id_specific; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
+                                            <button type="button" onclick="completeTask(<?php echo $task_id_specific; ?>, 'np-<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
                                         </div>
-                                        <div id="assign-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                        <div id="assign-form-np-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                            <select id="assign-user-np-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
+                                            <select id="assign-user-np-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
                                                 <optgroup label="Grupos">
                                                     <option value="group-todos">Todos los Usuarios</option>
                                                     <option value="group-Operador">Todos los Operadores</option>
@@ -903,17 +1038,17 @@ $conn->close();
                                                     <?php endforeach; ?>
                                                 </optgroup>
                                             </select>
-                                            <textarea id="task-instruction-np-<?php echo $task_id_to_use; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                            <button type="button" onclick="submitAssignment(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                            <textarea id="task-instruction-np-<?php echo $task_id_specific; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                                            <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, 'np-<?php echo $task_id_specific; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                         </div>
-                                        <div id="reminder-form-np-<?php echo $task_id_to_use; ?>" class="task-form bg-gray-50 px-4">
+                                        <div id="reminder-form-np-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                            <select id="reminder-user-np-<?php echo $task_id_to_use; ?>" class="w-full p-2 text-sm border rounded-md">
-                                                <?php foreach ($all_users as $user): ?>
+                                            <select id="reminder-user-np-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
+                                                 <option value="">Seleccione usuario...</option> <?php foreach ($all_users as $user): ?>
                                                     <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <button type="button" onclick="setReminder(<?php echo $is_manual ? 'null' : $item['id']; ?>, <?php echo $task_id_to_use; ?>, 'np-<?php echo $task_id_to_use; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                            <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, 'np-<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                         </div>
                                     </div>
                                 <?php endforeach; endif; ?>
@@ -1089,7 +1224,9 @@ $conn->close();
                                     <th class="p-3">V. Declarado</th>
                                     <th class="p-3">V. Contado</th>
                                     <th class="p-3">Discrepancia</th>
-                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Operador'])): ?><th class="p-3">Operador</th><?php endif; ?>
+                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): /* Modificado */ ?>
+                                        <th class="p-3">Operador</th>
+                                    <?php endif; ?>
                                     <th class="p-3">Fecha Conteo</th>
                                     <th class="p-3">Observaciones</th>
                                     <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Acciones</th><?php endif; ?>
@@ -1336,34 +1473,71 @@ $conn->close();
                     </div>
                 </div>
             </div>
+            
+            <div id="content-manage-clients" class="hidden">
+                <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
+            </div>
+            <div id="content-manage-routes" class="hidden">
+                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
+            </div>
+            <div id="content-manage-funds" class="hidden">
+                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
+            </div>
             <?php endif; ?>
         </main>
     </div>
 
     <script>
-    const allUsers = <?php echo json_encode($all_users); ?>;
-    const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
-    const currentUserId = <?php echo $_SESSION['user_id']; ?>;
-    const currentUserRole = '<?php echo $_SESSION['user_role']; ?>';
-    const apiUrlBase = 'api';
-    const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
-    const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
-    const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
-    const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
-    const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
+    // --- Global Variables ---
+    const allUsers = <?php echo json_encode($all_users); ?>;
+    const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
+    const currentUserId = <?php echo $_SESSION['user_id']; ?>;
+    const currentUserRole = '<?php echo $_SESSION['user_role']; ?>';
+    const apiUrlBase = 'api';
+    const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
+    const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
+    const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
+    const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
+    const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
+    let selectedFundForClosure = null;
+    let alertPollingInterval = null;
+    let lastCheckedAlertTime = Math.floor(Date.now() / 1000);
+    let currentFilteredTrazabilidadData = [];
+    let loadedContent = {}; // Cache for AJAX loaded content
 
-    let selectedFundForClosure = null;
+    // --- UI Element References ---
+    const remindersPanel = document.getElementById('reminders-panel');
+    const taskNotificationsPanel = document.getElementById('task-notifications-panel');
+    const mediumPriorityPanel = document.getElementById('medium-priority-panel');
+    const modalOverlay = document.getElementById('user-modal-overlay');
+    const modalTitle = document.getElementById('modal-title');
+    const userForm = document.getElementById('user-form');
+    const userIdInput = document.getElementById('user-id');
+    const passwordHint = document.getElementById('password-hint');
+    const userPasswordInput = document.getElementById('user-password');
+    const alertPopupOverlay = document.getElementById('alert-popup-overlay');
+    const alertPopup = document.getElementById('alert-popup');
+    const alertPopupTitle = document.getElementById('alert-popup-title');
+    const alertPopupDescription = document.getElementById('alert-popup-description');
+    const alertPopupHeader = document.getElementById('alert-popup-header');
 
-    const remindersPanel = document.getElementById('reminders-panel');
-    const taskNotificationsPanel = document.getElementById('task-notifications-panel');
-    const mediumPriorityPanel = document.getElementById('medium-priority-panel');
-
-    function toggleReminders() { remindersPanel.classList.toggle('hidden'); }
-    function toggleTaskNotifications() { taskNotificationsPanel.classList.toggle('hidden'); }
-    function toggleMediumPriority() { mediumPriorityPanel.classList.toggle('hidden'); }
-
-    function toggleForm(formId, button) {
-        const form = document.getElementById(formId);
+    // --- UI Interaction Functions ---
+    function toggleReminders() { remindersPanel?.classList.toggle('hidden'); }
+    function toggleTaskNotifications() { taskNotificationsPanel?.classList.toggle('hidden'); }
+    function toggleMediumPriority() { mediumPriorityPanel?.classList.toggle('hidden'); }
+    function closeModal() { modalOverlay?.classList.add('hidden'); }
+    function closeAlertPopup() {
+        if (!alertPopupOverlay || !alertPopup) return;
+        alertPopup.classList.add('scale-95', 'opacity-0');
+        alertPopup.classList.remove('scale-100', 'opacity-100');
+        setTimeout(() => { alertPopupOverlay.classList.add('hidden'); }, 300);
+    }
+    function toggleForm(formId, button) {
+        const form = document.getElementById(formId);
+         if (!form) {
+              console.error(`Formulario con ID ${formId} no encontrado.`);
+              return;
+         }
         const parentItem = button.closest('.task-card');
         parentItem.querySelectorAll('.task-form').forEach(f => {
             if (f.id !== formId && f.classList.contains('active')) {
@@ -1371,19 +1545,45 @@ $conn->close();
             }
         });
         form.classList.toggle('active');
-    }
+    }
+    function toggleBreakdown(id) {
+        const row = document.getElementById(`breakdown-row-${id}`);
+        const content = document.getElementById(`breakdown-content-${id}`);
+        row?.classList.toggle('hidden');
+        if (content) setTimeout(() => content.classList.toggle('active'), 10);
+    }
 
-    function toggleBreakdown(id) {
-        const row = document.getElementById(`breakdown-row-${id}`);
-        const content = document.getElementById(`breakdown-content-${id}`);
-        if (row && content) {
-            row.classList.toggle('hidden');
-            setTimeout(() => {
-                content.classList.toggle('active');
-            }, 10); // Pequeño delay para asegurar que el display: none se aplique antes de la transición
-        }
-    }
+    // --- Data Formatting ---
+    function formatCurrency(value) {
+        const numberValue = Number(value);
+        if (isNaN(numberValue)) return '$ 0';
+        return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(numberValue);
+    }
+    function formatDate(dateString) {
+        if (!dateString) return '';
+        try {
+            const date = new Date(dateString); if (isNaN(date)) return '';
+            return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
+        } catch (e) { return ''; }
+    }
+    function getPriorityClass(priority) {
+        if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800';
+        if (priority === 'Media') return 'bg-yellow-100 text-yellow-800';
+        return 'bg-gray-100 text-gray-800';
+    }
+    function getRoleDisplayNameJS(role, gender) {
+        if (gender === 'F') {
+            switch (role) {
+                case 'Digitador': return 'Digitadora';
+                case 'Operador': return 'Operadora';
+                case 'Checkinero': return 'Checkinera';
+                default: return role;
+            }
+        }
+        return role;
+    }
 
+    // --- API Call Functions ---
     async function deleteReminder(reminderId, button) {
         try {
             const response = await fetch(`${apiUrlBase}/alerts_api.php?reminder_id=${reminderId}`, { method: 'DELETE' });
@@ -1393,20 +1593,6 @@ $conn->close();
                 updateReminderCount();
             } else { alert('Error: ' + result.error); }
         } catch (error) { console.error('Error deleting reminder:', error); alert('Error de conexión.'); }
-    }
-
-    function updateReminderCount() {
-        const list = document.getElementById('reminders-list');
-        const badge = document.getElementById('reminders-badge');
-        const count = list.getElementsByClassName('reminder-item').length;
-
-        if (count > 0) {
-            badge.textContent = count;
-            badge.classList.remove('hidden');
-        } else {
-            badge.classList.add('hidden');
-            list.innerHTML = '<p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>';
-        }
     }
 
     async function completeTask(taskId, formIdPrefix) {
@@ -1444,28 +1630,67 @@ $conn->close();
     }
 
     async function submitAssignment(alertId, taskId, formIdPrefix) {
-        const selectedValue = document.getElementById(`assign-user-${formIdPrefix}`).value;
-        const instruction = document.getElementById(`task-instruction-${formIdPrefix}`).value;
-        let payload = { instruction: instruction, type: 'Asignacion', task_id: taskId, alert_id: alertId };
-        if (selectedValue.startsWith('group-')) { payload.assign_to_group = selectedValue.replace('group-', ''); }
-        else { payload.assign_to = selectedValue; }
+        const assignSelect = document.getElementById(`assign-user-${formIdPrefix}`);
+        const instructionTextarea = document.getElementById(`task-instruction-${formIdPrefix}`);
+
+         if (!assignSelect || !instructionTextarea) {
+              console.error("Elementos de formulario no encontrados para asignar tarea.");
+              return;
+         }
+
+        const selectedValue = assignSelect.value;
+        const instruction = instructionTextarea.value;
+
+        // Validar que se seleccionó algo
+        if (!selectedValue) {
+             alert('Por favor, selecciona un usuario o grupo para asignar.');
+             return;
+        }
+
+        let payload = {
+            instruction: instruction,
+            type: alertId ? 'Asignacion' : 'Manual', // Determinar tipo basado en si hay alertId
+            task_id: taskId,
+            alert_id: alertId
+        };
+        if (selectedValue.startsWith('group-')) {
+             payload.assign_to_group = selectedValue.replace('group-', '');
+             // Para asignaciones de grupo, no enviamos 'assign_to' individual
+             delete payload.assign_to;
+        } else {
+             payload.assign_to = selectedValue;
+              // Para asignaciones individuales, no enviamos 'assign_to_group'
+             delete payload.assign_to_group;
+        }
         await sendTaskRequest(payload);
     }
 
     async function setReminder(alertId, taskId, formIdPrefix) {
-        const userId = document.getElementById(`reminder-user-${formIdPrefix}`).value;
+        const reminderSelect = document.getElementById(`reminder-user-${formIdPrefix}`);
+         if (!reminderSelect) {
+              console.error("Selector de usuario para recordatorio no encontrado.");
+              return;
+         }
+        const userId = reminderSelect.value;
+        if (!userId) {
+             alert('Por favor, selecciona un usuario para el recordatorio.');
+             return;
+        }
         await sendTaskRequest({ assign_to: userId, type: 'Recordatorio', task_id: taskId, alert_id: alertId });
     }
 
     async function sendTaskRequest(payload) {
-        if (!payload.assign_to && !payload.assign_to_group) { alert('Por favor, selecciona un usuario o grupo.'); return; }
+        // Validación movida a las funciones específicas (submitAssignment, setReminder)
         try {
             const response = await fetch(`${apiUrlBase}/alerts_api.php`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload)
             });
-            if (!response.ok) { throw new Error(`Error HTTP ${response.status}`); }
+            if (!response.ok) {
+                const errorResult = await response.json().catch(() => ({ error: `Error HTTP ${response.status}` }));
+                 throw new Error(errorResult.error || `Error HTTP ${response.status}`);
+            }
             const result = await response.json();
             if (result.success) {
                 alert('Acción completada con éxito.');
@@ -1473,9 +1698,9 @@ $conn->close();
             } else {
                 alert('Error desde la API: ' + result.error);
             }
-        } catch (error) { console.error('Error en sendTaskRequest:', error); alert('Error de conexión.'); }
+        } catch (error) { console.error('Error en sendTaskRequest:', error); alert(`Error de conexión: ${error.message}`); }
     }
-
+    
     document.getElementById('manual-task-form').addEventListener('submit', async function(e) {
         e.preventDefault();
         const title = document.getElementById('manual-task-title').value;
@@ -1489,343 +1714,64 @@ $conn->close();
         if (start_datetime && end_datetime && start_datetime >= end_datetime) { alert('La fecha de fin debe ser posterior a la fecha de inicio.'); return; }
 
         let payload = { title, instruction, type: 'Manual', priority, start_datetime: start_datetime || null, end_datetime: end_datetime || null };
-        if (selectedValue.startsWith('group-')) { payload.assign_to_group = selectedValue.replace('group-', ''); }
-        else { payload.assign_to = selectedValue; }
-
-        try {
-            const response = await fetch(`${apiUrlBase}/alerts_api.php`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
-            if (!response.ok) { throw new Error(`Error HTTP ${response.status}`); }
-            const result = await response.json();
-            if (result.success) { alert('Tarea(s) creada(s).'); location.reload(); }
-            else { alert('Error desde la API: ' + result.error); }
-        } catch (error) { console.error('Error creando tarea manual:', error); alert('Error de conexión.'); }
-    });
-
-    const modalOverlay = document.getElementById('user-modal-overlay');
-    const modalTitle = document.getElementById('modal-title');
-    const userForm = document.getElementById('user-form');
-    const userIdInput = document.getElementById('user-id');
-    const passwordHint = document.getElementById('password-hint');
-    const userPasswordInput = document.getElementById('user-password');
-
-    function openModal(user = null) {
-        userForm.reset();
-        if (user) {
-            modalTitle.textContent = 'Editar Usuario';
-            userIdInput.value = user.id;
-            document.getElementById('user-name').value = user.name;
-            document.getElementById('user-email').value = user.email;
-            document.getElementById('user-role').value = user.role;
-            // *** MODIFICADO: Rellenar género al editar ***
-            document.getElementById('user-gender').value = user.gender;
-            userPasswordInput.required = false;
-            passwordHint.textContent = 'Dejar en blanco para no cambiar.';
+        if (selectedValue.startsWith('group-')) {
+             payload.assign_to_group = selectedValue.replace('group-', '');
         } else {
-            modalTitle.textContent = 'Agregar Nuevo Usuario';
-            userIdInput.value = '';
-             // *** MODIFICADO: Resetear género al agregar ***
-            document.getElementById('user-gender').value = '';
-            userPasswordInput.required = true;
-            passwordHint.textContent = 'La contraseña es requerida.';
+             payload.assign_to = selectedValue;
         }
-        modalOverlay.classList.remove('hidden');
-    }
 
-    function closeModal() { modalOverlay.classList.add('hidden'); }
+        await sendTaskRequest(payload); // Reutilizar la función sendTaskRequest
+    });
 
     userForm.addEventListener('submit', async function(event) {
         event.preventDefault();
         try {
             const response = await fetch(`${apiUrlBase}/users_api.php`, { method: 'POST', body: new FormData(userForm) });
-            const result = await response.json();
-            if (result.success) { closeModal(); location.reload(); }
-            else { alert('Error: ' + result.error); }
-        } catch (error) { alert('Error de conexión.'); }
+             const result = await response.json(); // Leer la respuesta independientemente del status
+
+             if (!response.ok) {
+                 throw new Error(result.error || `Error HTTP ${response.status}`);
+             }
+
+            if (result.success) {
+                 closeModal();
+                 // Esperar un poco antes de recargar para que el modal se cierre visualmente
+                 setTimeout(() => location.reload(), 100);
+            } else {
+                 alert('Error al guardar: ' + result.error);
+            }
+        } catch (error) {
+             console.error("Error en submit de formulario de usuario:", error);
+             alert(`Error de conexión o del servidor: ${error.message}`);
+        }
     });
 
     async function deleteUser(id) {
-        if (!confirm('¿Eliminar usuario?')) return;
+        if (!confirm('¿Eliminar usuario? Esta acción también eliminará sus tareas y recordatorios asociados.')) return;
         try {
-            const response = await fetch(`${apiUrlBase}/users_api.php?id=${id}`, { method: 'DELETE' });
+            // Usar método DELETE y enviar ID en el cuerpo (más estándar REST)
+            const response = await fetch(`${apiUrlBase}/users_api.php`, {
+                 method: 'DELETE',
+                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, // Simular form data
+                 body: `id=${id}`
+            });
             const result = await response.json();
-            if (result.success) { location.reload(); }
-            else { alert('Error: ' + result.error); }
-        } catch (error) { alert('Error de conexión.'); }
-    }
-
-    // *** NUEVA: Función para obtener nombre de rol en JS ***
-    function getRoleDisplayNameJS(role, gender) {
-        if (gender === 'F') {
-            switch (role) {
-                case 'Digitador': return 'Digitadora';
-                case 'Operador': return 'Operadora';
-                case 'Checkinero': return 'Checkinera';
-                default: return role;
+            if (result.success) {
+                 // Eliminar la fila de la tabla visualmente antes de recargar (opcional, mejora UX)
+                 const row = document.getElementById(`user-row-${id}`);
+                 if (row) row.remove();
+                 alert(result.message || 'Usuario eliminado.'); // Mostrar mensaje si existe
+                 // Opcionalmente recargar después de un pequeño delay
+                 setTimeout(() => location.reload(), 500); // Recargar para asegurar consistencia
+            } else {
+                 alert('Error al eliminar: ' + result.error);
             }
-        }
-        return role;
-    }
-
-    // *** MODIFICADO: populateUserTable para mostrar género y rol femenino ***
-    function populateUserTable(users) {
-        const tbody = document.getElementById('user-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        if (!users || users.length === 0) {
-             tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center">No hay usuarios.</td></tr>'; // Colspan a 5
-             return;
-        }
-        users.forEach(user => {
-            // Incluir gender en userJson
-            const userJson = JSON.stringify({id: user.id, name: user.name, email: user.email, role: user.role, gender: user.gender}).replace(/'/g, "&apos;");
-            // Obtener nombre a mostrar
-            const displayRole = getRoleDisplayNameJS(user.role, user.gender);
-            // Agregamos la columna de Sexo a la tabla
-            tbody.innerHTML += `
-                <tr id="user-row-${user.id}">
-                    <td class="px-6 py-4">${user.name}</td>
-                    <td class="px-6 py-4">${user.email}</td>
-                    <td class="px-6 py-4"><span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">${displayRole}</span></td>
-                    <td class="px-6 py-4 text-center">${user.gender || 'N/A'}</td> <td class="px-6 py-4 text-center">
-                        <button onclick='openModal(${userJson})' class="font-medium text-blue-600">Editar</button>
-                        <button onclick="deleteUser(${user.id})" class="font-medium text-red-600 ml-4">Eliminar</button>
-                    </td>
-                </tr>`;
-        });
-    }
-
-    function switchTab(tabName) {
-        sessionStorage.setItem('activeTab', tabName);
-
-        const contentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'mi-historial', 'roles', 'trazabilidad'];
-        // Quitar 'active' de todos los botones y enlaces de navegación
-        document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
-        // Ocultar todos los paneles de contenido
-        contentPanels.forEach(panel => {
-            const content = document.getElementById(`content-${panel}`);
-            if (content) content.classList.add('hidden');
-        });
-        // Mostrar el panel de contenido activo
-        const activeContent = document.getElementById(`content-${tabName}`);
-        if (activeContent) activeContent.classList.remove('hidden');
-
-        // Añadir 'active' al botón o enlace de la pestaña activa
-        const activeTabElement = document.getElementById(`tab-${tabName}`);
-        if(activeTabElement) {
-             activeTabElement.classList.add('active');
-             // Si el elemento activo está dentro de un dropdown, también marca el botón del dropdown como activo (visualmente)
-            const dropdown = activeTabElement.closest('.nav-dropdown');
-            if (dropdown) {
-                const dropdownButton = dropdown.querySelector('button.nav-tab');
-                if (dropdownButton) {
-                    // Quizás quieras añadir una clase visual diferente para el dropdown activo, o no hacer nada.
-                    // dropdownButton.classList.add('active'); // Opcional: dependerá del diseño deseado
-                }
-            }
+        } catch (error) {
+             console.error("Error en deleteUser:", error);
+             alert(`Error de conexión al eliminar: ${error.message}`);
         }
     }
-
-
-    function formatCurrency(value) {
-        if (value === null || value === undefined) return '$ 0';
-        return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(value);
-    }
-
-    function populateCheckinsTable(checkins) {
-        const tbody = document.getElementById('checkins-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        const colspan = currentUserRole === 'Admin' ? 12 : 11;
-        if (!checkins || checkins.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros de check-in.</td></tr>`;
-            return;
-        }
-
-        const thead = tbody.previousElementSibling;
-        thead.innerHTML = `
-            <tr>
-                <th class="p-2 w-28">Corrección</th>
-                <th class="p-2 w-28">Estado</th>
-                <th class="p-2">Planilla</th>
-                <th class="p-2">Sello</th>
-                <th class="p-2">Declarado</th>
-                <th class="p-2">Ruta</th>
-                <th class="p-2">Fecha de Registro</th>
-                <th class="p-2">Checkinero</th>
-                <th class="p-2">Cliente</th>
-                <th class="p-2">Fondo</th>
-                <th class="p-2 w-20">Acciones</th>
-                ${currentUserRole === 'Admin' ? '<th class="p-2 w-20">Admin</th>' : ''}
-            </tr>
-        `;
-
-        checkins.forEach(ci => {
-            let correctionBadge = '';
-            if (ci.correction_count > 0) {
-                correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
-            }
-
-            let statusBadge = '';
-            switch(ci.status) {
-                case 'Rechazado': statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; break;
-                case 'Procesado': statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`; break;
-                case 'Discrepancia': statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`; break;
-                default: statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`; break;
-            }
-
-            let actionButton = '';
-            if (ci.status === 'Rechazado') {
-                const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
-                actionButton = `<button onclick='editCheckIn(${checkinData})' class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Editar</button>`;
-            }
-
-            const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-2"><button onclick="deleteCheckIn(${ci.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
-
-            const row = `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="p-2">${correctionBadge}</td>
-                    <td class="p-2">${statusBadge}</td>
-                    <td class="p-2 font-mono">${ci.invoice_number}</td>
-                    <td class="p-2 font-mono">${ci.seal_number}</td>
-                    <td class="p-2 text-right">${formatCurrency(ci.declared_value)}</td>
-                    <td class="p-2">${ci.route_name}</td>
-                    <td class="p-2 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                    <td class="p-2">${ci.checkinero_name}</td>
-                    <td class="p-2">${ci.client_name}</td>
-                    <td class="p-2">${ci.fund_name || 'N/A'}</td>
-                    <td class="p-2">${actionButton}</td>
-                    ${adminDeleteButton}
-                </tr>
-            `;
-            tbody.innerHTML += row;
-        });
-    }
-
-    function populateOperatorCheckinsTable(checkins) {
-        const tbody = document.getElementById('operator-checkins-table-body');
-        if (!tbody) return;
-
-        tbody.innerHTML = '';
-        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
-
-        if (pendingCheckins.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
-            return;
-        }
-
-        const thead = tbody.previousElementSibling;
-        thead.innerHTML = `
-            <tr>
-                <th class="p-3">Planilla</th><th class="p-3">Sello</th><th class="p-3">Declarado</th>
-                <th class="p-3">Cliente</th><th class="p-3">Checkinero</th><th class="p-3">Fecha de Registro</th>
-                <th class="p-3">Estado</th><th class="p-3">Acción</th>
-            </tr>
-        `;
-
-        pendingCheckins.forEach(ci => {
-            const row = `
-                <tr class="border-b">
-                    <td class="p-3 font-mono">${ci.invoice_number}</td>
-                    <td class="p-3 font-mono">${ci.seal_number}</td>
-                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
-                    <td class="p-3">${ci.client_name}</td>
-                    <td class="p-3">${ci.checkinero_name}</td>
-                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                    <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
-                    <td class="p-3">
-                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
-                    </td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
-        });
-    }
-
-    function populateOperatorHistoryTable(historyData) {
-        const tbody = document.getElementById('operator-history-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-
-        const showOperatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador'); // Digitador también puede ver
-        const colspan = showOperatorColumn ? (currentUserRole === 'Admin' ? 9 : 8) : 7;
-
-        if (!historyData || historyData.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return;
-        }
-
-        historyData.forEach(item => {
-            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            const operatorColumn = showOperatorColumn ? `<td class="p-3">${item.operator_name}</td>` : '';
-            const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-3 text-center"><button onclick="deleteCheckIn(${item.check_in_id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
-
-            tbody.innerHTML += `<tr class="border-b">
-                                    <td class="p-3 font-mono">${item.invoice_number}</td>
-                                    <td class="p-3">${item.client_name}</td>
-                                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
-                                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
-                                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                                    ${operatorColumn}
-                                    <td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td>
-                                    <td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td>
-                                    ${adminDeleteButton}
-                               </tr>`;
-        });
-    }
-
-    function selectPlanilla(invoiceNumber) {
-        document.getElementById('consult-invoice').value = invoiceNumber;
-        document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
-        window.scrollTo(0, 0);
-    }
-
-    async function editCheckIn(checkinData) {
-        document.getElementById('invoice_number').value = checkinData.invoice_number;
-        document.getElementById('seal_number').value = checkinData.seal_number;
-        document.getElementById('declared_value').value = checkinData.declared_value;
-        document.getElementById('check_in_id_field').value = checkinData.id;
-
-        const clientSelect = document.getElementById('client_id');
-        clientSelect.value = checkinData.client_id;
-
-        // Esperar a que los fondos se carguen después de seleccionar el cliente
-        await new Promise(resolve => {
-            clientSelect.dispatchEvent(new Event('change'));
-            // Usar un temporizador más largo o una mejor forma de esperar si la carga de fondos es lenta
-            setTimeout(resolve, 300); // Ajusta si es necesario
-        });
-
-        document.getElementById('fund_id').value = checkinData.fund_id;
-        document.getElementById('route_id').value = checkinData.route_id;
-
-        document.getElementById('checkin-form-title').textContent = 'Corregir Check-in';
-        const buttonsContainer = document.getElementById('checkin-form-buttons');
-        buttonsContainer.innerHTML = `
-            <button type="submit" id="checkin-submit-button" class="w-full bg-orange-500 text-white font-bold py-3 rounded-md hover:bg-orange-600">Guardar Corrección</button>
-            <button type="button" onclick="cancelEdit()" class="w-full bg-gray-300 text-gray-800 font-bold py-3 rounded-md hover:bg-gray-400">Cancelar</button>
-        `;
-
-        document.getElementById('checkin-form-title').scrollIntoView({ behavior: 'smooth' });
-    }
-
-    function cancelEdit() {
-        document.getElementById('checkin-form').reset();
-        document.getElementById('check_in_id_field').value = '';
-        document.getElementById('checkin-form-title').textContent = 'Registrar Nuevo Check-in';
-        const buttonsContainer = document.getElementById('checkin-form-buttons');
-        buttonsContainer.innerHTML = `
-            <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
-        `;
-        const fundSelect = document.getElementById('fund_id');
-        fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
-        fundSelect.disabled = true;
-        fundSelect.classList.add('bg-gray-200');
-    }
-
-    async function handleCheckinSubmit(event) {
+    async function handleCheckinSubmit(event) {
         event.preventDefault();
         const checkInIdField = document.getElementById('check_in_id_field');
         const payload = {
@@ -1859,9 +1805,7 @@ $conn->close();
             alert('Error de conexión al procesar.');
         }
     }
-
-
-    async function handleConsultation(event) {
+    async function handleConsultation(event) {
         event.preventDefault();
         const invoiceInput = document.getElementById('consult-invoice');
         const operatorPanel = document.getElementById('operator-panel');
@@ -1883,37 +1827,7 @@ $conn->close();
             } else { alert('Error: ' + result.error); operatorPanel.classList.add('hidden'); }
         } catch (error) { console.error('Error en la consulta:', error); alert('Error de conexión.'); }
     }
-
-    function updateQty(button, amount) {
-        const input = button.parentElement.querySelector('input');
-        let currentValue = parseInt(input.value) || 0;
-        currentValue += amount;
-        if (currentValue < 0) currentValue = 0;
-        input.value = currentValue;
-        calculateTotals();
-    }
-
-    function calculateTotals() {
-        const form = document.getElementById('denomination-form');
-        if (!form) return;
-        let totalCounted = 0;
-        form.querySelectorAll('.denomination-row').forEach(row => {
-            totalCounted += (parseInt(row.querySelector('.denomination-qty').value) || 0) * parseFloat(row.dataset.value);
-            row.querySelector('.subtotal').textContent = formatCurrency((parseInt(row.querySelector('.denomination-qty').value) || 0) * parseFloat(row.dataset.value));
-        });
-        const coinsValue = parseFloat(document.getElementById('coins-value').value) || 0;
-        document.getElementById('coins-subtotal').textContent = formatCurrency(coinsValue);
-        totalCounted += coinsValue;
-        document.getElementById('total-counted').textContent = formatCurrency(totalCounted);
-        const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
-        const discrepancy = totalCounted - declaredValue;
-        const discrepancyEl = document.getElementById('discrepancy');
-        discrepancyEl.textContent = formatCurrency(discrepancy);
-        discrepancyEl.classList.toggle('text-red-500', discrepancy !== 0);
-        discrepancyEl.classList.toggle('text-green-500', discrepancy === 0);
-    }
-
-    async function handleDenominationSave(event) {
+    async function handleDenominationSave(event) {
         event.preventDefault();
         const payload = {
             check_in_id: document.getElementById('op-checkin-id').value,
@@ -1937,118 +1851,7 @@ $conn->close();
             else { alert('Error al guardar: ' + result.error); }
         } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
     }
-
-    // --- Funciones de Trazabilidad ---
-    function getPriorityClass(priority) { if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800'; if (priority === 'Media') return 'bg-yellow-100 text-yellow-800'; return 'bg-gray-100 text-gray-800'; }
-    function formatDate(dateString) { if (!dateString) return ''; const date = new Date(dateString); return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true }); }
-
-    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-
-    function populateTrazabilidadTable(tasks) {
-        const tbody = document.getElementById('trazabilidad-tbody');
-        tbody.innerHTML = '';
-        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="12" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
-
-        tasks.forEach(task => {
-            let assignedTo = '';
-            if (task.assigned_to_group) {
-                assignedTo = `<span class="font-medium text-purple-700">Grupo ${task.assigned_to_group}</span>`;
-            } else if (task.assigned_to) {
-                assignedTo = task.assigned_to;
-            }
-
-            tbody.innerHTML += `<tr class="border-b">
-                                    <td class="px-6 py-4 font-medium">${task.title || ''}</td>
-                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td>
-                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td>
-                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td>
-                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td>
-                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td>
-                                    <td class="px-6 py-4 font-mono">${task.response_time || ''}</td>
-                                    <td class="px-6 py-4">${assignedTo}</td>
-                                    <td class="px-6 py-4">${task.created_by_name || 'Sistema'}</td>
-                                    <td class="px-6 py-4 font-semibold">${task.completed_by || ''}</td>
-                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.resolution_note || ''}">${task.resolution_note || 'N/A'}</td>
-                                    <td class="px-6 py-4 text-center"><button onclick="deleteTask(${task.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>
-                               </tr>`;
-        });
-    }
-
-    function applyTrazabilidadFilters() {
-        const startDate = document.getElementById('filter-start-date').value, endDate = document.getElementById('filter-end-date').value, user = document.getElementById('filter-user').value, checker = document.getElementById('filter-checker').value, priority = document.getElementById('filter-priority').value;
-        let filteredTasks = completedTasksData.filter(task => {
-            let isValid = true; const taskStartDate = task.created_at.split(' ')[0]; const taskEndDate = task.completed_at ? task.completed_at.split(' ')[0] : null;
-            if (startDate && taskEndDate && taskEndDate < startDate) isValid = false;
-            if (endDate && taskStartDate > endDate) isValid = false;
-            if (user && task.assigned_to !== user) isValid = false;
-            if (checker && task.completed_by !== checker) isValid = false;
-            if (priority && task.final_priority !== priority) isValid = false;
-            return isValid;
-        });
-        populateTrazabilidadTable(filteredTasks);
-    }
-    function sortTableByDate(column) {
-        const header = document.querySelector(`th[data-column-name="${column}"]`), currentDirection = header.dataset.sortDir || 'none', nextDirection = (currentDirection === 'desc') ? 'asc' : 'desc';
-        // Usar los datos filtrados actualmente en la tabla para ordenar
-        let currentTableData = [];
-        const tableRows = document.querySelectorAll('#trazabilidad-tbody tr');
-        if (tableRows.length > 0 && !tableRows[0].querySelector('td[colspan="12"]')) { // Excluir la fila "No hay tareas"
-            tableRows.forEach(row => {
-                 // Buscar la tarea correspondiente en completedTasksData (esto podría ser ineficiente para tablas grandes)
-                 // Se podría mejorar almacenando el ID de la tarea en el TR o buscando de forma más eficiente.
-                 const taskTitle = row.cells[0].textContent; // Asumiendo que el título es único para buscar
-                 const task = completedTasksData.find(t => (t.title || '') === taskTitle); // Simplificación, puede fallar si hay títulos duplicados
-                 if (task) currentTableData.push(task);
-            });
-        } else {
-             currentTableData = completedTasksData; // Si no hay filtros o no hay datos, ordenar todo
-        }
-
-        currentTableData.sort((a, b) => { const dateA = new Date(a[column]).getTime(), dateB = new Date(b[column]).getTime(); if (isNaN(dateA)) return 1; if (isNaN(dateB)) return -1; return nextDirection === 'asc' ? dateA - dateB : dateB - dateA; });
-        document.querySelectorAll('th.sortable').forEach(th => { const iconSpan = th.querySelector('span'); if (th === header) { th.dataset.sortDir = nextDirection; iconSpan.textContent = nextDirection === 'asc' ? ' ▲' : ' ▼'; } else { delete th.dataset.sortDir; iconSpan.textContent = ''; } });
-        populateTrazabilidadTable(currentTableData); // Poblar con los datos ordenados
-    }
-    function exportToExcel() { const table = document.getElementById("trazabilidad-table"), wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" }); XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx"); }
-    <?php endif; ?>
-
-    // *** MODIFICADO: populateUserHistoryTable para incluir "Check por" ***
-    function populateUserHistoryTable(tasks) {
-        const tbody = document.getElementById('historial-individual-tbody');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        if (!tasks || tasks.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="10" class="p-6 text-center text-gray-500">No has completado ninguna tarea todavía.</td></tr>'; // Colspan a 10
-            return;
-        }
-
-        tasks.forEach(task => {
-            tbody.innerHTML += `<tr class="border-b">
-                                    <td class="px-6 py-4 font-medium">${task.title || ''}</td>
-                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td>
-                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td>
-                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td>
-                                    <td class="px-6 py-4">${task.created_by_name || 'Sistema'}</td>
-                                    <td class="px-6 py-4 font-semibold">${task.completed_by || 'N/A'}</td> <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td>
-                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td>
-                                    <td class="px-6 py-4 font-mono">${task.response_time || ''}</td>
-                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.resolution_note || ''}">${task.resolution_note || 'N/A'}</td>
-                               </tr>`;
-        });
-    }
-
-    function flagForReview(checkbox) {
-        const panel = document.getElementById('operator-panel-digitador');
-        document.querySelectorAll('.review-checkbox').forEach(cb => { if (cb !== checkbox) cb.checked = false; });
-        if (checkbox.checked) {
-            const data = JSON.parse(checkbox.dataset.info);
-            const discrepancyClass = data.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            panel.innerHTML = `<div class="flex justify-between items-start"><h3 class="text-xl font-semibold mb-4 text-blue-800">Planilla en Revisión: ${data.invoice_number}</h3><button onclick="closeReviewPanel()" class="text-gray-500 hover:text-red-600 font-bold text-2xl">&times;</button></div><div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm border-t pt-4 mt-2"><p><strong>Cliente:</strong><br>${data.client_name}</p><p><strong>Operador:</strong><br>${data.operator_name}</p><p><strong>V. Declarado:</strong><br>${formatCurrency(data.declared_value)}</p><p><strong>V. Contado:</strong><br>${formatCurrency(data.total_counted)}</p><p><strong class="${discrepancyClass}">Discrepancia:</strong><br><span class="${discrepancyClass}">${formatCurrency(data.discrepancy)}</span></p><p class="col-span-2 lg:col-span-3"><strong>Obs. del Operador:</strong><br>${data.observations || 'Sin observaciones'}</p></div><div class="mt-6 border-t pt-4"><h4 class="text-md font-semibold mb-2">Decisión de Cierre</h4><div><label for="digitador-observations" class="block text-sm font-medium text-gray-700">Observaciones Finales (Requerido)</label><textarea id="digitador-observations" rows="3" class="mt-1 w-full border rounded-md p-2 shadow-sm" placeholder="Escriba aquí el motivo de la aprobación o rechazo..."></textarea></div><div class="mt-4 flex space-x-4"><button onclick="submitDigitadorReview(${data.check_in_id}, 'Rechazado')" class="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Rechazar Conteo</button><button onclick="submitDigitadorReview(${data.check_in_id}, 'Conforme')" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-md hover:bg-green-700">Aprobar (Conforme)</button></div></div>`;
-            panel.classList.remove('hidden');
-            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
-        } else { panel.classList.add('hidden'); }
-    }
-
-    async function submitDigitadorReview(checkInId, status) {
+    async function submitDigitadorReview(checkInId, status) {
         const observations = document.getElementById('digitador-observations').value;
         if (!observations.trim()) {
             alert('Las observaciones finales son requeridas para aceptar o rechazar.');
@@ -2079,96 +1882,7 @@ $conn->close();
             location.reload(); // Recargar siempre para reflejar cambios
         }
     }
-
-
-    function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
-
-    function populateOperatorHistoryForDigitador(history) {
-        const pendingReview = history.filter(item => {
-            const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
-            return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia') && checkin.digitador_status === null;
-        });
-
-        const tbody = document.getElementById('operator-history-table-body-digitador');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`; return; }
-
-        pendingReview.forEach(item => {
-            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
-            tbody.innerHTML += `<tr class="border-b hover:bg-gray-50"><td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td><td class="p-3 font-mono">${item.invoice_number}</td><td class="p-3">${item.client_name}</td><td class="p-3 text-right">${formatCurrency(item.declared_value)}</td><td class="p-3 text-right">${formatCurrency(item.total_counted)}</td><td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td><td class="p-3">${item.operator_name}</td><td class="p-3 text-xs">${new Date(item.count_date).toLocaleString('es-CO')}</td></tr>`;
-        });
-    }
-
-
-   function populateDigitadorClosedHistory(history) {
-    const tbody = document.getElementById('digitador-closed-history-body');
-    if (!tbody) return;
-    tbody.innerHTML = '';
-
-    const showCerradaPorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador');
-    const colspan = showCerradaPorColumn ? 9 : 8;
-
-    if (!history || history.length === 0) {
-        tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay planillas cerradas en el historial.</td></tr>`;
-        return;
-    }
-    history.forEach(item => {
-        const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-
-        let actionButtons = `<button onclick="toggleBreakdown('hist-${item.id}')" class="text-blue-600 text-xs font-semibold">Desglose</button>`;
-        if (currentUserRole === 'Admin') {
-            actionButtons += `<button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs ml-2">Eliminar</button>`;
-        }
-
-        let cerradaPorColumn = '';
-        if (showCerradaPorColumn) {
-            cerradaPorColumn = `<td class="p-3">${item.digitador_name || 'N/A'}</td>`;
-        }
-
-        let statusBadge = '';
-        if (item.digitador_status === 'Conforme') { statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`; }
-        else if (item.digitador_status === 'Cerrado') { statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`; }
-        else { statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`; }
-
-        const row = `
-            <tr class="border-b hover:bg-gray-50">
-                <td class="p-3 font-mono">${item.invoice_number}</td>
-                <td class="p-3">${item.fund_name || 'N/A'}</td>
-                <td class="p-3 text-xs">${item.closed_by_digitador_at ? new Date(item.closed_by_digitador_at).toLocaleString('es-CO') : 'N/A'}</td>
-                <td class="p-3 text-right font-mono">${formatCurrency(item.total_counted)}</td>
-                <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                <td class="p-3">${statusBadge}</td>
-                <td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>
-                ${cerradaPorColumn}
-                <td class="p-3 text-center">${actionButtons}</td>
-            </tr>
-        `;
-        tbody.innerHTML += row;
-
-        const breakdownRow = `
-            <tr class="details-row hidden" id="breakdown-row-hist-${item.id}">
-                <td colspan="${colspan}" class="p-0">
-                    <div id="breakdown-content-hist-${item.id}" class="cash-breakdown bg-gray-50">
-                        <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
-                            <span><strong>$100.000:</strong> ${item.bills_100k || 0}</span>
-                            <span><strong>$50.000:</strong> ${item.bills_50k || 0}</span>
-                            <span><strong>$20.000:</strong> ${item.bills_20k || 0}</span>
-                            <span><strong>$10.000:</strong> ${item.bills_10k || 0}</span>
-                            <span><strong>$5.000:</strong> ${item.bills_5k || 0}</span>
-                            <span><strong>$2.000:</strong> ${item.bills_2k || 0}</span>
-                            <span class="font-bold">Monedas: ${formatCurrency(item.coins)}</span>
-                        </div>
-                    </div>
-                </td>
-            </tr>`;
-        tbody.innerHTML += breakdownRow;
-    });
-}
-
-    // --- FUNCIONES DE ELIMINACIÓN PARA ADMIN ---
-    async function deleteCheckIn(checkInId) {
+    async function deleteCheckIn(checkInId) {
         if (!confirm('¿Está seguro de que desea eliminar permanentemente esta planilla y todos sus registros asociados (conteo, alertas, etc.)? Esta acción no se puede deshacer.')) {
             return;
         }
@@ -2190,8 +1904,7 @@ $conn->close();
             alert('Error de conexión. No se pudo completar la solicitud.');
         }
     }
-
-    async function deleteTask(taskId) {
+    async function deleteTask(taskId) {
         if (!confirm('¿Está seguro de que desea eliminar este registro de tarea del historial de trazabilidad?')) {
             return;
         }
@@ -2213,50 +1926,32 @@ $conn->close();
             alert('Error de conexión.');
         }
     }
+    async function closeFund() {
+        if (!selectedFundForClosure) {
+            alert('Por favor, seleccione un fondo primero.');
+            return;
+        }
+        if (!confirm('¿Está seguro de que desea cerrar este fondo? Todas las planillas aprobadas se marcarán como cerradas y pasarán a informes.')) return;
 
-
-    // --- LÓGICA PARA SUB-PESTAÑAS DEL DIGITADOR ---
-    const btnSupervision = document.getElementById('btn-supervision');
-    const btnCierre = document.getElementById('btn-cierre');
-    const btnHistorialCierre = document.getElementById('btn-historial-cierre');
-    const btnInformes = document.getElementById('btn-informes');
-    const panelSupervision = document.getElementById('panel-supervision');
-    const panelCierre = document.getElementById('panel-cierre');
-    const panelHistorialCierre = document.getElementById('panel-historial-cierre');
-    const panelInformes = document.getElementById('panel-informes');
-    const digitadorSubPanels = [panelSupervision, panelCierre, panelHistorialCierre, panelInformes];
-    const digitadorSubButtons = [btnSupervision, btnCierre, btnHistorialCierre, btnInformes];
-
-    if (btnSupervision) { // Asegurarse de que estamos en la vista de digitador/admin
-        const setActiveDigitadorButton = (activeBtn) => {
-            digitadorSubButtons.forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
-            if(activeBtn) { activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700'); }
-        };
-        const showDigitadorPanel = (activePanel) => {
-            digitadorSubPanels.forEach(panel => { if(panel) panel.classList.add('hidden'); });
-            if (activePanel) activePanel.classList.remove('hidden');
-        };
-
-        btnSupervision.addEventListener('click', () => { setActiveDigitadorButton(btnSupervision); showDigitadorPanel(panelSupervision); sessionStorage.setItem('activeDigitadorSubTab', 'supervision'); });
-        btnCierre.addEventListener('click', () => { setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre); sessionStorage.setItem('activeDigitadorSubTab', 'cierre'); loadFundsForCierre(); });
-        btnHistorialCierre.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); /* Podrías recargar aquí si es necesario */ });
-        btnInformes.addEventListener('click', () => { setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes); sessionStorage.setItem('activeDigitadorSubTab', 'informes'); loadInformes(); });
-
-        const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
-        if (savedSubTab === 'supervision') {
-             setActiveDigitadorButton(btnSupervision); showDigitadorPanel(panelSupervision);
-        } else if (savedSubTab === 'historial') {
-            setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre);
-        } else if (savedSubTab === 'informes') {
-             setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes);
-        } else { // Por defecto o 'cierre'
-             setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre);
+        try {
+            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_fund`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ fund_id: selectedFundForClosure })
+            });
+            const result = await response.json();
+            if (result.success) {
+                alert(result.message);
+                location.reload();
+            } else {
+                alert('Error: ' + (result.error || 'No se pudo cerrar el fondo.'));
+            }
+        } catch (error) {
+            console.error('Error al cerrar fondo:', error);
+            alert('Error de conexión.');
         }
     }
-    // --- FIN LÓGICA SUB-PESTAÑAS ---
-
-
-    async function loadFundsForCierre() {
+    async function loadFundsForCierre() {
         const container = document.getElementById('funds-list-container');
         if (!container) return;
         container.innerHTML = '<p class="text-center text-sm text-gray-500">Cargando fondos...</p>';
@@ -2283,8 +1978,7 @@ $conn->close();
             container.innerHTML = '<p class="text-center text-red-500 text-sm">Error al cargar fondos.</p>';
         }
     }
-
-    async function loadServicesForFund(fundId, element) {
+    async function loadServicesForFund(fundId, element) {
         selectedFundForClosure = fundId;
         document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400'));
         element.classList.add('bg-blue-100', 'border-blue-400');
@@ -2324,34 +2018,7 @@ $conn->close();
             container.innerHTML = '<p class="text-center text-red-500 text-sm">Error al cargar servicios.</p>';
         }
     }
-
-    async function closeFund() {
-        if (!selectedFundForClosure) {
-            alert('Por favor, seleccione un fondo primero.');
-            return;
-        }
-        if (!confirm('¿Está seguro de que desea cerrar este fondo? Todas las planillas aprobadas se marcarán como cerradas y pasarán a informes.')) return;
-
-        try {
-            const response = await fetch(`${apiUrlBase}/digitador_cierre_api.php?action=close_fund`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ fund_id: selectedFundForClosure })
-            });
-            const result = await response.json();
-            if (result.success) {
-                alert(result.message);
-                location.reload();
-            } else {
-                alert('Error: ' + (result.error || 'No se pudo cerrar el fondo.'));
-            }
-        } catch (error) {
-            console.error('Error al cerrar fondo:', error);
-            alert('Error de conexión.');
-        }
-    }
-
-    async function loadInformes() {
+    async function loadInformes() {
         const tbody = document.getElementById('informes-table-body');
         if (!tbody) return;
         tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-sm text-gray-500">Cargando informes...</td></tr>';
@@ -2381,8 +2048,7 @@ $conn->close();
             tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-red-500 text-sm">Error al cargar informes.</td></tr>';
         }
     }
-
-    async function generatePDF(fundId, fundName, clientName) {
+    async function generatePDF(fundId, fundName, clientName) {
         if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
             alert('Error: La librería jsPDF no se cargó.');
             return;
@@ -2474,27 +2140,628 @@ $conn->close();
     }
 
 
-    document.addEventListener('DOMContentLoaded', () => {
-        const savedTab = sessionStorage.getItem('activeTab');
-        if (savedTab) {
-            switchTab(savedTab);
+    // --- Table Population & UI Update Functions ---
+    function updateReminderCount() {
+        const list = document.getElementById('reminders-list');
+        const badge = document.getElementById('reminders-badge');
+        if (!list || !badge) return; // Salir si los elementos no existen
+        const count = list.getElementsByClassName('reminder-item').length;
+
+        if (count > 0) {
+            badge.textContent = count;
+            badge.classList.remove('hidden');
         } else {
-             switchTab('operaciones'); // Asegurarse de que una pestaña esté activa por defecto
+            badge.classList.add('hidden');
+            list.innerHTML = '<p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>';
+        }
+    }
+    function openModal(user = null) {
+        userForm.reset();
+        if (user) {
+            modalTitle.textContent = 'Editar Usuario';
+            userIdInput.value = user.id;
+            document.getElementById('user-name').value = user.name;
+            document.getElementById('user-email').value = user.email;
+            document.getElementById('user-role').value = user.role;
+            // *** MODIFICADO: Rellenar género al editar ***
+            document.getElementById('user-gender').value = user.gender || ''; // Usar '' si es null
+            userPasswordInput.required = false;
+            passwordHint.textContent = 'Dejar en blanco para no cambiar.';
+        } else {
+            modalTitle.textContent = 'Agregar Nuevo Usuario';
+            userIdInput.value = '';
+             // *** MODIFICADO: Resetear género al agregar ***
+            document.getElementById('user-gender').value = '';
+            userPasswordInput.required = true;
+            passwordHint.textContent = 'La contraseña es requerida.';
+        }
+        modalOverlay.classList.remove('hidden');
+    }
+    function populateUserTable(users) {
+        const tbody = document.getElementById('user-table-body');
+        if (!tbody) {
+            console.error("Elemento tbody 'user-table-body' no encontrado.");
+            return;
+        }
+        tbody.innerHTML = '';
+        if (!users || users.length === 0) {
+             tbody.innerHTML = '<tr><td colspan="5" class="p-6 text-center text-gray-500">No hay usuarios registrados.</td></tr>'; // Colspan a 5
+             return;
+        }
+        users.forEach(user => {
+             if (!user || typeof user !== 'object') {
+                  console.warn("Dato de usuario inválido:", user);
+                  return; // Saltar este usuario si es inválido
+             }
+            // Incluir gender en userJson, manejar null o undefined
+            const safeUser = {
+                id: user.id,
+                name: user.name || '',
+                email: user.email || '',
+                role: user.role || '',
+                gender: user.gender || ''
+            };
+            const userJson = JSON.stringify(safeUser).replace(/'/g, "&apos;");
+            // Obtener nombre a mostrar
+            const displayRole = getRoleDisplayNameJS(safeUser.role, safeUser.gender);
+            // Agregamos la columna de Sexo a la tabla
+            tbody.innerHTML += `
+                <tr id="user-row-${safeUser.id}">
+                    <td class="px-6 py-4">${safeUser.name}</td>
+                    <td class="px-6 py-4">${safeUser.email}</td>
+                    <td class="px-6 py-4"><span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">${displayRole}</span></td>
+                    <td class="px-6 py-4 text-center">${safeUser.gender || 'N/A'}</td> <td class="px-6 py-4 text-center">
+                        <button onclick='openModal(${userJson})' class="font-medium text-blue-600 hover:text-blue-800">Editar</button>
+                        <button onclick="deleteUser(${safeUser.id})" class="font-medium text-red-600 hover:text-red-800 ml-4">Eliminar</button>
+                    </td>
+                </tr>`;
+        });
+    }
+    function populateCheckinsTable(checkins) {
+        const tbody = document.getElementById('checkins-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const colspan = currentUserRole === 'Admin' ? 12 : 11;
+        if (!checkins || checkins.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros de check-in pendientes o rechazados.</td></tr>`;
+            return;
         }
 
-        if (document.getElementById('user-table-body')) { populateUserTable(adminUsersData); console.log('Admin Users Data:', adminUsersData); } // Añadido console.log
+        const thead = tbody.previousElementSibling;
+        thead.innerHTML = `
+            <tr>
+                <th class="p-2 w-28">Corrección</th>
+                <th class="p-2 w-28">Estado</th>
+                <th class="p-2">Planilla</th>
+                <th class="p-2">Sello</th>
+                <th class="p-2">Declarado</th>
+                <th class="p-2">Ruta</th>
+                <th class="p-2">Fecha de Registro</th>
+                <th class="p-2">Checkinero</th>
+                <th class="p-2">Cliente</th>
+                <th class="p-2">Fondo</th>
+                <th class="p-2 w-20">Acciones</th>
+                ${currentUserRole === 'Admin' ? '<th class="p-2 w-20">Admin</th>' : ''}
+            </tr>
+        `;
 
-        populateUserHistoryTable(userCompletedTasksData);
+        checkins.forEach(ci => {
+            let correctionBadge = '';
+            if (ci.correction_count > 0) {
+                correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
+            }
 
-        if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
-            populateTrazabilidadTable(completedTasksData);
+            let statusBadge = '';
+            switch(ci.status) {
+                case 'Rechazado': statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; break;
+                case 'Procesado': statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`; break;
+                case 'Discrepancia': statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`; break;
+                default: statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`; break;
+            }
+
+            let actionButton = '';
+             // Permitir editar si está Rechazado O si es Admin y aún está Pendiente
+            if (ci.status === 'Rechazado' || (currentUserRole === 'Admin' && ci.status === 'Pendiente')) {
+                const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
+                actionButton = `<button onclick='editCheckIn(${checkinData})' class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Editar</button>`;
+            }
+
+            const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-2"><button onclick="deleteCheckIn(${ci.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
+
+            const row = `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="p-2">${correctionBadge}</td>
+                    <td class="p-2">${statusBadge}</td>
+                    <td class="p-2 font-mono">${ci.invoice_number}</td>
+                    <td class="p-2 font-mono">${ci.seal_number}</td>
+                    <td class="p-2 text-right">${formatCurrency(ci.declared_value)}</td>
+                    <td class="p-2">${ci.route_name}</td>
+                    <td class="p-2 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                    <td class="p-2">${ci.checkinero_name}</td>
+                    <td class="p-2">${ci.client_name}</td>
+                    <td class="p-2">${ci.fund_name || 'N/A'}</td>
+                    <td class="p-2">${actionButton}</td>
+                    ${adminDeleteButton}
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+    function populateOperatorCheckinsTable(checkins) {
+        const tbody = document.getElementById('operator-checkins-table-body');
+        if (!tbody) return;
+
+        tbody.innerHTML = '';
+        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
+
+        if (pendingCheckins.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
+            return;
         }
 
-        if (document.getElementById('content-checkinero')) {
-            populateCheckinsTable(initialCheckins);
-            document.getElementById('checkin-form').addEventListener('submit', handleCheckinSubmit);
-            const clientSelect = document.getElementById('client_id'), fundSelect = document.getElementById('fund_id');
-            clientSelect.addEventListener('change', async () => {
+        const thead = tbody.previousElementSibling;
+        thead.innerHTML = `
+            <tr>
+                <th class="p-3">Planilla</th><th class="p-3">Sello</th><th class="p-3">Declarado</th>
+                <th class="p-3">Cliente</th><th class="p-3">Checkinero</th><th class="p-3">Fecha de Registro</th>
+                <th class="p-3">Estado</th><th class="p-3">Acción</th>
+            </tr>
+        `;
+
+        pendingCheckins.forEach(ci => {
+            const row = `
+                <tr class="border-b">
+                    <td class="p-3 font-mono">${ci.invoice_number}</td>
+                    <td class="p-3 font-mono">${ci.seal_number}</td>
+                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                    <td class="p-3">${ci.client_name}</td>
+                    <td class="p-3">${ci.checkinero_name}</td>
+                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                    <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
+                    <td class="p-3">
+                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
+                    </td>
+                </tr>
+            `;
+            tbody.innerHTML += row;
+        });
+    }
+    function populateOperatorHistoryTable(historyData) {
+        const tbody = document.getElementById('operator-history-table-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+
+        const showOperatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador'); // Digitador también puede ver
+        const colspan = showOperatorColumn ? (currentUserRole === 'Admin' ? 9 : 8) : 7;
+
+        if (!historyData || historyData.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados.</td></tr>`; return;
+        }
+
+        historyData.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            const operatorColumn = showOperatorColumn ? `<td class="p-3">${item.operator_name}</td>` : '';
+            const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-3 text-center"><button onclick="deleteCheckIn(${item.check_in_id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
+
+            tbody.innerHTML += `<tr class="border-b">
+                                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                                    <td class="p-3">${item.client_name}</td>
+                                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
+                                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
+                                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                                    ${operatorColumn}
+                                    <td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td>
+                                    <td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td>
+                                    ${adminDeleteButton}
+                               </tr>`;
+        });
+    }
+    function populateUserHistoryTable(tasks) {
+        const tbody = document.getElementById('historial-individual-tbody');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!tasks || tasks.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="10" class="p-6 text-center text-gray-500">No has completado ninguna tarea todavía.</td></tr>'; // Colspan a 10
+            return;
+        }
+
+        tasks.forEach(task => {
+             // Asegurar que completed_by no sea null o undefined antes de mostrarlo
+             const completedBy = task.completed_by || 'N/A';
+             const createdBy = task.created_by_name || 'Sistema';
+
+            tbody.innerHTML += `<tr class="border-b">
+                                    <td class="px-6 py-4 font-medium">${task.title || ''}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td>
+                                    <td class="px-6 py-4">${createdBy}</td>
+                                    <td class="px-6 py-4 font-semibold">${completedBy}</td> <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td>
+                                    <td class="px-6 py-4 font-mono">${task.response_time || ''}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.resolution_note || ''}">${task.resolution_note || 'N/A'}</td>
+                               </tr>`;
+        });
+    }
+    function populateOperatorHistoryForDigitador(history) {
+        const pendingReview = history.filter(item => {
+            const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
+            // Mostrar si el checkin existe, está procesado/discrepancia Y AÚN no tiene estado de digitador
+            return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia') && checkin.digitador_status === null;
+        });
+
+
+        const tbody = document.getElementById('operator-history-table-body-digitador');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`; return; }
+
+        pendingReview.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            // Pasar el item completo a data-info
+            const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
+            tbody.innerHTML += `<tr class="border-b hover:bg-gray-50">
+                                    <td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td>
+                                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                                    <td class="p-3">${item.client_name}</td>
+                                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
+                                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
+                                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                                    <td class="p-3">${item.operator_name}</td>
+                                    <td class="p-3 text-xs">${new Date(item.count_date).toLocaleString('es-CO')}</td>
+                                </tr>`;
+        });
+    }
+    function populateDigitadorClosedHistory(history) {
+        const tbody = document.getElementById('digitador-closed-history-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const showCerradaPor = (currentUserRole === 'Admin' || currentUserRole === 'Digitador');
+        const colspan = showCerradaPor ? 9 : 8; // Adjust colspan
+        if (!history || history.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay historial de planillas cerradas.</td></tr>`;
+            return;
+        }
+        history.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            let statusBadge = '';
+            if (item.digitador_status === 'Conforme') statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`;
+            else if (item.digitador_status === 'Cerrado') statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`;
+            else if (item.digitador_status === 'Rechazado') statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; // Added Rechazado
+            else statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`;
+
+            let actionButtons = `<button onclick="toggleBreakdown('hist-${item.id}')" class="text-blue-600 text-xs font-semibold">Desglose</button>`;
+            if (currentUserRole === 'Admin') actionButtons += `<button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs ml-2">Eliminar</button>`;
+
+            const cerradaPorCol = showCerradaPor ? `<td class="p-3">${item.digitador_name || 'N/A'}</td>` : '';
+
+            // Corregir el ID del desglose para que sea único
+            tbody.innerHTML += `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                    <td class="p-3">${item.fund_name || 'N/A'}</td>
+                    <td class="p-3 text-xs">${item.closed_by_digitador_at ? formatDate(item.closed_by_digitador_at) : 'N/A'}</td>
+                    <td class="p-3 text-right font-mono">${formatCurrency(item.total_counted)}</td>
+                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                    <td class="p-3">${statusBadge}</td>
+                    <td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>
+                    ${cerradaPorCol}
+                    <td class="p-3 text-center">${actionButtons}</td>
+                </tr>
+                 <tr class="details-row hidden" id="breakdown-row-hist-${item.id}">
+                    <td colspan="${colspan}" class="p-0"><div id="breakdown-content-hist-${item.id}" class="cash-breakdown bg-gray-50"><div class="p-4 grid grid-cols-3 sm:grid-cols-7 gap-x-8 gap-y-2 text-xs"><span><strong>$100.000:</strong> ${item.bills_100k||0}</span><span><strong>$50.000:</strong> ${item.bills_50k||0}</span><span><strong>$20.000:</strong> ${item.bills_20k||0}</span><span><strong>$10.000:</strong> ${item.bills_10k||0}</span><span><strong>$5.000:</strong> ${item.bills_5k||0}</span><span><strong>$2.000:</strong> ${item.bills_2k||0}</span><span class="font-bold">Monedas: ${formatCurrency(item.coins)}</span></div></div></td>
+                </tr>
+            `;
+        });
+    }
+
+    function flagForReview(checkbox) {
+        const panel = document.getElementById('operator-panel-digitador');
+        document.querySelectorAll('.review-checkbox').forEach(cb => { if (cb !== checkbox) cb.checked = false; });
+        if (checkbox.checked) {
+            const data = JSON.parse(checkbox.dataset.info);
+            const discrepancyClass = data.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            panel.innerHTML = `<div class="flex justify-between items-start"><h3 class="text-xl font-semibold mb-4 text-blue-800">Planilla en Revisión: ${data.invoice_number}</h3><button onclick="closeReviewPanel()" class="text-gray-500 hover:text-red-600 font-bold text-2xl">&times;</button></div><div class="grid grid-cols-2 lg:grid-cols-4 gap-4 text-sm border-t pt-4 mt-2"><p><strong>Cliente:</strong><br>${data.client_name}</p><p><strong>Operador:</strong><br>${data.operator_name}</p><p><strong>V. Declarado:</strong><br>${formatCurrency(data.declared_value)}</p><p><strong>V. Contado:</strong><br>${formatCurrency(data.total_counted)}</p><p><strong class="${discrepancyClass}">Discrepancia:</strong><br><span class="${discrepancyClass}">${formatCurrency(data.discrepancy)}</span></p><p class="col-span-2 lg:col-span-3"><strong>Obs. del Operador:</strong><br>${data.observations || 'Sin observaciones'}</p></div><div class="mt-6 border-t pt-4"><h4 class="text-md font-semibold mb-2">Decisión de Cierre</h4><div><label for="digitador-observations" class="block text-sm font-medium text-gray-700">Observaciones Finales (Requerido)</label><textarea id="digitador-observations" rows="3" class="mt-1 w-full border rounded-md p-2 shadow-sm" placeholder="Escriba aquí el motivo de la aprobación o rechazo..."></textarea></div><div class="mt-4 flex space-x-4"><button onclick="submitDigitadorReview(${data.check_in_id}, 'Rechazado')" class="w-full bg-red-600 text-white font-bold py-2 px-4 rounded-md hover:bg-red-700">Rechazar Conteo</button><button onclick="submitDigitadorReview(${data.check_in_id}, 'Conforme')" class="w-full bg-green-600 text-white font-bold py-2 px-4 rounded-md hover:bg-green-700">Aprobar (Conforme)</button></div></div>`;
+            panel.classList.remove('hidden');
+            panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        } else { panel.classList.add('hidden'); }
+    }
+    function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
+    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+    function populateTrazabilidadTable(tasks) {
+        const tbody = document.getElementById('trazabilidad-tbody');
+         if (!tbody) return;
+        tbody.innerHTML = '';
+        if (!tasks || tasks.length === 0) { tbody.innerHTML = '<tr><td colspan="12" class="p-6 text-center text-gray-500">No hay tareas que coincidan con los filtros.</td></tr>'; return; }
+
+        tasks.forEach(task => {
+            let assignedTo = '';
+            if (task.assigned_to_group) {
+                assignedTo = `<span class="font-medium text-purple-700">Grupo ${task.assigned_to_group}</span>`;
+            } else if (task.assigned_to) {
+                assignedTo = task.assigned_to;
+            }
+
+            tbody.innerHTML += `<tr class="border-b">
+                                    <td class="px-6 py-4 font-medium">${task.title || ''}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.instruction || ''}">${task.instruction || ''}</td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.priority)}">${task.priority || ''}</span></td>
+                                    <td class="px-6 py-4"><span class="text-xs font-medium px-2.5 py-1 rounded-full ${getPriorityClass(task.final_priority)}">${task.final_priority || ''}</span></td>
+                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.created_at)}</td>
+                                    <td class="px-6 py-4 whitespace-nowrap">${formatDate(task.completed_at)}</td>
+                                    <td class="px-6 py-4 font-mono">${task.response_time || ''}</td>
+                                    <td class="px-6 py-4">${assignedTo || 'N/A'}</td>
+                                    <td class="px-6 py-4">${task.created_by_name || 'Sistema'}</td>
+                                    <td class="px-6 py-4 font-semibold">${task.completed_by || 'N/A'}</td>
+                                    <td class="px-6 py-4 text-xs max-w-xs truncate" title="${task.resolution_note || ''}">${task.resolution_note || 'N/A'}</td>
+                                    <td class="px-6 py-4 text-center"><button onclick="deleteTask(${task.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>
+                               </tr>`;
+        });
+    }
+    function applyTrazabilidadFilters() {
+         const startDate = document.getElementById('filter-start-date').value, endDate = document.getElementById('filter-end-date').value, user = document.getElementById('filter-user').value, checker = document.getElementById('filter-checker').value, priority = document.getElementById('filter-priority').value;
+         currentFilteredTrazabilidadData = completedTasksData.filter(task => {
+             let isValid = true;
+             const taskStartDate = task.created_at ? task.created_at.split(' ')[0] : null;
+             const taskEndDate = task.completed_at ? task.completed_at.split(' ')[0] : null;
+
+             // Filtrar por rango de fechas de COMPLETACIÓN si ambas fechas están definidas
+             if (startDate && taskEndDate && taskEndDate < startDate) isValid = false;
+             if (endDate && taskEndDate && taskEndDate > endDate) isValid = false;
+             // Si solo hay fecha de inicio, filtrar por tareas completadas DESDE esa fecha
+             if (startDate && !endDate && taskEndDate && taskEndDate < startDate) isValid = false;
+              // Si solo hay fecha de fin, filtrar por tareas completadas HASTA esa fecha
+             if (!startDate && endDate && taskEndDate && taskEndDate > endDate) isValid = false;
+
+
+             if (user && task.assigned_to !== user) isValid = false;
+             if (checker && task.completed_by !== checker) isValid = false;
+             if (priority && task.final_priority !== priority) isValid = false;
+             return isValid;
+         });
+         // Resetear ordenación al aplicar filtros
+          document.querySelectorAll('th.sortable').forEach(th => {
+              delete th.dataset.sortDir;
+              const iconSpan = th.querySelector('span');
+              if (iconSpan) iconSpan.textContent = '';
+          });
+         populateTrazabilidadTable(currentFilteredTrazabilidadData);
+     }
+    function sortTableByDate(column) {
+        const header = document.querySelector(`th[data-column-name="${column}"]`);
+         if (!header) return;
+        const currentDirection = header.dataset.sortDir || 'none';
+        const nextDirection = (currentDirection === 'desc') ? 'asc' : 'desc';
+
+        // Ordenar los datos que están actualmente filtrados (o todos si no hay filtro)
+         const dataToSort = (currentFilteredTrazabilidadData.length > 0) ? [...currentFilteredTrazabilidadData] : [...completedTasksData];
+
+
+        dataToSort.sort((a, b) => {
+            // Manejar fechas nulas o inválidas
+            const timeA = a[column] ? new Date(a[column]).getTime() : 0;
+            const timeB = b[column] ? new Date(b[column]).getTime() : 0;
+
+            if (isNaN(timeA) && isNaN(timeB)) return 0;
+            if (isNaN(timeA)) return 1; // Poner nulos/inválidos al final
+            if (isNaN(timeB)) return -1; // Poner nulos/inválidos al final
+
+            return nextDirection === 'asc' ? timeA - timeB : timeB - timeA;
+        });
+
+        // Actualizar iconos de ordenación en todas las cabeceras
+        document.querySelectorAll('th.sortable').forEach(th => {
+            const iconSpan = th.querySelector('span');
+             if (!iconSpan) return;
+            if (th === header) {
+                th.dataset.sortDir = nextDirection;
+                iconSpan.textContent = nextDirection === 'asc' ? ' ▲' : ' ▼';
+                 iconSpan.classList.remove('text-gray-400'); // Hacer visible el icono activo
+            } else {
+                delete th.dataset.sortDir;
+                iconSpan.textContent = '';
+                 iconSpan.classList.add('text-gray-400'); // Ocultar iconos inactivos
+            }
+        });
+
+         // Actualizar la tabla con los datos ordenados
+         populateTrazabilidadTable(dataToSort);
+         // Guardar los datos ordenados como los filtrados actuales
+         currentFilteredTrazabilidadData = dataToSort;
+    }
+    function exportToExcel() { const table = document.getElementById("trazabilidad-table"), wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" }); XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx"); }
+    <?php endif; ?>
+
+    // --- Operator Panel Specific ---
+    function selectPlanilla(invoiceNumber) {
+        document.getElementById('consult-invoice').value = invoiceNumber;
+        document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
+        window.scrollTo(0, 0);
+    }
+    async function editCheckIn(checkinData) {
+        document.getElementById('invoice_number').value = checkinData.invoice_number;
+        document.getElementById('seal_number').value = checkinData.seal_number;
+        document.getElementById('declared_value').value = checkinData.declared_value;
+        document.getElementById('check_in_id_field').value = checkinData.id;
+
+        const clientSelect = document.getElementById('client_id');
+        clientSelect.value = checkinData.client_id;
+
+        // Esperar a que los fondos se carguen después de seleccionar el cliente
+        await new Promise(resolve => {
+            clientSelect.dispatchEvent(new Event('change'));
+            // Usar un temporizador más largo o una mejor forma de esperar si la carga de fondos es lenta
+            setTimeout(resolve, 300); // Ajusta si es necesario
+        });
+
+        document.getElementById('fund_id').value = checkinData.fund_id;
+        document.getElementById('route_id').value = checkinData.route_id;
+
+        document.getElementById('checkin-form-title').textContent = 'Corregir Check-in';
+        const buttonsContainer = document.getElementById('checkin-form-buttons');
+        buttonsContainer.innerHTML = `
+            <button type="submit" id="checkin-submit-button" class="w-full bg-orange-500 text-white font-bold py-3 rounded-md hover:bg-orange-600">Guardar Corrección</button>
+            <button type="button" onclick="cancelEdit()" class="w-full bg-gray-300 text-gray-800 font-bold py-3 rounded-md hover:bg-gray-400">Cancelar</button>
+        `;
+
+        document.getElementById('checkin-form-title').scrollIntoView({ behavior: 'smooth' });
+    }
+    function cancelEdit() {
+        document.getElementById('checkin-form').reset();
+        document.getElementById('check_in_id_field').value = '';
+        document.getElementById('checkin-form-title').textContent = 'Registrar Nuevo Check-in';
+        const buttonsContainer = document.getElementById('checkin-form-buttons');
+        buttonsContainer.innerHTML = `
+            <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
+        `;
+        const fundSelect = document.getElementById('fund_id');
+        fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
+        fundSelect.disabled = true;
+        fundSelect.classList.add('bg-gray-200');
+    }
+    function updateQty(button, amount) {
+        const input = button.parentElement.querySelector('input');
+        let currentValue = parseInt(input.value) || 0;
+        currentValue += amount;
+        if (currentValue < 0) currentValue = 0;
+        input.value = currentValue;
+        calculateTotals();
+    }
+    function calculateTotals() {
+        const form = document.getElementById('denomination-form');
+        if (!form) return;
+        let totalCounted = 0;
+        form.querySelectorAll('.denomination-row').forEach(row => {
+            totalCounted += (parseInt(row.querySelector('.denomination-qty').value) || 0) * parseFloat(row.dataset.value);
+            row.querySelector('.subtotal').textContent = formatCurrency((parseInt(row.querySelector('.denomination-qty').value) || 0) * parseFloat(row.dataset.value));
+        });
+        const coinsValue = parseFloat(document.getElementById('coins-value').value) || 0;
+        document.getElementById('coins-subtotal').textContent = formatCurrency(coinsValue);
+        totalCounted += coinsValue;
+        document.getElementById('total-counted').textContent = formatCurrency(totalCounted);
+        const declaredValue = parseFloat(document.getElementById('display-declared').dataset.value) || 0;
+        const discrepancy = totalCounted - declaredValue;
+        const discrepancyEl = document.getElementById('discrepancy');
+        discrepancyEl.textContent = formatCurrency(discrepancy);
+        discrepancyEl.classList.toggle('text-red-500', discrepancy !== 0);
+        discrepancyEl.classList.toggle('text-green-500', discrepancy === 0);
+    }
+
+    // --- Alert Pop-up & Polling ---
+    function showAlertPopup(alertData) {
+        if (!alertPopupOverlay || !alertPopup || !alertPopupTitle || !alertPopupDescription || !alertPopupHeader) return;
+        alertPopupTitle.textContent = `¡${alertData.priority}! ${alertData.title || 'Nueva Alerta'}`;
+        alertPopupDescription.textContent = alertData.description || alertData.instruction || 'Revisa tus tareas pendientes.';
+        alertPopupHeader.className = 'p-4 border-b rounded-t-lg'; // Reset classes
+        alertPopupTitle.className = 'text-xl font-bold'; // Reset classes
+        if (alertData.priority === 'Critica') {
+            alertPopupHeader.classList.add('bg-red-100', 'border-red-200');
+            alertPopupTitle.classList.add('text-red-800');
+        } else { // Alta
+            alertPopupHeader.classList.add('bg-orange-100', 'border-orange-200');
+            alertPopupTitle.classList.add('text-orange-800');
+        }
+        alertPopupOverlay.classList.remove('hidden');
+        setTimeout(() => {
+            alertPopup.classList.remove('scale-95', 'opacity-0');
+            alertPopup.classList.add('scale-100', 'opacity-100');
+        }, 50);
+    }
+
+    async function checkForNewAlerts() {
+        try {
+            const response = await fetch(`api/realtime_alerts_api.php?since=${lastCheckedAlertTime}`);
+            if (!response.ok && response.status !== 304) { console.error("Error checking alerts:", response.statusText); return; }
+            if (response.status === 304) return; // Not Modified
+
+            const result = await response.json();
+            if (result.success && result.alerts && result.alerts.length > 0) {
+                showAlertPopup(result.alerts[0]);
+                // Podríamos recargar o actualizar los badges aquí si es necesario
+            }
+            lastCheckedAlertTime = result.timestamp || Math.floor(Date.now() / 1000);
+        } catch (error) { console.error("Network error checking alerts:", error); }
+    }
+
+    function startAlertPolling(intervalSeconds = 20) {
+        if (alertPollingInterval) clearInterval(alertPollingInterval);
+        checkForNewAlerts();
+        alertPollingInterval = setInterval(checkForNewAlerts, intervalSeconds * 1000);
+        console.log(`Alert polling started every ${intervalSeconds} seconds.`);
+    }
+
+    function stopAlertPolling() {
+        if (alertPollingInterval) { clearInterval(alertPollingInterval); alertPollingInterval = null; console.log("Alert polling stopped."); }
+    }
+
+    // --- Tab Switching & Dynamic Content Loading (NUEVA FUNCIÓN) ---
+    async function switchTab(tabName) {
+        sessionStorage.setItem('activeTab', tabName);
+
+        const staticContentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'mi-historial', 'roles', 'trazabilidad'];
+        const dynamicContentPanels = ['manage-clients', 'manage-routes', 'manage-funds'];
+        const allContentPanels = staticContentPanels.concat(dynamicContentPanels);
+
+        document.querySelectorAll('.nav-tab, .header-panel-button').forEach(t => t.classList.remove('active'));
+        allContentPanels.forEach(panel => document.getElementById(`content-${panel}`)?.classList.add('hidden'));
+
+        const activeContent = document.getElementById(`content-${tabName}`);
+        const activeTabElement = document.getElementById(`tab-${tabName}`);
+
+        if (activeContent) {
+            activeContent.classList.remove('hidden');
+            activeTabElement?.classList.add('active'); // Activate the button/tab
+
+            if (dynamicContentPanels.includes(tabName) && !loadedContent[tabName]) {
+                activeContent.innerHTML = '<div class="loader"></div><p class="text-center text-gray-500">Cargando...</p>'; // Loading indicator
+                try {
+                    let phpFile = '';
+                    if (tabName === 'manage-clients') phpFile = 'manage_clients.php';
+                    else if (tabName === 'manage-routes') phpFile = 'manage_routes.php';
+                    else if (tabName === 'manage-funds') phpFile = 'manage_funds.php';
+
+                    if (phpFile) {
+                        const response = await fetch(`${phpFile}?content_only=1`);
+                        if (!response.ok) throw new Error(`Failed to load ${phpFile}: ${response.statusText}`);
+                        const htmlContent = await response.text();
+                        activeContent.innerHTML = htmlContent;
+                        loadedContent[tabName] = true;
+
+                        // Re-execute scripts
+                        activeContent.querySelectorAll('script').forEach(script => {
+                            try {
+                                const newScript = document.createElement('script');
+                                newScript.textContent = script.textContent;
+                                script.parentNode.replaceChild(newScript, script);
+                            } catch (e) { console.error("Error executing dynamic script:", e); }
+                        });
+                    }
+                } catch (error) {
+                    console.error("Error loading dynamic content:", error);
+                    activeContent.innerHTML = `<p class="text-center p-8 text-red-500">Error: ${error.message}</p>`;
+                }
+            }
+        } else { console.error(`Content container 'content-${tabName}' not found.`); }
+    }
+
+    // --- Initialization ---
+    document.addEventListener('DOMContentLoaded', () => {
+        const savedTab = sessionStorage.getItem('activeTab') || 'operaciones'; // Default to operations
+        switchTab(savedTab);
+
+        // Initial population of static tables based on role and existence
+        if (document.getElementById('user-table-body') && currentUserRole === 'Admin') populateUserTable(adminUsersData);
+        if (document.getElementById('historial-individual-tbody')) populateUserHistoryTable(userCompletedTasksData);
+        if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
+            currentFilteredTrazabilidadData = [...completedTasksData];
+            populateTrazabilidadTable(currentFilteredTrazabilidadData);
+        }
+        if (document.getElementById('content-checkinero')) {
+            populateCheckinsTable(initialCheckins);
+   D;          document.getElementById('checkin-form')?.addEventListener('submit', handleCheckinSubmit);
+            const clientSelect = document.getElementById('client_id');
+            const fundSelect = document.getElementById('fund_id');
+            clientSelect?.addEventListener('change', async () => {
                 const clientId = clientSelect.value; fundSelect.innerHTML = '<option value="">Cargando...</option>'; fundSelect.disabled = true; fundSelect.classList.add('bg-gray-200');
                 if (!clientId) { fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>'; return; }
                 try {
@@ -2503,51 +2770,145 @@ $conn->close();
                     else { fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>'; }
                 } catch (error) { console.error('Error fetching funds:', error); fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>'; }
             });
-        }
+        }
+        if (document.getElementById('content-operador')) {
+            if (currentUserRole === 'Admin') populateOperatorCheckinsTable(initialCheckins);
+            populateOperatorHistoryTable(operatorHistoryData);
+            document.getElementById('consultation-form')?.addEventListener('submit', handleConsultation);
+            document.getElementById('denomination-form')?.addEventListener('submit', handleDenominationSave);
+        }
+        if (document.getElementById('content-digitador')) {
+            // --- LÓGICA PARA SUB-PESTAÑAS DEL DIGITADOR ---
+            const btnSupervision = document.getElementById('btn-supervision');
+            const btnCierre = document.getElementById('btn-cierre');
+            const btnHistorialCierre = document.getElementById('btn-historial-cierre');
+            const btnInformes = document.getElementById('btn-informes');
+            const panelSupervision = document.getElementById('panel-supervision');
+            const panelCierre = document.getElementById('panel-cierre');
+            const panelHistorialCierre = document.getElementById('panel-historial-cierre');
+            const panelInformes = document.getElementById('panel-informes');
+            const digitadorSubPanels = [panelSupervision, panelCierre, panelHistorialCierre, panelInformes];
+            const digitadorSubButtons = [btnSupervision, btnCierre, btnHistorialCierre, btnInformes];
 
-        if (document.getElementById('content-operador')) {
-            if (currentUserRole === 'Admin') {
-                populateOperatorCheckinsTable(initialCheckins);
-            }
-            populateOperatorHistoryTable(operatorHistoryData);
-            document.getElementById('consultation-form').addEventListener('submit', handleConsultation);
-            document.getElementById('denomination-form').addEventListener('submit', handleDenominationSave);
-        }
+            const setActiveDigitadorButton = (activeBtn) => {
+                digitadorSubButtons.forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
+                if(activeBtn) { activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700'); }
+            };
+            const showDigitadorPanel = (activePanel) => {
+                digitadorSubPanels.forEach(panel => { if(panel) panel.classList.add('hidden'); });
+                if (activePanel) activePanel.classList.remove('hidden');
+            };
 
-        if (document.getElementById('content-digitador')) {
-            // Inicializar las sub-pestañas del digitador
-            const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
-             if (savedSubTab === 'supervision' && btnSupervision) { btnSupervision.click(); }
-             else if (savedSubTab === 'historial' && btnHistorialCierre) { btnHistorialCierre.click(); }
-             else if (savedSubTab === 'informes' && btnInformes) { btnInformes.click(); }
-             else if (btnCierre) { btnCierre.click(); } // Por defecto
+            btnSupervision.addEventListener('click', () => { setActiveDigitadorButton(btnSupervision); showDigitadorPanel(panelSupervision); sessionStorage.setItem('activeDigitadorSubTab', 'supervision'); });
+            btnCierre.addEventListener('click', () => { setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre); sessionStorage.setItem('activeDigitadorSubTab', 'cierre'); loadFundsForCierre(); });
+            btnHistorialCierre.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); /* Podrías recargar aquí si es necesario */ });
+            btnInformes.addEventListener('click', () => { setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes); sessionStorage.setItem('activeDigitadorSubTab', 'informes'); loadInformes(); });
 
-            // Cargar datos iniciales necesarios para las tablas del digitador
-            populateOperatorHistoryForDigitador(operatorHistoryData);
-            populateDigitadorClosedHistory(digitadorClosedHistory);
-            // Las funciones loadFundsForCierre y loadInformes se llaman al hacer clic en sus botones
-        }
+            const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
+            if (savedSubTab === 'supervision' && btnSupervision) { btnSupervision.click(); }
+            else if (savedSubTab === 'historial' && btnHistorialCierre) { btnHistorialCierre.click(); }
+            else if (savedSubTab === 'informes' && btnInformes) { btnInformes.click(); }
+            else if (btnCierre) { btnCierre.click(); } // Default to Cierre
+            else if (btnSupervision) { btnSupervision.click(); } // Fallback
 
-        updateReminderCount();
-        setInterval(() => {
+            populateOperatorHistoryForDigitador(operatorHistoryData);
+            populateDigitadorClosedHistory(digitadorClosedHistory);
+        }
+
+        updateReminderCount();
+        startAlertPolling(20); // Start checking for new alerts
+
+        // Countdown timer interval
+        setInterval(() => {
             document.querySelectorAll('.countdown-timer').forEach(timerEl => {
-                const endTime = new Date(timerEl.dataset.endTime).getTime(); if (isNaN(endTime)) return; const now = new Date().getTime(), distance = endTime - now;
-                if (distance < 0) { const elapsed = now - endTime, days = Math.floor(elapsed / 864e5), hours = Math.floor((elapsed % 864e5) / 36e5), minutes = Math.floor((elapsed % 36e5) / 6e4), seconds = Math.floor((elapsed % 6e4) / 1e3); let elapsedTime = ''; if (days > 0) elapsedTime += `${days}d `; if (hours > 0 || days > 0) elapsedTime += `${hours}h `; elapsedTime += `${minutes}m ${seconds}s`; timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`; }
-                else { const days = Math.floor(distance / 864e5), hours = Math.floor((distance % 864e5) / 36e5), minutes = Math.floor((distance % 36e5) / 6e4), seconds = Math.floor((distance % 6e4) / 1e3); let timeLeft = ''; if (days > 0) timeLeft += `${days}d `; if (hours > 0 || days > 0) timeLeft += `${hours}h `; timeLeft += `${minutes}m ${seconds}s`; let textColor = 'text-green-600'; if (days === 0 && hours < 1) textColor = 'text-red-600'; else if (days === 0 && hours < 24) textColor = 'text-yellow-700'; timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`; }
+                const endTimeStr = timerEl.dataset.endTime;
+                 if (!endTimeStr) return; // Si no hay fecha, salir
+                try {
+                     const endTime = new Date(endTimeStr.replace(' ', 'T')).getTime(); // Reemplazar espacio por T si es necesario
+                     if (isNaN(endTime)) {
+                          timerEl.textContent = 'Fecha inválida';
+                          return;
+                     }
+                     const now = new Date().getTime();
+                     const distance = endTime - now;
+
+                     if (distance < 0) {
+                          const elapsed = now - endTime;
+                          const days = Math.floor(elapsed / 864e5);
+                          const hours = Math.floor((elapsed % 864e5) / 36e5);
+                          const minutes = Math.floor((elapsed % 36e5) / 6e4);
+                          const seconds = Math.floor((elapsed % 6e4) / 1e3);
+                          let elapsedTime = '';
+                          if (days > 0) elapsedTime += `${days}d `;
+                          if (hours > 0 || days > 0) elapsedTime += `${hours}h `;
+                          elapsedTime += `${minutes}m ${seconds}s`;
+                          timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`;
+                     } else {
+                          const days = Math.floor(distance / 864e5);
+                          const hours = Math.floor((distance % 864e5) / 36e5);
+                          const minutes = Math.floor((distance % 36e5) / 6e4);
+                          const seconds = Math.floor((distance % 6e4) / 1e3);
+                          let timeLeft = '';
+                          if (days > 0) timeLeft += `${days}d `;
+                          if (hours > 0 || days > 0) timeLeft += `${hours}h `;
+                          timeLeft += `${minutes}m ${seconds}s`;
+                          let textColor = 'text-green-600';
+                          if (days === 0 && hours < 1) textColor = 'text-red-600';
+                          else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
+                          timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
+                     }
+                } catch (e) {
+                     console.error("Error parsing date for countdown:", endTimeStr, e);
+                     timerEl.textContent = 'Error fecha';
+                }
             });
         }, 1000);
+        // Manual task date input logic
+        const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
+        if(startDateInput && endDateInput) {
+            const getLocalISOString = (date) => {
+                 if (!(date instanceof Date) || isNaN(date)) return ''; // Handle invalid date
+                 const pad = (num) => num.toString().padStart(2, '0');
+                 // Crear fecha en UTC y ajustar manualmente a la zona horaria local (-5 horas para Colombia)
+                 const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
+                 try {
+                      return localDate.toISOString().slice(0, 16);
+                 } catch (e) {
+                      console.error("Error formatting date:", e);
+                      return ''; // Return empty string on error
+                 }
+             };
+            const now = new Date();
+             const nowString = getLocalISOString(now);
 
-        const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
-        if(startDateInput) {
-            const getLocalISOString = (date) => { const pad = (num) => num.toString().padStart(2, '0'); return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`; };
-            const now = new Date(), nowString = getLocalISOString(now);
-            startDateInput.min = nowString; endDateInput.min = nowString;
-            // No establecer valor por defecto para permitir que estén vacíos si el usuario no los toca
-            // if (!startDateInput.value) startDateInput.value = nowString;
-            // if (!endDateInput.value) endDateInput.value = nowString;
-            startDateInput.addEventListener('input', () => { if (startDateInput.value) { endDateInput.min = startDateInput.value; if (endDateInput.value && endDateInput.value < startDateInput.value) endDateInput.value = startDateInput.value; } });
+             // Establecer mínimo para evitar fechas pasadas
+             startDateInput.min = nowString;
+             endDateInput.min = nowString;
+
+             // No establecer valor por defecto para permitir que estén vacíos
+             // startDateInput.value = nowString;
+             // endDateInput.value = nowString;
+
+            startDateInput.addEventListener('input', () => {
+                 if (startDateInput.value) {
+                      endDateInput.min = startDateInput.value;
+                      // Si la fecha de fin es anterior, igualarla a la de inicio
+                      if (endDateInput.value && endDateInput.value < startDateInput.value) {
+                           endDateInput.value = startDateInput.value;
+                      }
+                 } else {
+                     // Si se borra la fecha de inicio, resetear el mínimo de la fecha de fin
+                     endDateInput.min = nowString;
+                 }
+            });
+             endDateInput.addEventListener('input', () => {
+                 // Asegurar que la fecha de fin no sea anterior a la de inicio (si existe inicio)
+                  if (startDateInput.value && endDateInput.value && endDateInput.value < startDateInput.value) {
+                       endDateInput.value = startDateInput.value;
+                  }
+             });
         }
-    });
+    });
     </script>
-</body>
+    </body>
 </html>
