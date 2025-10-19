@@ -338,7 +338,7 @@ $conn->close();
                         <?php endif; ?>
                     </button>
                     <div id="task-notifications-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
-                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
+                        <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Pirodidad ALTA/CRITICA</h4>
                         <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto">
                            <?php if(empty($panel_high_priority_items)): ?>
                                 <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
