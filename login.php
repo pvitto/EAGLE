@@ -53,7 +53,7 @@ if (isset($_SESSION['user_id'])) {
             </div>
         </form>
          <p class="text-center text-xs text-gray-500 mt-6">
-            Usuario de prueba (Admin): carlos.v@example.com <br> Contraseña para todos: password123
+            Todos los derechos reservados <br> © 2025
         </p>
     </div>
 </body>

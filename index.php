@@ -1,368 +1,207 @@
 <?php
 session_start();
 require 'check_session.php';
-require 'db_connection.php';
+require 'db_connection.php'; // This should define $conn and connection details
 
 // Establecer la zona horaria correcta para Colombia
 date_default_timezone_set('America/Bogota');
 
-// Cargar todos los usuarios (incluyendo el nuevo campo 'gender')
+// --- Cargar datos iniciales ---
 $all_users = [];
-// *** MODIFICADO: Incluir 'gender' en la consulta ***
 $users_result = $conn->query("SELECT id, name, role, email, gender FROM users ORDER BY name ASC");
-if ($users_result) {
-    while ($row = $users_result->fetch_assoc()) {
-        $all_users[] = $row;
-    }
-}
+if ($users_result) { while ($row = $users_result->fetch_assoc()) { $all_users[] = $row; } }
 $admin_users_list = ($_SESSION['user_role'] === 'Admin') ? $all_users : [];
 
-// --- LÓGICA DE ALERTAS Y TAREAS PENDIENTES ---
+// --- Lógica de Usuario y Rol ---
 $current_user_id = $_SESSION['user_id'];
 $current_user_role = $_SESSION['user_role'];
-// *** NUEVO: Obtener género de la sesión ***
 $current_user_gender = $_SESSION['user_gender'] ?? null;
 
-// *** NUEVA: Función para obtener el nombre del rol según el género ***
 function getRoleDisplayName($role, $gender) {
     if ($gender === 'F') {
         switch ($role) {
             case 'Digitador': return 'Digitadora';
             case 'Operador': return 'Operadora';
             case 'Checkinero': return 'Checkinera';
-            // Añade más casos si es necesario
-            default: return $role; // Admin, etc.
+            default: return $role;
         }
     }
-    return $role; // Devuelve el rol original si es Masculino o no definido
+    return $role;
 }
-
-// *** NUEVO: Obtener el nombre del rol a mostrar ***
 $displayRole = getRoleDisplayName($current_user_role, $current_user_gender);
 
-// --- Lógica para el color del chip de rol y pestañas ---
-// (Esta lógica no necesita cambiar, usa $current_user_role para las clases CSS)
-$role_color_class = 'bg-gray-200 text-gray-800'; // Default
-$role_nav_class = 'nav-admin'; // Default for Admin
+// Clases CSS para roles
+$role_color_class = 'bg-gray-200 text-gray-800'; $role_nav_class = 'nav-admin';
 switch ($current_user_role) {
-    case 'Admin':
-        $role_color_class = 'bg-red-200 text-red-800';
-        $role_nav_class = 'nav-admin';
-        break;
-    case 'Digitador':
-        $role_color_class = 'bg-blue-200 text-blue-800';
-        $role_nav_class = 'nav-digitador';
-        break;
-    case 'Operador':
-        $role_color_class = 'bg-yellow-200 text-yellow-800';
-        $role_nav_class = 'nav-operador';
-        break;
-    case 'Checkinero':
-        $role_color_class = 'bg-green-200 text-green-800';
-        $role_nav_class = 'nav-checkinero';
-        break;
+    case 'Admin': $role_color_class = 'bg-red-200 text-red-800'; $role_nav_class = 'nav-admin'; break;
+    case 'Digitador': $role_color_class = 'bg-blue-200 text-blue-800'; $role_nav_class = 'nav-digitador'; break;
+    case 'Operador': $role_color_class = 'bg-yellow-200 text-yellow-800'; $role_nav_class = 'nav-operador'; break;
+    case 'Checkinero': $role_color_class = 'bg-green-200 text-green-800'; $role_nav_class = 'nav-checkinero'; break;
 }
 
-
+// --- LÓGICA DE ALERTAS Y TAREAS PENDIENTES ---
 $all_pending_items = [];
 $user_filter = '';
-if ($current_user_role !== 'Admin') {
-    // Asegura que solo vea tareas asignadas directamente a él o a su grupo de rol
+ if ($current_user_role !== 'Admin') {
+    // Asegura que el usuario vea tareas asignadas a él o a su grupo si no están asignadas individualmente
     $user_filter = $conn->real_escape_string(" AND (t.assigned_to_user_id = {$current_user_id} OR (t.assigned_to_group = '{$current_user_role}' AND t.assigned_to_user_id IS NULL))");
-     // Corrección lógica: No mostrar tareas de grupo si ya están asignadas a alguien específico
-}
+ }
 
-
-// 1. Cargar Alertas Pendientes (Asegura que solo se muestre una instancia por alerta, priorizando la asignada al usuario)
+// Cargar Alertas Pendientes (agrupadas por alerta)
+// (Esta es la *nueva* consulta de alertas, centrada en asignaciones)
 $alerts_sql = "
 SELECT a.*,
-       t.id AS task_id,
-       t.status AS task_status,
+       MIN(t.id) AS task_id,
+       MIN(t.status) AS task_status,
        t.assigned_to_group,
-       t.assigned_to_user_id,
-       CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END as user_task_id,
-       GROUP_CONCAT(DISTINCT u_assigned.name SEPARATOR ', ') as assigned_names,
-       t.type AS task_type,
-       t.instruction,
-       t.start_datetime,
-       t.end_datetime,
+       MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id,
+       GROUP_CONCAT(DISTINCT CASE WHEN t.assigned_to_group IS NULL THEN u_assigned.name ELSE NULL END SEPARATOR ', ') as assigned_names,
+       MIN(t.type) AS task_type,
+       MIN(t.instruction) as instruction,
+       MIN(t.start_datetime) as start_datetime,
+       MIN(t.end_datetime) as end_datetime,
        ci.invoice_number
 FROM alerts a
-LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' -- Solo tareas pendientes
+LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente'
 LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
 LEFT JOIN check_ins ci ON a.check_in_id = ci.id
-WHERE a.status = 'Asignada' -- Solo alertas que generaron tareas pendientes
-  {$user_filter} -- Aplica filtro de usuario/grupo si no es Admin
-GROUP BY a.id -- Agrupa por alerta para evitar duplicados de alerta
+WHERE a.status = 'Asignada'
+  {$user_filter}
+GROUP BY a.id
 ORDER BY FIELD(a.priority, 'Critica', 'Alta', 'Media', 'Baja'), a.created_at DESC
 ";
-
-
 $alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
-        // Si no es admin y la tarea está asignada a un grupo Y a un usuario específico que NO es el actual, no la muestra
-        if ($current_user_role !== 'Admin' && !empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
-           continue;
-        }
-         // Si no es admin y la tarea está asignada solo a un usuario específico que NO es el actual, no la muestra
-         if ($current_user_role !== 'Admin' && empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
-            continue;
-         }
-
         $row['item_type'] = 'alert';
         $all_pending_items[] = $row;
     }
-} else {
-     error_log("Error en consulta de alertas: " . $conn->error);
-}
+} else { error_log("Error loading alerts: " . $conn->error); }
 
-
-// 2. Cargar Tareas Manuales Pendientes (Agrupadas correctamente)
+// 2. Cargar Tareas Manuales Pendientes
+// *** CAMBIO: GROUP BY RESTAURADO ***
 $manual_tasks_sql = "
     SELECT
-        t.id, t.id as task_id, t.title, t.instruction, t.priority, t.status as task_status,
+        t.id, MIN(t.id) as task_id, t.title, t.instruction, t.priority, MIN(t.status) as task_status,
         t.assigned_to_user_id, t.assigned_to_group,
-        -- Correctamente obtener nombres asignados solo si no es grupo
-        CASE WHEN t.assigned_to_group IS NULL THEN u.name ELSE NULL END as assigned_names,
+        -- Obtener nombres solo si NO es de grupo
+        GROUP_CONCAT(DISTINCT CASE WHEN t.assigned_to_group IS NULL THEN u.name ELSE NULL END SEPARATOR ', ') as assigned_names,
         t.start_datetime, t.end_datetime,
-        -- user_task_id solo si está asignada directamente a este usuario
-        CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END as user_task_id
+        -- Marcar si alguna de las tareas agrupadas pertenece a este usuario
+        MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id
     FROM tasks t
-    LEFT JOIN users u ON t.assigned_to_user_id = u.id -- Join para nombres individuales
+    LEFT JOIN users u ON t.assigned_to_user_id = u.id
     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente'
-      {$user_filter} -- Aplica filtro de usuario/grupo si no es Admin
+      {$user_filter}
+    -- *** GROUP BY RESTAURADO ***
+    GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group, t.created_at), t.id)
     ORDER BY FIELD(t.priority, 'Critica', 'Alta', 'Media', 'Baja'), t.created_at DESC
 ";
-
 $manual_tasks_result = $conn->query($manual_tasks_sql);
 if ($manual_tasks_result) {
     while($row = $manual_tasks_result->fetch_assoc()) {
-         // Si no es admin y la tarea está asignada a un grupo Y a un usuario específico que NO es el actual, no la muestra
-        if ($current_user_role !== 'Admin' && !empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
-           continue;
-        }
-         // Si no es admin y la tarea está asignada solo a un usuario específico que NO es el actual, no la muestra
-         if ($current_user_role !== 'Admin' && empty($row['assigned_to_group']) && !empty($row['assigned_to_user_id']) && $row['assigned_to_user_id'] != $current_user_id) {
-            continue;
-         }
         $row['item_type'] = 'manual_task';
         $all_pending_items[] = $row;
     }
-} else {
-     error_log("Error en consulta de tareas manuales: " . $conn->error);
-}
+} else { error_log("Error loading manual tasks: " . $conn->error); }
 
-// 3. Procesar y ordenar items, calculando prioridad actual
-$main_priority_items = [];
-$main_non_priority_items = [];
-$panel_high_priority_items = [];
-$panel_medium_priority_items = [];
+// 3. Procesar y ordenar items
+$main_priority_items = []; $main_non_priority_items = [];
+$panel_high_priority_items = []; $panel_medium_priority_items = [];
 $now = new DateTime();
-
 foreach ($all_pending_items as $item) {
-    $original_priority = $item['priority'] ?? 'Media'; // Asignar prioridad por defecto si falta
+    $original_priority = $item['priority'] ?? 'Media';
     $current_priority = $original_priority;
-
     if (!empty($item['end_datetime'])) {
         try {
            $end_time = new DateTime($item['end_datetime']);
            $diff_minutes = ($now->getTimestamp() - $end_time->getTimestamp()) / 60;
-
             if ($diff_minutes >= 0) { $current_priority = 'Alta'; }
             elseif ($diff_minutes > -15 && ($original_priority === 'Baja' || $original_priority === 'Media')) { $current_priority = 'Media'; }
-        } catch (Exception $e) {
-            // Manejar error si la fecha no es válida, opcionalmente loguear el error
-             error_log("Fecha inválida en item: " . ($item['id'] ?? 'N/A') . " - " . $item['end_datetime']);
-        }
+        } catch (Exception $e) { /* Log error */ }
     }
     $item['current_priority'] = $current_priority;
-
-    // Asignar user_task_id si es una tarea de grupo y el usuario pertenece al grupo
+    // Si es tarea de grupo y el usuario pertenece, marcarla como accionable por él
     if (empty($item['user_task_id']) && !empty($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role) {
-         $item['user_task_id'] = $item['task_id'] ?? $item['id']; // Usar el ID de la tarea o alerta
+         $item['user_task_id'] = $item['task_id'] ?? $item['id'];
     }
-
 
     if ($current_priority === 'Critica' || $current_priority === 'Alta') {
-        $main_priority_items[] = $item;
-        $panel_high_priority_items[] = $item;
+        $main_priority_items[] = $item; $panel_high_priority_items[] = $item;
     } else {
         $main_non_priority_items[] = $item;
-        if ($current_priority === 'Media') {
-            $panel_medium_priority_items[] = $item;
-        }
+        if ($current_priority === 'Media') $panel_medium_priority_items[] = $item;
     }
 }
-
 $priority_order = ['Critica' => 4, 'Alta' => 3, 'Media' => 2, 'Baja' => 1];
-// Función de comparación robusta
 $sortFunction = function($a, $b) use ($priority_order) {
     $priorityA = $priority_order[$a['current_priority']] ?? 0;
     $priorityB = $priority_order[$b['current_priority']] ?? 0;
-    if ($priorityB !== $priorityA) {
-        return $priorityB <=> $priorityA;
-    }
-    // Si la prioridad es la misma, ordenar por fecha de creación (más reciente primero)
+    if ($priorityB !== $priorityA) return $priorityB <=> $priorityA;
     $dateA = isset($a['created_at']) ? strtotime($a['created_at']) : 0;
     $dateB = isset($b['created_at']) ? strtotime($b['created_at']) : 0;
     return $dateB <=> $dateA;
 };
-
 usort($main_priority_items, $sortFunction);
 usort($main_non_priority_items, $sortFunction);
 usort($panel_high_priority_items, $sortFunction);
 usort($panel_medium_priority_items, $sortFunction);
-
-
 $total_alerts_count_for_user = count($all_pending_items);
 $priority_summary_count = count($main_priority_items);
 $high_priority_badge_count = count($panel_high_priority_items);
 $medium_priority_badge_count = count($panel_medium_priority_items);
 
 // --- OTRAS CONSULTAS DE DATOS ---
-$completed_tasks = [];
+$completed_tasks = []; // Admin's full history
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
-        "SELECT
-            t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority,
-            t.start_datetime, t.end_datetime, u_assigned.name as assigned_to,
-            u_completed.name as completed_by, t.created_at, t.completed_at,
-            TIMEDIFF(t.completed_at, t.created_at) as response_time,
-            t.assigned_to_group, u_creator.name as created_by_name,
-            t.resolution_note
-         FROM tasks t
-         LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
-         LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id
-         LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id
-         LEFT JOIN alerts a ON t.alert_id = a.id
-         WHERE t.status = 'Completada'
-         -- GROUP BY t.id -- No agrupar aquí, queremos todas las filas completadas
-         ORDER BY t.completed_at DESC"
-    );
+        "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time, t.assigned_to_group, u_creator.name as created_by_name, t.resolution_note FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' ORDER BY t.completed_at DESC" );
     if ($completed_result) {
         while($row = $completed_result->fetch_assoc()){
-            $original_priority = $row['priority'];
-            $final_priority = $original_priority;
-             // Lógica de prioridad final basada en end_datetime y completed_at
+            $original_priority = $row['priority']; $final_priority = $original_priority;
              if (!empty($row['end_datetime']) && !empty($row['completed_at'])) {
-                 try {
-                     $end_time = new DateTime($row['end_datetime']);
-                     $completed_time = new DateTime($row['completed_at']);
-                     if ($completed_time > $end_time) {
-                         $final_priority = 'Alta'; // O 'Critica' según tu lógica
-                     }
-                 } catch (Exception $e) {
-                     // Manejar fecha inválida si es necesario
-                 }
+                  try { $end_time = new DateTime($row['end_datetime']); $completed_time = new DateTime($row['completed_at']); if ($completed_time > $end_time) { $final_priority = 'Alta'; } } catch (Exception $e) {}
              }
             $row['final_priority'] = $final_priority;
             $completed_tasks[] = $row;
         }
-    } else {
-         error_log("Error en consulta de tareas completadas (Admin): " . $conn->error);
-    }
+    } else { error_log("Error Admin completed tasks: " . $conn->error); }
 }
 
-// --- Historial individual para CADA usuario ---
+// Historial individual
 $user_completed_tasks = [];
-$stmt_user_tasks = $conn->prepare(
-    "SELECT
-        t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority,
-        t.start_datetime, t.end_datetime, u_assigned.name as assigned_to,
-        u_completed.name as completed_by, t.created_at, t.completed_at,
-        TIMEDIFF(t.completed_at, t.created_at) as response_time,
-        t.assigned_to_group, u_creator.name as created_by_name,
-        t.resolution_note
-     FROM tasks t
-     LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
-     LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id
-     LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id
-     LEFT JOIN alerts a ON t.alert_id = a.id
-     WHERE t.status = 'Completada' AND (t.completed_by_user_id = ?) -- Filtro por quien completó
-     -- GROUP BY t.id -- No agrupar aquí, queremos todas las filas completadas por el usuario
-     ORDER BY t.completed_at DESC"
-);
+$stmt_user_tasks = $conn->prepare( "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time, t.assigned_to_group, u_creator.name as created_by_name, t.resolution_note FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' AND (t.completed_by_user_id = ?) ORDER BY t.completed_at DESC" );
 $stmt_user_tasks->bind_param("i", $current_user_id);
 $stmt_user_tasks->execute();
 $user_tasks_result = $stmt_user_tasks->get_result();
 if ($user_tasks_result) {
     while($row = $user_tasks_result->fetch_assoc()){
-        // Añadir lógica de prioridad final
-        $original_priority = $row['priority'];
-        $final_priority = $original_priority;
+        $original_priority = $row['priority']; $final_priority = $original_priority;
          if (!empty($row['end_datetime']) && !empty($row['completed_at'])) {
-             try {
-                $end_time = new DateTime($row['end_datetime']);
-                $completed_time = new DateTime($row['completed_at']);
-                if ($completed_time > $end_time) { $final_priority = 'Alta'; }
-             } catch (Exception $e) { /* Manejar error */ }
+             try { $end_time = new DateTime($row['end_datetime']); $completed_time = new DateTime($row['completed_at']); if ($completed_time > $end_time) { $final_priority = 'Alta'; } } catch (Exception $e) {}
         }
         $row['final_priority'] = $final_priority;
         $user_completed_tasks[] = $row;
     }
-} else {
-     error_log("Error en consulta de historial de usuario: " . $conn->error);
-}
+} else { error_log("Error User completed tasks: " . $conn->error); }
 $stmt_user_tasks->close();
 
+// Recordatorios
 $user_reminders = [];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
 
-// Recaudos del Día (Panel General)
-$today_collections = [];
-$total_recaudado_hoy = 0;
-// *** MODIFICADO: Usar MAX(id) para obtener el último conteo por check_in_id en el día actual ***
-$today_collections_result = $conn->query("
-    SELECT
-        oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name,
-        oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
-        oc.created_at,
-        ci.invoice_number,
-        f.name as fund_name,
-        u_dig.name as digitador_name,
-        CASE
-            WHEN ci.digitador_status = 'Cerrado' THEN 'Cerrado'
-            WHEN ci.digitador_status = 'Conforme' THEN 'Conforme'
-            WHEN ci.status = 'Rechazado' THEN 'Rechazado'
-            WHEN ci.status = 'Discrepancia' THEN 'En Revisión (Digitador)'
-            WHEN ci.status = 'Procesado' THEN 'En Revisión (Digitador)'
-            WHEN ci.status = 'Pendiente' THEN 'Pendiente (Operador)'
-            ELSE ci.status
-        END AS final_status
-    FROM operator_counts oc
-    INNER JOIN (
-         SELECT check_in_id, MAX(id) as max_oc_id
-         FROM operator_counts
-         WHERE DATE(created_at) = CURDATE()
-         GROUP BY check_in_id
-    ) latest_oc ON oc.id = latest_oc.max_oc_id
-    JOIN check_ins ci ON oc.check_in_id = ci.id
-    JOIN clients c ON ci.client_id = c.id
-    JOIN users u_op ON oc.operator_id = u_op.id
-    LEFT JOIN funds f ON ci.fund_id = f.id
-    LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id
-    ORDER BY oc.created_at DESC
-");
-if ($today_collections_result) {
-    while ($row = $today_collections_result->fetch_assoc()) {
-        $today_collections[] = $row;
-        $total_recaudado_hoy += $row['total_counted'];
-    }
-} else {
-     error_log("Error en consulta de recaudos del día: " . $conn->error);
-}
+// Recaudos del Día
+$today_collections = []; $total_recaudado_hoy = 0;
+$today_collections_result = $conn->query(" SELECT oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name, oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins, oc.created_at, ci.invoice_number, f.name as fund_name, u_dig.name as digitador_name, CASE WHEN ci.digitador_status = 'Cerrado' THEN 'Cerrado' WHEN ci.digitador_status = 'Conforme' THEN 'Conforme' WHEN ci.status = 'Rechazado' THEN 'Rechazado' WHEN ci.status = 'Discrepancia' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Procesado' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Pendiente' THEN 'Pendiente (Operador)' ELSE ci.status END AS final_status FROM operator_counts oc INNER JOIN ( SELECT check_in_id, MAX(id) as max_oc_id FROM operator_counts WHERE DATE(created_at) = CURDATE() GROUP BY check_in_id ) latest_oc ON oc.id = latest_oc.max_oc_id JOIN check_ins ci ON oc.check_in_id = ci.id JOIN clients c ON ci.client_id = c.id JOIN users u_op ON oc.operator_id = u_op.id LEFT JOIN funds f ON ci.fund_id = f.id LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id ORDER BY oc.created_at DESC ");
+if ($today_collections_result) { while ($row = $today_collections_result->fetch_assoc()) { $today_collections[] = $row; $total_recaudado_hoy += $row['total_counted']; } }
+else { error_log("Error Today collections: " . $conn->error); }
 
-// Cierres Pendientes (Panel General)
-$cierres_pendientes_result = $conn->query("
-    SELECT COUNT(DISTINCT ci.id) as total
-    FROM check_ins ci
-    WHERE ci.status IN ('Procesado', 'Discrepancia')
-    AND ci.digitador_status IS NULL
-");
+// Cierres Pendientes
+$cierres_pendientes_result = $conn->query("SELECT COUNT(DISTINCT ci.id) as total FROM check_ins ci WHERE ci.status IN ('Procesado', 'Discrepancia') AND ci.digitador_status IS NULL");
 $cierres_pendientes_count = $cierres_pendientes_result->fetch_assoc()['total'] ?? 0;
 
+// Clientes y Rutas
 $all_clients = [];
 $clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
 if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
@@ -370,7 +209,7 @@ $all_routes = [];
 $routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
 if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
-// Check-ins (Para Panel Checkinero y Operador)
+// Check-ins (Lógica Restaurada)
 $initial_checkins = [];
 $checkins_result = $conn->query("
     SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.id as fund_id, f.name as fund_name,
@@ -381,99 +220,70 @@ $checkins_result = $conn->query("
     JOIN routes r ON ci.route_id = r.id
     JOIN users u ON ci.checkinero_id = u.id
     LEFT JOIN funds f ON ci.fund_id = f.id
-    WHERE ci.status IN ('Pendiente', 'Rechazado') OR ci.digitador_status IS NULL -- Mostrar pendientes, rechazados y los que aún no cierra el digitador
+    WHERE ci.status IN ('Pendiente', 'Rechazado') -- <-- LÓGICA RESTAURADA
     ORDER BY ci.correction_count DESC, ci.created_at DESC
 ");
+if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
+else { error_log("Error initial checkins: " . $conn->error); }
 
-if ($checkins_result) {
-     while ($row = $checkins_result->fetch_assoc()) {
-         $initial_checkins[] = $row;
-     }
-} else {
-     error_log("Error cargando checkins iniciales: " . $conn->error);
-}
-
-
-// Historial Operador (Panel Operador y Digitador)
+// Historial Operador
 $operator_history = [];
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
-
-    $operator_id_filter = "";
-    if ($_SESSION['user_role'] === 'Operador') {
-        $operator_id_filter = "WHERE op.operator_id = " . intval($_SESSION['user_id']); // Usar intval para seguridad
-    }
-
-    $history_query = "
-        SELECT
-            op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
-            ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name
-        FROM operator_counts op
-        INNER JOIN (
-             -- Subconsulta para obtener solo el último conteo por check_in_id
-            SELECT check_in_id, MAX(id) as max_id
-            FROM operator_counts
-            GROUP BY check_in_id
-        ) as latest_oc ON op.id = latest_oc.max_id
-        JOIN check_ins ci ON op.check_in_id = ci.id
-        JOIN clients c ON ci.client_id = c.id
-        JOIN users u ON op.operator_id = u.id
-        {$operator_id_filter} -- Aplicar filtro si es operador
-        ORDER BY op.created_at DESC
-    ";
-
+    $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . intval($_SESSION['user_id']) : "";
+    $history_query = " SELECT op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date, ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name FROM operator_counts op INNER JOIN ( SELECT check_in_id, MAX(id) as max_id FROM operator_counts GROUP BY check_in_id ) as latest_oc ON op.id = latest_oc.max_id JOIN check_ins ci ON op.check_in_id = ci.id JOIN clients c ON ci.client_id = c.id JOIN users u ON op.operator_id = u.id {$operator_id_filter} ORDER BY op.created_at DESC ";
     $history_result = $conn->query($history_query);
-    if ($history_result) {
-        while($row = $history_result->fetch_assoc()) {
-            $operator_history[] = $row;
-        }
-    } else {
-         error_log("Error cargando historial de operador: " . $conn->error);
-    }
+    if ($history_result) { while($row = $history_result->fetch_assoc()) { $operator_history[] = $row; } }
+    else { error_log("Error operator history: " . $conn->error); }
 }
 
-// Historial Planillas Cerradas (Panel Digitador)
+// Historial Digitador
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
-
-    // Mostrar Conforme, Cerrado y también los Rechazados por el digitador
     $digitador_filter = "WHERE ci.digitador_status IN ('Conforme', 'Cerrado', 'Rechazado')";
+    // Si quieres la lógica antigua (solo ver lo propio), descomenta la siguiente línea:
+    // if ($current_user_role === 'Digitador') $digitador_filter .= " AND ci.closed_by_digitador_id = " . $current_user_id;
 
-    $closed_history_result = $conn->query("
-        SELECT
-            ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name,
-            oc.total_counted, oc.discrepancy,
-            oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
-            u_op.name as operator_name,
-            ci.closed_by_digitador_at, u_digitador.name as digitador_name,
-            ci.digitador_status, ci.digitador_observations, f.name as fund_name
-        FROM check_ins ci
-        LEFT JOIN clients c ON ci.client_id = c.id
-        LEFT JOIN users u_check ON ci.checkinero_id = u_check.id
-        LEFT JOIN (
-            SELECT a.*
-            FROM operator_counts a
-            INNER JOIN (
-                SELECT check_in_id, MAX(id) as max_id
-                FROM operator_counts
-                GROUP BY check_in_id
-            ) b ON a.id = b.max_id
-        ) oc ON ci.id = oc.check_in_id
-        LEFT JOIN users u_op ON oc.operator_id = u_op.id
-        LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id
-        LEFT JOIN funds f ON ci.fund_id = f.id
-        {$digitador_filter}
-        ORDER BY ci.closed_by_digitador_at DESC, ci.id DESC" // Ordenar por fecha de cierre y luego ID
-    );
-    if($closed_history_result){
-         while($row = $closed_history_result->fetch_assoc()){
-              $digitador_closed_history[] = $row;
-         }
-    } else {
-         error_log("Error cargando historial cerrado de digitador: " . $conn->error);
-    }
+    $closed_history_result = $conn->query(" SELECT ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name, oc.total_counted, oc.discrepancy, oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins, u_op.name as operator_name, ci.closed_by_digitador_at, u_digitador.name as digitador_name, ci.digitador_status, ci.digitador_observations, f.name as fund_name FROM check_ins ci LEFT JOIN clients c ON ci.client_id = c.id LEFT JOIN users u_check ON ci.checkinero_id = u_check.id LEFT JOIN ( SELECT a.* FROM operator_counts a INNER JOIN ( SELECT check_in_id, MAX(id) as max_id FROM operator_counts GROUP BY check_in_id ) b ON a.id = b.max_id ) oc ON ci.id = oc.check_in_id LEFT JOIN users u_op ON oc.operator_id = u_op.id LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id LEFT JOIN funds f ON ci.fund_id = f.id {$digitador_filter} ORDER BY ci.closed_by_digitador_at DESC, ci.id DESC" );
+    if($closed_history_result){ while($row = $closed_history_result->fetch_assoc()){ $digitador_closed_history[] = $row; } }
+    else { error_log("Error digitador history: " . $conn->error); }
 }
 
-$conn->close(); // Cerrar conexión al final de todas las consultas
+
+// 1) Clases de la pastilla por rol (lo que pones en $role_color_class)
+
+
+// 2) Clases del marco/lineas por rol (deben coincidir en color)
+$ROLE_PILL = [
+  'Admin'       => 'bg-rose-100 text-rose-700',
+  'Digitador'   => 'bg-blue-100 text-blue-700',
+  'Digitadora'  => 'bg-blue-100 text-blue-700',
+  'Supervisor'  => 'bg-amber-100 text-amber-800',
+  'Supervisora' => 'bg-amber-100 text-amber-800',
+  'Operador'    => 'bg-yellow-100 text-yellow-800',
+  'Operadora'   => 'bg-yellow-100 text-yellow-800',
+  'Check-in'    => 'bg-green-100 text-green-700',
+  'Checkin'     => 'bg-green-100 text-green-700',
+];
+
+$ROLE_FRAME = [
+  'Admin'       => 'border-rose-400 ring-rose-200 bg-rose-50',
+  'Digitador'   => 'border-blue-400 ring-blue-200 bg-blue-50',
+  'Digitadora'  => 'border-blue-400 ring-blue-200 bg-blue-50',
+  'Supervisor'  => 'border-amber-400 ring-amber-200 bg-amber-50',
+  'Supervisora' => 'border-amber-400 ring-amber-200 bg-amber-50',
+  'Operador'    => 'border-yellow-400 ring-yellow-200 bg-yellow-50',
+  'Operadora'   => 'border-yellow-400 ring-yellow-200 bg-yellow-50',
+  'Check-in'    => 'border-green-400 ring-green-200 bg-green-50',
+  'Checkin'     => 'border-green-400 ring-green-200 bg-green-50',
+];
+
+
+$role = $displayRole ?? 'Usuario';
+$role_color_class = $ROLE_PILL[$role] ?? 'bg-gray-100 text-gray-700';
+$frame_class      = $ROLE_FRAME[$role] ?? 'border-gray-300 ring-gray-200 bg-white';
+
+
+$conn->close(); // Cerrar DB connection
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -489,7 +299,7 @@ $conn->close(); // Cerrar conexión al final de todas las consultas
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
 html {
-  font-size: 10px; /* Prueba con 10px, ajusta si es necesario (original es 16px) */
+  font-size: 12px; /* Prueba con 10px, ajusta si es necesario (original es 16px) */
 }
 
 body {
@@ -583,9 +393,9 @@ body {
         /* --- FIN DE ESTILOS MEJORADOS --- */
 
         /* === INICIO DE NUEVOS ESTILOS FUSIONADOS === */
-        .sortable { cursor: pointer; } .sortable span { color: #9ca3af; }
-        /* Header Panel Button Styles */
-        /* Header Panel Button Styles - Modificado para apariencia de caja */
+        .sortable { cursor: pointer; } .sortable span { color: #9ca3af; }
+        /* Header Panel Button Styles */
+        /* Header Panel Button Styles - Modificado para apariencia de caja */
 .header-panel-button {
   display: inline-block;
   padding: 0.3rem 0.8rem;
@@ -624,12 +434,17 @@ body {
 
 /* --- Fin de estilos de Header Panel Button --- */
 /* Alert Pop-up Styles */
-        #alert-popup-overlay { transition: opacity 0.3s ease; }
-        #alert-popup { transition: transform 0.3s ease, opacity 0.3s ease; }
-        /* Spinner for AJAX loading */
-        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        #alert-popup-overlay { transition: opacity 0.3s ease; }
+        #alert-popup { transition: transform 0.3s ease, opacity 0.3s ease; }
+        /* Spinner for AJAX loading */
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
         /* === FIN DE NUEVOS ESTILOS FUSIONADOS === */
+
+        /* Estilos de Notificación del Archivo 2 (para compatibilidad con JS) */
+        .notification-panel { position: absolute; right: 0; margin-top: 0.5rem; width: 20rem; background-color: white; border-radius: 0.5rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05); padding: 1rem; z-index: 50; }
+        .notification-list { max-height: 16rem; overflow-y: auto; }
+        .badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -658,77 +473,113 @@ body {
         </div>
     </div>
 
-       <div id="alert-popup-overlay" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 hidden z-[100]">
-        <div id="alert-popup" class="bg-white rounded-lg shadow-xl w-full max-w-lg transform scale-95 opacity-0">
-             <div id="alert-popup-header" class="p-4 border-b rounded-t-lg bg-red-100 border-red-200">
-                <div class="flex justify-between items-center">
-                    <h3 id="alert-popup-title" class="text-xl font-bold text-red-800">¡Nueva Alerta Prioritaria!</h3>
-                    <button onclick="closeAlertPopup()" class="text-red-400 hover:text-red-600 text-3xl leading-none">&times;</button>
-                </div>
-             </div>
-             <div class="p-6 space-y-3">
-                <p id="alert-popup-description" class="text-gray-700"></p>
-                <p class="text-sm text-gray-500">Por favor, revisa el panel de alertas para más detalles y acciones.</p>
-             </div>
-             <div class="p-4 bg-gray-50 border-t rounded-b-lg flex justify-end">
-                <button onclick="closeAlertPopup()" class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700">Entendido</button>
-             </div>
-        </div>
-    </div>
+    <div id="alert-popup-overlay" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 hidden z-[100]">
+        <div id="alert-popup" class="bg-white rounded-lg shadow-xl w-full max-w-lg transform scale-95 opacity-0">
+             <div id="alert-popup-header" class="p-4 border-b rounded-t-lg bg-red-100 border-red-200">
+                <div class="flex justify-between items-center">
+                    <h3 id="alert-popup-title" class="text-xl font-bold text-red-800">¡Nueva Alerta Prioritaria!</h3>
+                    <button onclick="closeAlertPopup()" class="text-red-400 hover:text-red-600 text-3xl leading-none">&times;</button>
+                </div>
+             </div>
+             <div class="p-6 space-y-3">
+                <p id="alert-popup-description" class="text-gray-700"></p>
+                <p class="text-sm text-gray-500">Por favor, revisa el panel de alertas para más detalles y acciones.</p>
+             </div>
+             <div class="p-4 bg-gray-50 border-t rounded-b-lg flex justify-end">
+                <button onclick="closeAlertPopup()" class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700">Entendido</button>
+             </div>
+        </div>
+    </div>
     <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-full mx-auto">
         <header class="flex flex-col sm:flex-row justify-between sm:items-start mb-2 border-b pb-1">
     <div>
         <h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1>
         <p class="text-sm text-gray-500 mb-2">Sistema Integrado de Operaciones y Alertas</p>
-        <div class="flex items-center space-x-2 mt-2">
-            <span class="text-sm font-semibold text-gray-700">Hola</span>
-            <span class="text-xs font-bold px-2.5 py-0.5 rounded-full <?php echo $role_color_class; ?>">
-                <?php echo htmlspecialchars($displayRole); ?>
-            </span>
-            <span class="text-sm font-bold text-gray-900">: <?php echo htmlspecialchars($_SESSION['user_name']); ?></span>
-        </div>
+
+
+        <div class="inline-flex items-center gap-2 mt-2 px-4 py-2 rounded-xl border ring-1 shadow-sm <?= $frame_class ?>">
+  <span class="font-semibold text-gray-700">Hola</span>
+
+  <span class="font-bold px-3 py-1 rounded-full <?= $role_color_class ?>">
+    <?= htmlspecialchars($displayRole) ?>
+  </span>
+
+  <span class="font-bold text-gray-900">
+    : <?= htmlspecialchars($_SESSION['user_name']) ?>
+  </span>
+</div>
+
+
+
     </div>
 
     <div class="mt-4 sm:mt-0 flex flex-col sm:items-end space-y-2">
         <div class="flex items-center space-x-4">
             <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
             <div class="relative">
-                <button id="task-notification-button" onclick="toggleTaskNotifications()" class="relative text-gray-500 hover:text-gray-700">
+                <button id="task-notification-button" onclick="togglePanel('task-notifications-panel')" class="relative text-gray-500 hover:text-gray-700">
                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
                     <?php if ($high_priority_badge_count > 0): ?>
-                    <span id="task-notification-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-red-500 text-white text-xs font-bold"><?php echo $high_priority_badge_count; ?></span>
+                    <span id="task-notification-badge" class="absolute -top-2 -right-2 badge-count bg-red-500"><?php echo $high_priority_badge_count; ?></span>
                     <?php endif; ?>
                 </button>
-                <div id="task-notifications-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                <div id="task-notifications-panel" class="notification-panel hidden">
                     <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
-                     <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto">
-                        <?php /* PHP loop for high priority items */ ?>
+                     <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+                        <?php if(empty($panel_high_priority_items)): ?>
+                             <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
+                        <?php else: foreach($panel_high_priority_items as $item): $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange'; ?>
+                         <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
+                             <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
+                             <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
+                             <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
+                             <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
+                         </div>
+                        <?php endforeach; endif; ?>
                      </div>
                 </div>
             </div>
             <div class="relative">
-                 <button id="medium-priority-button" onclick="toggleMediumPriority()" class="relative text-gray-500 hover:text-gray-700">
+                 <button id="medium-priority-button" onclick="togglePanel('medium-priority-panel')" class="relative text-gray-500 hover:text-gray-700">
                      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
                      <?php if ($medium_priority_badge_count > 0): ?>
-                     <span id="medium-priority-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-yellow-500 text-white text-xs font-bold"><?php echo $medium_priority_badge_count; ?></span>
+                     <span id="medium-priority-badge" class="absolute -top-2 -right-2 badge-count bg-yellow-500"><?php echo $medium_priority_badge_count; ?></span>
                      <?php endif; ?>
                  </button>
-                 <div id="medium-priority-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                 <div id="medium-priority-panel" class="notification-panel hidden">
                     <h4 class="font-bold text-gray-800 mb-2">Alertas de Prioridad Media</h4>
-                     <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto">
-                        <?php /* PHP loop for medium priority items */ ?>
+                     <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+                        <?php if(empty($panel_medium_priority_items)): ?>
+                             <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
+                        <?php else: foreach($panel_medium_priority_items as $item): ?>
+                             <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
+                                 <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
+                                 <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
+                                 <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
+                                 <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
+                             </div>
+                        <?php endforeach; endif; ?>
                      </div>
                  </div>
             </div>
             <div class="relative">
-                 <button id="reminders-button" onclick="toggleReminders()" class="relative text-gray-500 hover:text-gray-700">
+                 <button id="reminders-button" onclick="togglePanel('reminders-panel')" class="relative text-gray-500 hover:text-gray-700">
                      <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                     <span id="reminders-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-blue-500 text-white text-xs font-bold hidden"></span>
+                     <span id="reminders-badge" class="absolute -top-2 -right-2 badge-count bg-blue-500 hidden"></span>
                  </button>
-                 <div id="reminders-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+                 <div id="reminders-panel" class="notification-panel hidden">
                     <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
-                     <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto">
-                        <?php /* PHP loop for reminders */ ?>
+                     <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+                        <?php if(empty($user_reminders)): ?>
+                             <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
+                        <?php else: foreach($user_reminders as $reminder): ?>
+                             <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
+                                 <div class="flex justify-between items-start">
+                                     <div><p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p><p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p></div>
+                                     <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
+                                 </div>
+                             </div>
+                        <?php endforeach; endif; ?>
                      </div>
                  </div>
             </div>
@@ -747,20 +598,20 @@ body {
     </div>
 </header>
         <nav class="mb-4">
-            <div class="border-b border-gray-200">
-                <div class="-mb-px flex space-x-4 overflow-x-auto">
-                    <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
-                    <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
-                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                        <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
-                        <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
-                        <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
-                        <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
-                        <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </nav>
+            <div class="border-b border-gray-200">
+                <div class="-mb-px flex space-x-4 overflow-x-auto">
+                    <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
+                    <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
+                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+                        <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
+                        <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
+                        <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
+                        <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
+                        <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
+                    <?php endif; ?>
+                </div>
+            </div>
+        </nav>
         <main>
             <div id="content-operaciones">
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
@@ -779,11 +630,13 @@ body {
                             <?php
                                 $is_manual = $item['item_type'] === 'manual_task';
                                 $is_group_task = !empty($item['assigned_to_group']);
-                                $assigned_names = $item['assigned_names'] ?? 'N/A';
+                                $assigned_names = $item['assigned_names'] ?? null; // Usar null para chequear con empty()
 
-                                $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // ID principal de la tarea o alerta
-                                $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null'); // ID de la alerta original, si existe
-                                $task_id_specific = $item['task_id'] ?? $item['id']; // ID específico de esta instancia de tarea (puede ser igual a $task_id_to_use)
+                                // task_id es el ID de la *tarea* (o el MIN(t.id) para alertas).
+                                // user_task_id solo existe si esta tarea específica está asignada a ESTE usuario
+                                $task_id_to_use = $item['task_id'] ?? $item['id'];
+                                $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
+                                $form_id_prefix = $task_id_to_use; // ID único para el formulario
 
                                 $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
 
@@ -791,7 +644,7 @@ body {
                                 $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
                                 $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                             ?>
-                            <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_specific; ?>">
+                            <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                     <div class="flex justify-between items-start">
                                         <p class="font-semibold <?php echo $color['text']; ?> text-lg">
@@ -808,10 +661,10 @@ body {
                                     <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                         <?php if ($can_complete): ?>
-                                            <button onclick="toggleForm('complete-form-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
+                                            <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
                                         <?php endif; ?>
-                                        <button onclick="toggleForm('assign-form-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                        <button onclick="toggleForm('reminder-form-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                        <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                        <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                         <div class="flex-grow text-right text-sm">
                                             <?php if($is_group_task): ?>
                                                 <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
@@ -823,14 +676,14 @@ body {
                                         </div>
                                     </div>
                                 </div>
-                                <div id="complete-form-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
+                                <div id="complete-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
-                                    <textarea id="resolution-note-<?php echo $task_id_specific; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
-                                    <button type="button" onclick="completeTask(<?php echo $task_id_specific; ?>, '<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
+                                    <textarea id="resolution-note-<?php echo $form_id_prefix; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
+                                    <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
                                 </div>
-                                <div id="assign-form-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
+                                <div id="assign-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                    <select id="assign-user-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
+                                    <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
                                         <optgroup label="Grupos">
                                             <option value="group-todos">Todos los Usuarios</option>
                                             <option value="group-Operador">Todos los Operadores</option>
@@ -843,17 +696,17 @@ body {
                                             <?php endforeach; ?>
                                         </optgroup>
                                     </select>
-                                    <textarea id="task-instruction-<?php echo $task_id_specific; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                    <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, '<?php echo $task_id_specific; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                    <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                                    <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                 </div>
-                                <div id="reminder-form-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
+                                <div id="reminder-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                    <select id="reminder-user-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
+                                    <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
                                          <option value="">Seleccione usuario...</option> <?php foreach ($all_users as $user): ?>
                                             <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                         <?php endforeach; ?>
                                     </select>
-                                    <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, '<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                    <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
@@ -974,11 +827,11 @@ body {
                                     <?php
                                         $is_manual = $item['item_type'] === 'manual_task';
                                         $is_group_task = !empty($item['assigned_to_group']);
-                                        $assigned_names = $item['assigned_names'] ?? 'N/A';
+                                        $assigned_names = $item['assigned_names'] ?? null;
 
-                                        $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // ID principal de la tarea o alerta
-                                        $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null'); // ID de la alerta original, si existe
-                                        $task_id_specific = $item['task_id'] ?? $item['id']; // ID específico de esta instancia de tarea
+                                        $task_id_to_use = $item['task_id'] ?? $item['id'];
+                                        $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
+                                        $form_id_prefix = "np-" . $task_id_to_use; // Prefijo "np" para no prioritarios
 
                                         $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
 
@@ -986,7 +839,7 @@ body {
                                         $color_map = ['Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']];
                                         $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                                     ?>
-                                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_specific; ?>">
+                                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
                                         <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
                                             <div class="flex justify-between items-start">
                                                 <p class="font-semibold <?php echo $color['text']; ?> text-md">
@@ -1003,10 +856,10 @@ body {
                                             <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                                 <?php if ($can_complete): ?>
-                                                    <button onclick="toggleForm('complete-form-np-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
+                                                    <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
                                                 <?php endif; ?>
-                                                <button onclick="toggleForm('assign-form-np-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                                <button onclick="toggleForm('reminder-form-np-<?php echo $task_id_specific; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                                <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                                <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                                 <div class="flex-grow text-right text-sm">
                                                      <?php if($is_group_task): ?>
                                                         <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
@@ -1018,14 +871,14 @@ body {
                                                 </div>
                                             </div>
                                         </div>
-                                         <div id="complete-form-np-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
+                                         <div id="complete-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
-                                            <textarea id="resolution-note-np-<?php echo $task_id_specific; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
-                                            <button type="button" onclick="completeTask(<?php echo $task_id_specific; ?>, 'np-<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
+                                            <textarea id="resolution-note-<?php echo $form_id_prefix; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
+                                            <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
                                         </div>
-                                        <div id="assign-form-np-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
+                                        <div id="assign-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                            <select id="assign-user-np-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
+                                            <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
                                                 <optgroup label="Grupos">
                                                     <option value="group-todos">Todos los Usuarios</option>
                                                     <option value="group-Operador">Todos los Operadores</option>
@@ -1038,17 +891,17 @@ body {
                                                     <?php endforeach; ?>
                                                 </optgroup>
                                             </select>
-                                            <textarea id="task-instruction-np-<?php echo $task_id_specific; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                            <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, 'np-<?php echo $task_id_specific; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                            <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                                            <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                         </div>
-                                        <div id="reminder-form-np-<?php echo $task_id_specific; ?>" class="task-form bg-gray-50 px-4">
+                                        <div id="reminder-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                            <select id="reminder-user-np-<?php echo $task_id_specific; ?>" class="w-full p-2 text-sm border rounded-md">
+                                            <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
                                                  <option value="">Seleccione usuario...</option> <?php foreach ($all_users as $user): ?>
                                                     <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
                                                 <?php endforeach; ?>
                                             </select>
-                                            <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_specific; ?>, 'np-<?php echo $task_id_specific; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                            <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                         </div>
                                     </div>
                                 <?php endforeach; endif; ?>
@@ -1246,8 +1099,9 @@ body {
                 </div>
 
                  <div class="mb-8 flex space-x-2">
-                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
+
                     <button id="btn-supervision" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Supervisión de Conteos</button>
+                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
                     <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
                     <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
                 </div>
@@ -1473,67 +1327,85 @@ body {
                     </div>
                 </div>
             </div>
-            
+
             <div id="content-manage-clients" class="hidden">
-                <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
-            </div>
-            <div id="content-manage-routes" class="hidden">
-                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
-            </div>
-            <div id="content-manage-funds" class="hidden">
-                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
-            </div>
+                <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
+            </div>
+            <div id="content-manage-routes" class="hidden">
+                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
+            </div>
+            <div id="content-manage-funds" class="hidden">
+                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
+            </div>
             <?php endif; ?>
         </main>
     </div>
 
     <script>
     // --- Global Variables ---
-    const allUsers = <?php echo json_encode($all_users); ?>;
-    const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
-    const currentUserId = <?php echo $_SESSION['user_id']; ?>;
-    const currentUserRole = '<?php echo $_SESSION['user_role']; ?>';
-    const apiUrlBase = 'api';
-    const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
-    const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
-    const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
-    const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
-    const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
-    let selectedFundForClosure = null;
-    let alertPollingInterval = null;
-    let lastCheckedAlertTime = Math.floor(Date.now() / 1000);
-    let currentFilteredTrazabilidadData = [];
-    let loadedContent = {}; // Cache for AJAX loaded content
+    const allUsers = <?php echo json_encode($all_users); ?>;
+    const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
+    const currentUserId = <?php echo $current_user_id; ?>;
+    const currentUserRole = '<?php echo $current_user_role; ?>';
+    const apiUrlBase = 'api';
+    const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
+    const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
+    const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
+    const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
+    const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
+    let selectedFundForClosure = null;
+    let alertPollingInterval = null;
+    let checkinPollingInterval = null; // Separate interval for checkins
+    let lastCheckedAlertTime = Math.floor(Date.now() / 1000);
+    let currentCheckinData = JSON.parse(JSON.stringify(initialCheckins)); // Store initial checkins
+    let currentFilteredTrazabilidadData = [];
+    let loadedContent = {}; // Cache for AJAX
 
-    // --- UI Element References ---
-    const remindersPanel = document.getElementById('reminders-panel');
-    const taskNotificationsPanel = document.getElementById('task-notifications-panel');
-    const mediumPriorityPanel = document.getElementById('medium-priority-panel');
-    const modalOverlay = document.getElementById('user-modal-overlay');
-    const modalTitle = document.getElementById('modal-title');
-    const userForm = document.getElementById('user-form');
-    const userIdInput = document.getElementById('user-id');
-    const passwordHint = document.getElementById('password-hint');
-    const userPasswordInput = document.getElementById('user-password');
-    const alertPopupOverlay = document.getElementById('alert-popup-overlay');
-    const alertPopup = document.getElementById('alert-popup');
-    const alertPopupTitle = document.getElementById('alert-popup-title');
-    const alertPopupDescription = document.getElementById('alert-popup-description');
-    const alertPopupHeader = document.getElementById('alert-popup-header');
+    // --- UI Element References ---
+    const remindersPanel = document.getElementById('reminders-panel');
+    const taskNotificationsPanel = document.getElementById('task-notifications-panel');
+    const mediumPriorityPanel = document.getElementById('medium-priority-panel');
+    const modalOverlay = document.getElementById('user-modal-overlay');
+    const modalTitle = document.getElementById('modal-title');
+    const userForm = document.getElementById('user-form');
+    const userIdInput = document.getElementById('user-id');
+    const passwordHint = document.getElementById('password-hint');
+    const userPasswordInput = document.getElementById('user-password');
+    const alertPopupOverlay = document.getElementById('alert-popup-overlay');
+    const alertPopup = document.getElementById('alert-popup');
+    const alertPopupTitle = document.getElementById('alert-popup-title');
+    const alertPopupDescription = document.getElementById('alert-popup-description');
+    const alertPopupHeader = document.getElementById('alert-popup-header');
 
-    // --- UI Interaction Functions ---
-    function toggleReminders() { remindersPanel?.classList.toggle('hidden'); }
-    function toggleTaskNotifications() { taskNotificationsPanel?.classList.toggle('hidden'); }
-    function toggleMediumPriority() { mediumPriorityPanel?.classList.toggle('hidden'); }
-    function closeModal() { modalOverlay?.classList.add('hidden'); }
-    function closeAlertPopup() {
-        if (!alertPopupOverlay || !alertPopup) return;
-        alertPopup.classList.add('scale-95', 'opacity-0');
-        alertPopup.classList.remove('scale-100', 'opacity-100');
-        setTimeout(() => { alertPopupOverlay.classList.add('hidden'); }, 300);
-    }
-    function toggleForm(formId, button) {
-        const form = document.getElementById(formId);
+    // --- UI Interaction Functions ---
+     // Function to toggle notification panels
+    function togglePanel(panelId) {
+         const panel = document.getElementById(panelId);
+         if (!panel) return;
+
+         // Usar classList.toggle() es más simple, pero para asegurar que solo uno esté abierto:
+         const isHidden = panel.classList.contains('hidden');
+
+         // Close all panels
+         document.getElementById('reminders-panel')?.classList.add('hidden');
+         document.getElementById('task-notifications-panel')?.classList.add('hidden');
+         document.getElementById('medium-priority-panel')?.classList.add('hidden');
+
+         // Toggle the clicked one
+         if (isHidden) {
+             panel.classList.remove('hidden'); // Use classList
+         }
+         // Si ya estaba abierto (isHidden=false), el bucle anterior ya lo cerró.
+     }
+     function closeModal() { modalOverlay?.classList.add('hidden'); }
+     function closeAlertPopup() {
+        if (!alertPopupOverlay || !alertPopup) return;
+        alertPopup.classList.add('scale-95', 'opacity-0');
+        alertPopup.classList.remove('scale-100', 'opacity-100');
+        setTimeout(() => { alertPopupOverlay.classList.add('hidden'); }, 300);
+     }
+     function toggleForm(formId, button) {
+         const form = document.getElementById(formId);
          if (!form) {
               console.error(`Formulario con ID ${formId} no encontrado.`);
               return;
@@ -1545,45 +1417,45 @@ body {
             }
         });
         form.classList.toggle('active');
-    }
-    function toggleBreakdown(id) {
-        const row = document.getElementById(`breakdown-row-${id}`);
-        const content = document.getElementById(`breakdown-content-${id}`);
-        row?.classList.toggle('hidden');
-        if (content) setTimeout(() => content.classList.toggle('active'), 10);
-    }
+     }
+     function toggleBreakdown(id) {
+        const row = document.getElementById(`breakdown-row-${id}`);
+        const content = document.getElementById(`breakdown-content-${id}`);
+        row?.classList.toggle('hidden');
+        if (content) setTimeout(() => content.classList.toggle('active'), 10);
+     }
 
-    // --- Data Formatting ---
-    function formatCurrency(value) {
-        const numberValue = Number(value);
-        if (isNaN(numberValue)) return '$ 0';
-        return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(numberValue);
-    }
-    function formatDate(dateString) {
-        if (!dateString) return '';
-        try {
-            const date = new Date(dateString); if (isNaN(date)) return '';
-            return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
-        } catch (e) { return ''; }
-    }
-    function getPriorityClass(priority) {
-        if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800';
-        if (priority === 'Media') return 'bg-yellow-100 text-yellow-800';
-        return 'bg-gray-100 text-gray-800';
-    }
-    function getRoleDisplayNameJS(role, gender) {
-        if (gender === 'F') {
-            switch (role) {
-                case 'Digitador': return 'Digitadora';
-                case 'Operador': return 'Operadora';
-                case 'Checkinero': return 'Checkinera';
-                default: return role;
-            }
-        }
-        return role;
-    }
+    // --- Data Formatting ---
+    function formatCurrency(value) {
+       const numberValue = Number(value);
+       if (isNaN(numberValue)) return '$ 0';
+       return new Intl.NumberFormat('es-CO', { style: 'currency', currency: 'COP', minimumFractionDigits: 0 }).format(numberValue);
+    }
+    function formatDate(dateString) {
+       if (!dateString) return '';
+       try {
+           const date = new Date(dateString); if (isNaN(date)) return '';
+           return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
+       } catch (e) { return ''; }
+    }
+    function getPriorityClass(priority) {
+       if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800';
+       if (priority === 'Media') return 'bg-yellow-100 text-yellow-800';
+       return 'bg-gray-100 text-gray-800';
+    }
+    function getRoleDisplayNameJS(role, gender) {
+       if (gender === 'F') {
+           switch (role) {
+               case 'Digitador': return 'Digitadora';
+               case 'Operador': return 'Operadora';
+               case 'Checkinero': return 'Checkinera';
+               default: return role;
+           }
+       }
+       return role;
+    }
 
-    // --- API Call Functions ---
+    // --- API Call Functions ---
     async function deleteReminder(reminderId, button) {
         try {
             const response = await fetch(`${apiUrlBase}/alerts_api.php?reminder_id=${reminderId}`, { method: 'DELETE' });
@@ -1655,12 +1527,10 @@ body {
         };
         if (selectedValue.startsWith('group-')) {
              payload.assign_to_group = selectedValue.replace('group-', '');
-             // Para asignaciones de grupo, no enviamos 'assign_to' individual
-             delete payload.assign_to;
+             delete payload.assign_to; // Asegurar que no se envíe asignación individual
         } else {
              payload.assign_to = selectedValue;
-              // Para asignaciones individuales, no enviamos 'assign_to_group'
-             delete payload.assign_to_group;
+             delete payload.assign_to_group; // Asegurar que no se envíe asignación de grupo
         }
         await sendTaskRequest(payload);
     }
@@ -1680,7 +1550,6 @@ body {
     }
 
     async function sendTaskRequest(payload) {
-        // Validación movida a las funciones específicas (submitAssignment, setReminder)
         try {
             const response = await fetch(`${apiUrlBase}/alerts_api.php`, {
                 method: 'POST',
@@ -1700,8 +1569,8 @@ body {
             }
         } catch (error) { console.error('Error en sendTaskRequest:', error); alert(`Error de conexión: ${error.message}`); }
     }
-    
-    document.getElementById('manual-task-form').addEventListener('submit', async function(e) {
+
+    document.getElementById('manual-task-form')?.addEventListener('submit', async function(e) {
         e.preventDefault();
         const title = document.getElementById('manual-task-title').value;
         const instruction = document.getElementById('manual-task-desc').value;
@@ -1735,7 +1604,6 @@ body {
 
             if (result.success) {
                  closeModal();
-                 // Esperar un poco antes de recargar para que el modal se cierre visualmente
                  setTimeout(() => location.reload(), 100);
             } else {
                  alert('Error al guardar: ' + result.error);
@@ -1749,20 +1617,17 @@ body {
     async function deleteUser(id) {
         if (!confirm('¿Eliminar usuario? Esta acción también eliminará sus tareas y recordatorios asociados.')) return;
         try {
-            // Usar método DELETE y enviar ID en el cuerpo (más estándar REST)
             const response = await fetch(`${apiUrlBase}/users_api.php`, {
                  method: 'DELETE',
-                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, // Simular form data
+                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
                  body: `id=${id}`
             });
             const result = await response.json();
             if (result.success) {
-                 // Eliminar la fila de la tabla visualmente antes de recargar (opcional, mejora UX)
                  const row = document.getElementById(`user-row-${id}`);
                  if (row) row.remove();
-                 alert(result.message || 'Usuario eliminado.'); // Mostrar mensaje si existe
-                 // Opcionalmente recargar después de un pequeño delay
-                 setTimeout(() => location.reload(), 500); // Recargar para asegurar consistencia
+                 alert(result.message || 'Usuario eliminado.');
+                 setTimeout(() => location.reload(), 500);
             } else {
                  alert('Error al eliminar: ' + result.error);
             }
@@ -1771,7 +1636,7 @@ body {
              alert(`Error de conexión al eliminar: ${error.message}`);
         }
     }
-    async function handleCheckinSubmit(event) {
+    async function handleCheckinSubmit(event) {
         event.preventDefault();
         const checkInIdField = document.getElementById('check_in_id_field');
         const payload = {
@@ -1796,7 +1661,7 @@ body {
             const result = await response.json();
             if (result.success) {
                 alert(result.message);
-                location.reload();
+                location.reload(); // Recargar para obtener la lista más reciente (incluyendo el polling)
             } else {
                 alert('Error: ' + result.error);
             }
@@ -1805,7 +1670,7 @@ body {
             alert('Error de conexión al procesar.');
         }
     }
-    async function handleConsultation(event) {
+    async function handleConsultation(event) {
         event.preventDefault();
         const invoiceInput = document.getElementById('consult-invoice');
         const operatorPanel = document.getElementById('operator-panel');
@@ -1827,7 +1692,7 @@ body {
             } else { alert('Error: ' + result.error); operatorPanel.classList.add('hidden'); }
         } catch (error) { console.error('Error en la consulta:', error); alert('Error de conexión.'); }
     }
-    async function handleDenominationSave(event) {
+    async function handleDenominationSave(event) {
         event.preventDefault();
         const payload = {
             check_in_id: document.getElementById('op-checkin-id').value,
@@ -1851,7 +1716,7 @@ body {
             else { alert('Error al guardar: ' + result.error); }
         } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
     }
-    async function submitDigitadorReview(checkInId, status) {
+    async function submitDigitadorReview(checkInId, status) {
         const observations = document.getElementById('digitador-observations').value;
         if (!observations.trim()) {
             alert('Las observaciones finales son requeridas para aceptar o rechazar.');
@@ -1872,7 +1737,6 @@ body {
             if (response.ok && result.success) {
                 alert(result.message);
             } else {
-                 // Mejor manejo de errores: muestra el mensaje de la API si existe
                  alert('Error: ' + (result.error || `Error ${response.status} - ${response.statusText}`));
             }
         } catch (error) {
@@ -1882,7 +1746,7 @@ body {
             location.reload(); // Recargar siempre para reflejar cambios
         }
     }
-    async function deleteCheckIn(checkInId) {
+    async function deleteCheckIn(checkInId) {
         if (!confirm('¿Está seguro de que desea eliminar permanentemente esta planilla y todos sus registros asociados (conteo, alertas, etc.)? Esta acción no se puede deshacer.')) {
             return;
         }
@@ -1904,7 +1768,7 @@ body {
             alert('Error de conexión. No se pudo completar la solicitud.');
         }
     }
-    async function deleteTask(taskId) {
+    async function deleteTask(taskId) {
         if (!confirm('¿Está seguro de que desea eliminar este registro de tarea del historial de trazabilidad?')) {
             return;
         }
@@ -1926,7 +1790,7 @@ body {
             alert('Error de conexión.');
         }
     }
-    async function closeFund() {
+    async function closeFund() {
         if (!selectedFundForClosure) {
             alert('Por favor, seleccione un fondo primero.');
             return;
@@ -1951,7 +1815,7 @@ body {
             alert('Error de conexión.');
         }
     }
-    async function loadFundsForCierre() {
+    async function loadFundsForCierre() {
         const container = document.getElementById('funds-list-container');
         if (!container) return;
         container.innerHTML = '<p class="text-center text-sm text-gray-500">Cargando fondos...</p>';
@@ -1978,7 +1842,7 @@ body {
             container.innerHTML = '<p class="text-center text-red-500 text-sm">Error al cargar fondos.</p>';
         }
     }
-    async function loadServicesForFund(fundId, element) {
+    async function loadServicesForFund(fundId, element) {
         selectedFundForClosure = fundId;
         document.querySelectorAll('#funds-list-container > div').forEach(el => el.classList.remove('bg-blue-100', 'border-blue-400'));
         element.classList.add('bg-blue-100', 'border-blue-400');
@@ -2018,7 +1882,7 @@ body {
             container.innerHTML = '<p class="text-center text-red-500 text-sm">Error al cargar servicios.</p>';
         }
     }
-    async function loadInformes() {
+    async function loadInformes() {
         const tbody = document.getElementById('informes-table-body');
         if (!tbody) return;
         tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-sm text-gray-500">Cargando informes...</td></tr>';
@@ -2048,7 +1912,7 @@ body {
             tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-red-500 text-sm">Error al cargar informes.</td></tr>';
         }
     }
-    async function generatePDF(fundId, fundName, clientName) {
+    async function generatePDF(fundId, fundName, clientName) {
         if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
             alert('Error: La librería jsPDF no se cargó.');
             return;
@@ -2140,8 +2004,8 @@ body {
     }
 
 
-    // --- Table Population & UI Update Functions ---
-    function updateReminderCount() {
+    // --- Table Population & UI Update Functions ---
+    function updateReminderCount() {
         const list = document.getElementById('reminders-list');
         const badge = document.getElementById('reminders-badge');
         if (!list || !badge) return; // Salir si los elementos no existen
@@ -2155,7 +2019,7 @@ body {
             list.innerHTML = '<p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>';
         }
     }
-    function openModal(user = null) {
+    function openModal(user = null) {
         userForm.reset();
         if (user) {
             modalTitle.textContent = 'Editar Usuario';
@@ -2163,21 +2027,19 @@ body {
             document.getElementById('user-name').value = user.name;
             document.getElementById('user-email').value = user.email;
             document.getElementById('user-role').value = user.role;
-            // *** MODIFICADO: Rellenar género al editar ***
             document.getElementById('user-gender').value = user.gender || ''; // Usar '' si es null
             userPasswordInput.required = false;
             passwordHint.textContent = 'Dejar en blanco para no cambiar.';
         } else {
             modalTitle.textContent = 'Agregar Nuevo Usuario';
             userIdInput.value = '';
-             // *** MODIFICADO: Resetear género al agregar ***
             document.getElementById('user-gender').value = '';
             userPasswordInput.required = true;
             passwordHint.textContent = 'La contraseña es requerida.';
         }
         modalOverlay.classList.remove('hidden');
     }
-    function populateUserTable(users) {
+    function populateUserTable(users) {
         const tbody = document.getElementById('user-table-body');
         if (!tbody) {
             console.error("Elemento tbody 'user-table-body' no encontrado.");
@@ -2193,7 +2055,6 @@ body {
                   console.warn("Dato de usuario inválido:", user);
                   return; // Saltar este usuario si es inválido
              }
-            // Incluir gender en userJson, manejar null o undefined
             const safeUser = {
                 id: user.id,
                 name: user.name || '',
@@ -2202,9 +2063,7 @@ body {
                 gender: user.gender || ''
             };
             const userJson = JSON.stringify(safeUser).replace(/'/g, "&apos;");
-            // Obtener nombre a mostrar
             const displayRole = getRoleDisplayNameJS(safeUser.role, safeUser.gender);
-            // Agregamos la columna de Sexo a la tabla
             tbody.innerHTML += `
                 <tr id="user-row-${safeUser.id}">
                     <td class="px-6 py-4">${safeUser.name}</td>
@@ -2217,7 +2076,8 @@ body {
                 </tr>`;
         });
     }
-    function populateCheckinsTable(checkins) {
+    function populateCheckinsTable(checkins) {
+        // *** Esta función usa la LÓGICA RESTAURADA (solo 'Pendiente'/'Rechazado') ***
         const tbody = document.getElementById('checkins-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -2246,21 +2106,11 @@ body {
         `;
 
         checkins.forEach(ci => {
-            let correctionBadge = '';
-            if (ci.correction_count > 0) {
-                correctionBadge = `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full">Corrección ${ci.correction_count}</span>`;
-            }
-
-            let statusBadge = '';
-            switch(ci.status) {
-                case 'Rechazado': statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; break;
-                case 'Procesado': statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`; break;
-                case 'Discrepancia': statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`; break;
-                default: statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`; break;
-            }
+            let correctionBadge = (ci.correction_count > 0) ? `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full"> ${ci.correction_count}</span>` : '';
+            let statusBadge = (ci.status === 'Rechazado') ? `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>` : `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
 
             let actionButton = '';
-             // Permitir editar si está Rechazado O si es Admin y aún está Pendiente
+             // Botón Editar: Solo para 'Rechazado', o 'Pendiente' si es Admin
             if (ci.status === 'Rechazado' || (currentUserRole === 'Admin' && ci.status === 'Pendiente')) {
                 const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
                 actionButton = `<button onclick='editCheckIn(${checkinData})' class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Editar</button>`;
@@ -2268,7 +2118,7 @@ body {
 
             const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-2"><button onclick="deleteCheckIn(${ci.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
 
-            const row = `
+            tbody.innerHTML += `
                 <tr class="border-b hover:bg-gray-50">
                     <td class="p-2">${correctionBadge}</td>
                     <td class="p-2">${statusBadge}</td>
@@ -2282,17 +2132,16 @@ body {
                     <td class="p-2">${ci.fund_name || 'N/A'}</td>
                     <td class="p-2">${actionButton}</td>
                     ${adminDeleteButton}
-                </tr>
-            `;
-            tbody.innerHTML += row;
+                </tr>`;
         });
     }
-    function populateOperatorCheckinsTable(checkins) {
+    function populateOperatorCheckinsTable(checkins) {
+        // Esta función ahora filtra desde los checkins generales
         const tbody = document.getElementById('operator-checkins-table-body');
         if (!tbody) return;
 
         tbody.innerHTML = '';
-        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente');
+        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente'); // Solo pendientes para el operador
 
         if (pendingCheckins.length === 0) {
             tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
@@ -2326,12 +2175,12 @@ body {
             tbody.innerHTML += row;
         });
     }
-    function populateOperatorHistoryTable(historyData) {
+    function populateOperatorHistoryTable(historyData) {
         const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        const showOperatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador'); // Digitador también puede ver
+        const showOperatorColumn = (currentUserRole === 'Admin' || currentUserRole === 'Digitador');
         const colspan = showOperatorColumn ? (currentUserRole === 'Admin' ? 9 : 8) : 7;
 
         if (!historyData || historyData.length === 0) {
@@ -2356,7 +2205,7 @@ body {
                                </tr>`;
         });
     }
-    function populateUserHistoryTable(tasks) {
+    function populateUserHistoryTable(tasks) {
         const tbody = document.getElementById('historial-individual-tbody');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -2366,7 +2215,6 @@ body {
         }
 
         tasks.forEach(task => {
-             // Asegurar que completed_by no sea null o undefined antes de mostrarlo
              const completedBy = task.completed_by || 'N/A';
              const createdBy = task.created_by_name || 'Sistema';
 
@@ -2383,22 +2231,29 @@ body {
                                </tr>`;
         });
     }
-    function populateOperatorHistoryForDigitador(history) {
-        const pendingReview = history.filter(item => {
-            const checkin = initialCheckins.find(ci => ci.id == item.check_in_id);
-            // Mostrar si el checkin existe, está procesado/discrepancia Y AÚN no tiene estado de digitador
-            return checkin && (checkin.status === 'Procesado' || checkin.status === 'Discrepancia') && checkin.digitador_status === null;
-        });
-
-
+    function populateOperatorHistoryForDigitador(history) {
+        // Esta función ahora debe filtrar desde $operator_history
         const tbody = document.getElementById('operator-history-table-body-digitador');
         if (!tbody) return;
         tbody.innerHTML = '';
-        if (!pendingReview || pendingReview.length === 0) { tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`; return; }
+
+        // CORRECCIÓN: Usar $digitadorClosedHistory para saber qué *no* mostrar.
+        // Un item está 'pending review' si está en operatorHistory PERO no está en digitadorClosedHistory.
+        const closedCheckInIds = new Set(digitadorClosedHistory.map(dh => parseInt(dh.id))); // Asegurarse que sean enteros
+
+        const pendingReview = history.filter(item => {
+            // Si el check_in_id NO está en el set de cerrados, está pendiente de revisión.
+            // Asegurarse de comparar enteros
+            return !closedCheckInIds.has(parseInt(item.check_in_id));
+        });
+
+        if (!pendingReview || pendingReview.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`;
+            return;
+        }
 
         pendingReview.forEach(item => {
             const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            // Pasar el item completo a data-info
             const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
             tbody.innerHTML += `<tr class="border-b hover:bg-gray-50">
                                     <td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td>
@@ -2412,50 +2267,50 @@ body {
                                 </tr>`;
         });
     }
-    function populateDigitadorClosedHistory(history) {
-        const tbody = document.getElementById('digitador-closed-history-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        const showCerradaPor = (currentUserRole === 'Admin' || currentUserRole === 'Digitador');
-        const colspan = showCerradaPor ? 9 : 8; // Adjust colspan
-        if (!history || history.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay historial de planillas cerradas.</td></tr>`;
-            return;
-        }
-        history.forEach(item => {
-            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            let statusBadge = '';
-            if (item.digitador_status === 'Conforme') statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`;
-            else if (item.digitador_status === 'Cerrado') statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`;
-            else if (item.digitador_status === 'Rechazado') statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; // Added Rechazado
-            else statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`;
+    function populateDigitadorClosedHistory(history) {
+        const tbody = document.getElementById('digitador-closed-history-body');
+        if (!tbody) return;
+        tbody.innerHTML = '';
+        const showCerradaPor = (currentUserRole === 'Admin' || currentUserRole === 'Digitador');
+        const colspan = showCerradaPor ? 9 : 8; // Adjust colspan
+        if (!history || history.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay historial de planillas cerradas.</td></tr>`;
+            return;
+        }
+        history.forEach(item => {
+            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+            let statusBadge = '';
+            if (item.digitador_status === 'Conforme') statusBadge = `<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>`;
+            else if (item.digitador_status === 'Cerrado') statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Cerrado</span>`;
+            else if (item.digitador_status === 'Rechazado') statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; // Added Rechazado
+            else statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">${item.digitador_status || 'N/A'}</span>`;
 
-            let actionButtons = `<button onclick="toggleBreakdown('hist-${item.id}')" class="text-blue-600 text-xs font-semibold">Desglose</button>`;
-            if (currentUserRole === 'Admin') actionButtons += `<button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs ml-2">Eliminar</button>`;
+            let actionButtons = `<button onclick="toggleBreakdown('hist-${item.id}')" class="text-blue-600 text-xs font-semibold">Desglose</button>`;
+            if (currentUserRole === 'Admin') actionButtons += `<button onclick="deleteCheckIn(${item.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs ml-2">Eliminar</button>`;
 
-            const cerradaPorCol = showCerradaPor ? `<td class="p-3">${item.digitador_name || 'N/A'}</td>` : '';
+            const cerradaPorCol = showCerradaPor ? `<td class="p-3">${item.digitador_name || 'N/A'}</td>` : '';
 
             // Corregir el ID del desglose para que sea único
-            tbody.innerHTML += `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="p-3 font-mono">${item.invoice_number}</td>
-                    <td class="p-3">${item.fund_name || 'N/A'}</td>
-                    <td class="p-3 text-xs">${item.closed_by_digitador_at ? formatDate(item.closed_by_digitador_at) : 'N/A'}</td>
-                    <td class="p-3 text-right font-mono">${formatCurrency(item.total_counted)}</td>
-                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                    <td class="p-3">${statusBadge}</td>
-                    <td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>
-                    ${cerradaPorCol}
-                    <td class="p-3 text-center">${actionButtons}</td>
-                </tr>
-                 <tr class="details-row hidden" id="breakdown-row-hist-${item.id}">
-                    <td colspan="${colspan}" class="p-0"><div id="breakdown-content-hist-${item.id}" class="cash-breakdown bg-gray-50"><div class="p-4 grid grid-cols-3 sm:grid-cols-7 gap-x-8 gap-y-2 text-xs"><span><strong>$100.000:</strong> ${item.bills_100k||0}</span><span><strong>$50.000:</strong> ${item.bills_50k||0}</span><span><strong>$20.000:</strong> ${item.bills_20k||0}</span><span><strong>$10.000:</strong> ${item.bills_10k||0}</span><span><strong>$5.000:</strong> ${item.bills_5k||0}</span><span><strong>$2.000:</strong> ${item.bills_2k||0}</span><span class="font-bold">Monedas: ${formatCurrency(item.coins)}</span></div></div></td>
-                </tr>
-            `;
-        });
-    }
+            tbody.innerHTML += `
+                <tr class="border-b hover:bg-gray-50">
+                    <td class="p-3 font-mono">${item.invoice_number}</td>
+                    <td class="p-3">${item.fund_name || 'N/A'}</td>
+                    <td class="p-3 text-xs">${item.closed_by_digitador_at ? formatDate(item.closed_by_digitador_at) : 'N/A'}</td>
+                    <td class="p-3 text-right font-mono">${formatCurrency(item.total_counted)}</td>
+                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                    <td class="p-3">${statusBadge}</td>
+                    <td class="p-3 text-xs max-w-xs truncate" title="${item.digitador_observations || ''}">${item.digitador_observations || 'N/A'}</td>
+                    ${cerradaPorCol}
+                    <td class="p-3 text-center">${actionButtons}</td>
+                </tr>
+                 <tr class="details-row hidden" id="breakdown-row-hist-${item.id}">
+                    <td colspan="${colspan}" class="p-0"><div id="breakdown-content-hist-${item.id}" class="cash-breakdown bg-gray-50"><div class="p-4 grid grid-cols-3 sm:grid-cols-7 gap-x-8 gap-y-2 text-xs"><span><strong>$100.000:</strong> ${item.bills_100k||0}</span><span><strong>$50.000:</strong> ${item.bills_50k||0}</span><span><strong>$20.000:</strong> ${item.bills_20k||0}</span><span><strong>$10.000:</strong> ${item.bills_10k||0}</span><span><strong>$5.000:</strong> ${item.bills_5k||0}</span><span><strong>$2.000:</strong> ${item.bills_2k||0}</span><span class="font-bold">Monedas: ${formatCurrency(item.coins)}</span></div></div></td>
+                </tr>
+           `;
+        });
+    }
 
-    function flagForReview(checkbox) {
+    function flagForReview(checkbox) {
         const panel = document.getElementById('operator-panel-digitador');
         document.querySelectorAll('.review-checkbox').forEach(cb => { if (cb !== checkbox) cb.checked = false; });
         if (checkbox.checked) {
@@ -2466,9 +2321,9 @@ body {
             panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         } else { panel.classList.add('hidden'); }
     }
-    function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
-    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-    function populateTrazabilidadTable(tasks) {
+    function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
+    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+    function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
          if (!tbody) return;
         tbody.innerHTML = '';
@@ -2498,28 +2353,23 @@ body {
                                </tr>`;
         });
     }
-    function applyTrazabilidadFilters() {
+    function applyTrazabilidadFilters() {
          const startDate = document.getElementById('filter-start-date').value, endDate = document.getElementById('filter-end-date').value, user = document.getElementById('filter-user').value, checker = document.getElementById('filter-checker').value, priority = document.getElementById('filter-priority').value;
          currentFilteredTrazabilidadData = completedTasksData.filter(task => {
              let isValid = true;
              const taskStartDate = task.created_at ? task.created_at.split(' ')[0] : null;
              const taskEndDate = task.completed_at ? task.completed_at.split(' ')[0] : null;
 
-             // Filtrar por rango de fechas de COMPLETACIÓN si ambas fechas están definidas
              if (startDate && taskEndDate && taskEndDate < startDate) isValid = false;
              if (endDate && taskEndDate && taskEndDate > endDate) isValid = false;
-             // Si solo hay fecha de inicio, filtrar por tareas completadas DESDE esa fecha
              if (startDate && !endDate && taskEndDate && taskEndDate < startDate) isValid = false;
-              // Si solo hay fecha de fin, filtrar por tareas completadas HASTA esa fecha
              if (!startDate && endDate && taskEndDate && taskEndDate > endDate) isValid = false;
-
 
              if (user && task.assigned_to !== user) isValid = false;
              if (checker && task.completed_by !== checker) isValid = false;
              if (priority && task.final_priority !== priority) isValid = false;
              return isValid;
          });
-         // Resetear ordenación al aplicar filtros
           document.querySelectorAll('th.sortable').forEach(th => {
               delete th.dataset.sortDir;
               const iconSpan = th.querySelector('span');
@@ -2527,58 +2377,52 @@ body {
           });
          populateTrazabilidadTable(currentFilteredTrazabilidadData);
      }
-    function sortTableByDate(column) {
+    function sortTableByDate(column) {
         const header = document.querySelector(`th[data-column-name="${column}"]`);
          if (!header) return;
         const currentDirection = header.dataset.sortDir || 'none';
         const nextDirection = (currentDirection === 'desc') ? 'asc' : 'desc';
 
-        // Ordenar los datos que están actualmente filtrados (o todos si no hay filtro)
          const dataToSort = (currentFilteredTrazabilidadData.length > 0) ? [...currentFilteredTrazabilidadData] : [...completedTasksData];
 
-
         dataToSort.sort((a, b) => {
-            // Manejar fechas nulas o inválidas
             const timeA = a[column] ? new Date(a[column]).getTime() : 0;
             const timeB = b[column] ? new Date(b[column]).getTime() : 0;
 
             if (isNaN(timeA) && isNaN(timeB)) return 0;
-            if (isNaN(timeA)) return 1; // Poner nulos/inválidos al final
-            if (isNaN(timeB)) return -1; // Poner nulos/inválidos al final
+            if (isNaN(timeA)) return 1;
+            if (isNaN(timeB)) return -1;
 
             return nextDirection === 'asc' ? timeA - timeB : timeB - timeA;
         });
 
-        // Actualizar iconos de ordenación en todas las cabeceras
         document.querySelectorAll('th.sortable').forEach(th => {
             const iconSpan = th.querySelector('span');
              if (!iconSpan) return;
             if (th === header) {
                 th.dataset.sortDir = nextDirection;
                 iconSpan.textContent = nextDirection === 'asc' ? ' ▲' : ' ▼';
-                 iconSpan.classList.remove('text-gray-400'); // Hacer visible el icono activo
+                 iconSpan.classList.remove('text-gray-400');
             } else {
                 delete th.dataset.sortDir;
                 iconSpan.textContent = '';
-                 iconSpan.classList.add('text-gray-400'); // Ocultar iconos inactivos
+                 iconSpan.classList.add('text-gray-400');
             }
         });
 
-         // Actualizar la tabla con los datos ordenados
          populateTrazabilidadTable(dataToSort);
-         // Guardar los datos ordenados como los filtrados actuales
          currentFilteredTrazabilidadData = dataToSort;
     }
-    function exportToExcel() { const table = document.getElementById("trazabilidad-table"), wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" }); XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx"); }
-    <?php endif; ?>
+    function exportToExcel() { const table = document.getElementById("trazabilidad-table"), wb = XLSX.utils.table_to_book(table, { sheet: "Trazabilidad" }); XLSX.writeFile(wb, "Trazabilidad_EAGLE.xlsx"); }
+    <?php endif; ?>
 
-    // --- Operator Panel Specific ---
-    function selectPlanilla(invoiceNumber) {
+    // --- Operator Panel Specific ---
+    function selectPlanilla(invoiceNumber) {
         document.getElementById('consult-invoice').value = invoiceNumber;
         document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
         window.scrollTo(0, 0);
     }
-    async function editCheckIn(checkinData) {
+    async function editCheckIn(checkinData) {
         document.getElementById('invoice_number').value = checkinData.invoice_number;
         document.getElementById('seal_number').value = checkinData.seal_number;
         document.getElementById('declared_value').value = checkinData.declared_value;
@@ -2587,16 +2431,18 @@ body {
         const clientSelect = document.getElementById('client_id');
         clientSelect.value = checkinData.client_id;
 
-        // Esperar a que los fondos se carguen después de seleccionar el cliente
+        // Trigger change and wait for funds to load
         await new Promise(resolve => {
             clientSelect.dispatchEvent(new Event('change'));
-            // Usar un temporizador más largo o una mejor forma de esperar si la carga de fondos es lenta
-            setTimeout(resolve, 300); // Ajusta si es necesario
+            // Wait a bit for the async fund loading to potentially finish
+            setTimeout(resolve, 300); // Adjust timeout if needed
         });
 
+        // Now set the fund and route
         document.getElementById('fund_id').value = checkinData.fund_id;
         document.getElementById('route_id').value = checkinData.route_id;
 
+        // Update form title and buttons
         document.getElementById('checkin-form-title').textContent = 'Corregir Check-in';
         const buttonsContainer = document.getElementById('checkin-form-buttons');
         buttonsContainer.innerHTML = `
@@ -2604,9 +2450,10 @@ body {
             <button type="button" onclick="cancelEdit()" class="w-full bg-gray-300 text-gray-800 font-bold py-3 rounded-md hover:bg-gray-400">Cancelar</button>
         `;
 
+        // Scroll to the form
         document.getElementById('checkin-form-title').scrollIntoView({ behavior: 'smooth' });
     }
-    function cancelEdit() {
+    function cancelEdit() {
         document.getElementById('checkin-form').reset();
         document.getElementById('check_in_id_field').value = '';
         document.getElementById('checkin-form-title').textContent = 'Registrar Nuevo Check-in';
@@ -2614,12 +2461,13 @@ body {
         buttonsContainer.innerHTML = `
             <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
         `;
+        // Reset fund dropdown
         const fundSelect = document.getElementById('fund_id');
         fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
         fundSelect.disabled = true;
         fundSelect.classList.add('bg-gray-200');
     }
-    function updateQty(button, amount) {
+    function updateQty(button, amount) {
         const input = button.parentElement.querySelector('input');
         let currentValue = parseInt(input.value) || 0;
         currentValue += amount;
@@ -2627,7 +2475,7 @@ body {
         input.value = currentValue;
         calculateTotals();
     }
-    function calculateTotals() {
+    function calculateTotals() {
         const form = document.getElementById('denomination-form');
         if (!form) return;
         let totalCounted = 0;
@@ -2647,137 +2495,191 @@ body {
         discrepancyEl.classList.toggle('text-green-500', discrepancy === 0);
     }
 
-    // --- Alert Pop-up & Polling ---
-    function showAlertPopup(alertData) {
-        if (!alertPopupOverlay || !alertPopup || !alertPopupTitle || !alertPopupDescription || !alertPopupHeader) return;
-        alertPopupTitle.textContent = `¡${alertData.priority}! ${alertData.title || 'Nueva Alerta'}`;
-        alertPopupDescription.textContent = alertData.description || alertData.instruction || 'Revisa tus tareas pendientes.';
-        alertPopupHeader.className = 'p-4 border-b rounded-t-lg'; // Reset classes
-        alertPopupTitle.className = 'text-xl font-bold'; // Reset classes
-        if (alertData.priority === 'Critica') {
-            alertPopupHeader.classList.add('bg-red-100', 'border-red-200');
-            alertPopupTitle.classList.add('text-red-800');
-        } else { // Alta
-            alertPopupHeader.classList.add('bg-orange-100', 'border-orange-200');
-            alertPopupTitle.classList.add('text-orange-800');
-        }
-        alertPopupOverlay.classList.remove('hidden');
-        setTimeout(() => {
-            alertPopup.classList.remove('scale-95', 'opacity-0');
-            alertPopup.classList.add('scale-100', 'opacity-100');
-        }, 50);
-    }
+    // --- Alert Pop-up & Polling ---
+    function showAlertPopup(alertData) {
+        if (!alertPopupOverlay || !alertPopup || !alertPopupTitle || !alertPopupDescription || !alertPopupHeader) return;
+        alertPopupTitle.textContent = `¡${alertData.priority}! ${alertData.title || 'Nueva Alerta'}`;
+        alertPopupDescription.textContent = alertData.description || alertData.instruction || 'Revisa tus tareas pendientes.';
+        alertPopupHeader.className = 'p-4 border-b rounded-t-lg'; // Reset classes
+        alertPopupTitle.className = 'text-xl font-bold'; // Reset classes
+        if (alertData.priority === 'Critica') {
+            alertPopupHeader.classList.add('bg-red-100', 'border-red-200');
+            alertPopupTitle.classList.add('text-red-800');
+        } else { // Alta
+            alertPopupHeader.classList.add('bg-orange-100', 'border-orange-200');
+            alertPopupTitle.classList.add('text-orange-800');
+         }
+        alertPopupOverlay.classList.remove('hidden');
+        setTimeout(() => {
+            alertPopup.classList.remove('scale-95', 'opacity-0');
+            alertPopup.classList.add('scale-100', 'opacity-100');
+        }, 50);
+    }
 
-    async function checkForNewAlerts() {
-        try {
-            const response = await fetch(`api/realtime_alerts_api.php?since=${lastCheckedAlertTime}`);
-            if (!response.ok && response.status !== 304) { console.error("Error checking alerts:", response.statusText); return; }
-            if (response.status === 304) return; // Not Modified
+    async function checkForNewAlerts() {
+        try {
+            const response = await fetch(`api/realtime_alerts_api.php?since=${lastCheckedAlertTime}`);
+            if (!response.ok && response.status !== 304) { console.error("Error checking alerts:", response.statusText); return; }
+            if (response.status === 304) return; // Not Modified
 
-            const result = await response.json();
-            if (result.success && result.alerts && result.alerts.length > 0) {
-                showAlertPopup(result.alerts[0]);
+            const result = await response.json();
+            if (result.success && result.alerts && result.alerts.length > 0) {
+                showAlertPopup(result.alerts[0]);
                 // Podríamos recargar o actualizar los badges aquí si es necesario
-            }
-            lastCheckedAlertTime = result.timestamp || Math.floor(Date.now() / 1000);
-        } catch (error) { console.error("Network error checking alerts:", error); }
-    }
+                // location.reload(); // Opcional: forzar recarga
+            }
+            lastCheckedAlertTime = result.timestamp || Math.floor(Date.now() / 1000);
+        } catch (error) { console.error("Network error checking alerts:", error); }
+    }
 
-    function startAlertPolling(intervalSeconds = 20) {
-        if (alertPollingInterval) clearInterval(alertPollingInterval);
-        checkForNewAlerts();
-        alertPollingInterval = setInterval(checkForNewAlerts, intervalSeconds * 1000);
-        console.log(`Alert polling started every ${intervalSeconds} seconds.`);
-    }
+    function startAlertPolling(intervalSeconds = 20) {
+        if (alertPollingInterval) clearInterval(alertPollingInterval);
+        checkForNewAlerts();
+        alertPollingInterval = setInterval(checkForNewAlerts, intervalSeconds * 1000);
+        console.log(`Alert polling started every ${intervalSeconds} seconds.`);
+    }
 
-    function stopAlertPolling() {
-        if (alertPollingInterval) { clearInterval(alertPollingInterval); alertPollingInterval = null; console.log("Alert polling stopped."); }
-    }
+    function stopAlertPolling() {
+        if (alertPollingInterval) { clearInterval(alertPollingInterval); alertPollingInterval = null; console.log("Alert polling stopped."); }
+    }
 
-    // --- Tab Switching & Dynamic Content Loading (NUEVA FUNCIÓN) ---
-    async function switchTab(tabName) {
-        sessionStorage.setItem('activeTab', tabName);
+     // --- Check-in Polling Functions ---
+     async function fetchAndUpdateCheckins() {
+         try {
+             const response = await fetch('api/realtime_checkins_api.php'); // Llama a la nueva API
+             if (!response.ok) {
+                 if (response.status === 401) { console.warn("Polling detenido: No autenticado."); stopCheckinPolling(); }
+                 return;
+             }
+             const result = await response.json();
+             if (result.success && result.checkins) {
+                 // Comparar si la data cambió
+                 if (JSON.stringify(result.checkins) !== JSON.stringify(currentCheckinData)) {
+                     console.log("Checkin data changed, updating table.");
+                     currentCheckinData = result.checkins; // Actualizar la data global
 
-        const staticContentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'mi-historial', 'roles', 'trazabilidad'];
-        const dynamicContentPanels = ['manage-clients', 'manage-routes', 'manage-funds'];
-        const allContentPanels = staticContentPanels.concat(dynamicContentPanels);
+                     // Solo redibujar si la pestaña 'checkinero' está activa
+                     if (!document.getElementById('content-checkinero').classList.contains('hidden')) {
+                         populateCheckinsTable(currentCheckinData);
+                     }
+                     // Actualizar la vista del Admin en el panel de Operador también
+                     if (currentUserRole === 'Admin' && document.getElementById('operator-checkins-table-body')) {
+                         populateOperatorCheckinsTable(currentCheckinData);
+                     }
+                 }
+             } else if (!result.success) { console.error("API error fetching checkins:", result.error); }
+         } catch (error) { console.error("Network error fetching checkins:", error); }
+     }
+     function startCheckinPolling(intervalSeconds = 10) {
+         if (checkinPollingInterval) clearInterval(checkinPollingInterval);
+         fetchAndUpdateCheckins(); // Fetch immediately
+         checkinPollingInterval = setInterval(fetchAndUpdateCheckins, intervalSeconds * 1000);
+         console.log(`Checkin polling started every ${intervalSeconds} seconds.`);
+     }
+     function stopCheckinPolling() {
+         if (checkinPollingInterval) { clearInterval(checkinPollingInterval); checkinPollingInterval = null; console.log("Checkin polling stopped."); }
+     }
+     // Stop polling on page unload
+     window.addEventListener('beforeunload', () => {
+         stopAlertPolling();
+         stopCheckinPolling();
+     });
 
-        document.querySelectorAll('.nav-tab, .header-panel-button').forEach(t => t.classList.remove('active'));
-        allContentPanels.forEach(panel => document.getElementById(`content-${panel}`)?.classList.add('hidden'));
+    // --- Tab Switching & Dynamic Content Loading (NUEVA FUNCIÓN) ---
+    async function switchTab(tabName) {
+        sessionStorage.setItem('activeTab', tabName);
 
-        const activeContent = document.getElementById(`content-${tabName}`);
-        const activeTabElement = document.getElementById(`tab-${tabName}`);
+        const staticContentPanels = ['operaciones', 'checkinero', 'operador', 'digitador', 'mi-historial', 'roles', 'trazabilidad'];
+        const dynamicContentPanels = ['manage-clients', 'manage-routes', 'manage-funds'];
+        const allContentPanels = staticContentPanels.concat(dynamicContentPanels);
 
-        if (activeContent) {
-            activeContent.classList.remove('hidden');
-            activeTabElement?.classList.add('active'); // Activate the button/tab
+        document.querySelectorAll('.nav-tab, .header-panel-button').forEach(t => t.classList.remove('active'));
+        allContentPanels.forEach(panel => document.getElementById(`content-${panel}`)?.classList.add('hidden'));
 
-            if (dynamicContentPanels.includes(tabName) && !loadedContent[tabName]) {
-                activeContent.innerHTML = '<div class="loader"></div><p class="text-center text-gray-500">Cargando...</p>'; // Loading indicator
-                try {
-                    let phpFile = '';
-                    if (tabName === 'manage-clients') phpFile = 'manage_clients.php';
-                    else if (tabName === 'manage-routes') phpFile = 'manage_routes.php';
-                    else if (tabName === 'manage-funds') phpFile = 'manage_funds.php';
+        const activeContent = document.getElementById(`content-${tabName}`);
+        const activeTabElement = document.getElementById(`tab-${tabName}`);
 
-                    if (phpFile) {
-                        const response = await fetch(`${phpFile}?content_only=1`);
-                        if (!response.ok) throw new Error(`Failed to load ${phpFile}: ${response.statusText}`);
-                        const htmlContent = await response.text();
-                        activeContent.innerHTML = htmlContent;
-                        loadedContent[tabName] = true;
+        if (activeContent) {
+            activeContent.classList.remove('hidden');
+            activeTabElement?.classList.add('active'); // Activate the button/tab
 
-                        // Re-execute scripts
-                        activeContent.querySelectorAll('script').forEach(script => {
-                            try {
-                                const newScript = document.createElement('script');
-                                newScript.textContent = script.textContent;
-                                script.parentNode.replaceChild(newScript, script);
-                            } catch (e) { console.error("Error executing dynamic script:", e); }
-                        });
-                    }
-                } catch (error) {
-                    console.error("Error loading dynamic content:", error);
-                    activeContent.innerHTML = `<p class="text-center p-8 text-red-500">Error: ${error.message}</p>`;
-                }
-            }
-        } else { console.error(`Content container 'content-${tabName}' not found.`); }
-    }
+            // --- INICIO DE LÓGICA DE POLLING ---
+            // Detener polling de checkin por defecto
+            stopCheckinPolling();
+            // (El polling de alertas sigue corriendo, es global)
 
-    // --- Initialization ---
-    document.addEventListener('DOMContentLoaded', () => {
-        const savedTab = sessionStorage.getItem('activeTab') || 'operaciones'; // Default to operations
-        switchTab(savedTab);
+            // Iniciar polling específico si estamos en la pestaña correcta
+            if (tabName === 'checkinero' || (tabName === 'operador' && currentUserRole === 'Admin')) {
+                 startCheckinPolling(10); // Inicia en checkinero Y en operador (si es admin)
+            }
+            // --- FIN DE LÓGICA DE POLLING ---
 
-        // Initial population of static tables based on role and existence
-        if (document.getElementById('user-table-body') && currentUserRole === 'Admin') populateUserTable(adminUsersData);
-        if (document.getElementById('historial-individual-tbody')) populateUserHistoryTable(userCompletedTasksData);
-        if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
-            currentFilteredTrazabilidadData = [...completedTasksData];
-            populateTrazabilidadTable(currentFilteredTrazabilidadData);
-        }
-        if (document.getElementById('content-checkinero')) {
-            populateCheckinsTable(initialCheckins);
-   D;          document.getElementById('checkin-form')?.addEventListener('submit', handleCheckinSubmit);
-            const clientSelect = document.getElementById('client_id');
-            const fundSelect = document.getElementById('fund_id');
-            clientSelect?.addEventListener('change', async () => {
+
+            if (dynamicContentPanels.includes(tabName) && !loadedContent[tabName]) {
+                activeContent.innerHTML = '<div class="loader"></div><p class="text-center text-gray-500">Cargando...</p>'; // Loading indicator
+                try {
+                    let phpFile = '';
+                    if (tabName === 'manage-clients') phpFile = 'manage_clients.php';
+                    else if (tabName === 'manage-routes') phpFile = 'manage_routes.php';
+                    else if (tabName === 'manage-funds') phpFile = 'manage_funds.php';
+
+                    if (phpFile) {
+                        const response = await fetch(`${phpFile}?content_only=1`);
+                        if (!response.ok) throw new Error(`Failed to load ${phpFile}: ${response.statusText}`);
+                        const htmlContent = await response.text();
+                        activeContent.innerHTML = htmlContent;
+                        loadedContent[tabName] = true;
+
+                        // Re-execute scripts
+                        activeContent.querySelectorAll('script').forEach(script => {
+                            try {
+                                const newScript = document.createElement('script');
+                                newScript.textContent = script.textContent;
+                                script.parentNode.replaceChild(newScript, script);
+                            } catch (e) { console.error("Error executing dynamic script:", e); }
+                        });
+                   }
+                } catch (error) {
+                    console.error("Error loading dynamic content:", error);
+                    activeContent.innerHTML = `<p class="text-center p-8 text-red-500">Error: ${error.message}</p>`;
+                 }
+            }
+        } else { console.error(`Content container 'content-${tabName}' not found.`); }
+    }
+
+    // --- Initialization ---
+    document.addEventListener('DOMContentLoaded', () => {
+        const savedTab = sessionStorage.getItem('activeTab') || 'operaciones'; // Default to operations
+
+        // Initial population of static tables based on role and existence
+        if (document.getElementById('user-table-body') && currentUserRole === 'Admin') populateUserTable(adminUsersData);
+        if (document.getElementById('historial-individual-tbody')) populateUserHistoryTable(userCompletedTasksData);
+        if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
+            currentFilteredTrazabilidadData = [...completedTasksData];
+            populateTrazabilidadTable(currentFilteredTrazabilidadData);
+        }
+        if (document.getElementById('content-checkinero')) {
+             populateCheckinsTable(initialCheckins); // Poblar con los datos iniciales
+             document.getElementById('checkin-form')?.addEventListener('submit', handleCheckinSubmit);
+             const clientSelect = document.getElementById('client_id');
+             const fundSelect = document.getElementById('fund_id');
+             clientSelect?.addEventListener('change', async () => {
                 const clientId = clientSelect.value; fundSelect.innerHTML = '<option value="">Cargando...</option>'; fundSelect.disabled = true; fundSelect.classList.add('bg-gray-200');
                 if (!clientId) { fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>'; return; }
                 try {
-                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`); const funds = await response.json(); fundSelect.innerHTML = '';
+                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`); const funds = await response.json(); fundSelect.innerHTML = '<option value="">Seleccione fondo...</option>'; // Added default option
                     if (funds.length > 0) { funds.forEach(fund => { fundSelect.add(new Option(fund.name, fund.id)); }); fundSelect.disabled = false; fundSelect.classList.remove('bg-gray-200'); }
                     else { fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>'; }
                 } catch (error) { console.error('Error fetching funds:', error); fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>'; }
             });
-        }
-        if (document.getElementById('content-operador')) {
-            if (currentUserRole === 'Admin') populateOperatorCheckinsTable(initialCheckins);
-            populateOperatorHistoryTable(operatorHistoryData);
-            document.getElementById('consultation-form')?.addEventListener('submit', handleConsultation);
-            document.getElementById('denomination-form')?.addEventListener('submit', handleDenominationSave);
-        }
-        if (document.getElementById('content-digitador')) {
+        }
+        if (document.getElementById('content-operador')) {
+            if (currentUserRole === 'Admin') populateOperatorCheckinsTable(initialCheckins); // Poblar con datos iniciales
+            populateOperatorHistoryTable(operatorHistoryData);
+            document.getElementById('consultation-form')?.addEventListener('submit', handleConsultation);
+            document.getElementById('denomination-form')?.addEventListener('submit', handleDenominationSave);
+        }
+        if (document.getElementById('content-digitador')) {
             // --- LÓGICA PARA SUB-PESTAÑAS DEL DIGITADOR ---
             const btnSupervision = document.getElementById('btn-supervision');
             const btnCierre = document.getElementById('btn-cierre');
@@ -2804,27 +2706,29 @@ body {
             btnHistorialCierre.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); /* Podrías recargar aquí si es necesario */ });
             btnInformes.addEventListener('click', () => { setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes); sessionStorage.setItem('activeDigitadorSubTab', 'informes'); loadInformes(); });
 
-            const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
+            const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
             if (savedSubTab === 'supervision' && btnSupervision) { btnSupervision.click(); }
             else if (savedSubTab === 'historial' && btnHistorialCierre) { btnHistorialCierre.click(); }
             else if (savedSubTab === 'informes' && btnInformes) { btnInformes.click(); }
             else if (btnCierre) { btnCierre.click(); } // Default to Cierre
             else if (btnSupervision) { btnSupervision.click(); } // Fallback
 
-            populateOperatorHistoryForDigitador(operatorHistoryData);
-            populateDigitadorClosedHistory(digitadorClosedHistory);
-        }
+            populateOperatorHistoryForDigitador(operatorHistoryData);
+            populateDigitadorClosedHistory(digitadorClosedHistory);
+        }
 
-        updateReminderCount();
-        startAlertPolling(20); // Start checking for new alerts
+        switchTab(savedTab); // Activa la pestaña inicial (y el polling si corresponde)
 
-        // Countdown timer interval
-        setInterval(() => {
+        updateReminderCount();
+        startAlertPolling(20); // Start checking for new alerts (Global)
+
+        // Countdown timer interval
+        setInterval(() => {
             document.querySelectorAll('.countdown-timer').forEach(timerEl => {
                 const endTimeStr = timerEl.dataset.endTime;
-                 if (!endTimeStr) return; // Si no hay fecha, salir
+                 if (!endTimeStr) return;
                 try {
-                     const endTime = new Date(endTimeStr.replace(' ', 'T')).getTime(); // Reemplazar espacio por T si es necesario
+                     const endTime = new Date(endTimeStr.replace(' ', 'T')).getTime();
                      if (isNaN(endTime)) {
                           timerEl.textContent = 'Fecha inválida';
                           return;
@@ -2863,52 +2767,43 @@ body {
                 }
             });
         }, 1000);
-        // Manual task date input logic
-        const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
-        if(startDateInput && endDateInput) {
+        // Manual task date input logic
+        const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
+        if(startDateInput && endDateInput) {
             const getLocalISOString = (date) => {
-                 if (!(date instanceof Date) || isNaN(date)) return ''; // Handle invalid date
+                 if (!(date instanceof Date) || isNaN(date)) return '';
                  const pad = (num) => num.toString().padStart(2, '0');
-                 // Crear fecha en UTC y ajustar manualmente a la zona horaria local (-5 horas para Colombia)
                  const localDate = new Date(date.getTime() - (date.getTimezoneOffset() * 60000));
                  try {
                       return localDate.toISOString().slice(0, 16);
                  } catch (e) {
                       console.error("Error formatting date:", e);
-                      return ''; // Return empty string on error
+                      return '';
                  }
              };
             const now = new Date();
              const nowString = getLocalISOString(now);
 
-             // Establecer mínimo para evitar fechas pasadas
              startDateInput.min = nowString;
              endDateInput.min = nowString;
-
-             // No establecer valor por defecto para permitir que estén vacíos
-             // startDateInput.value = nowString;
-             // endDateInput.value = nowString;
 
             startDateInput.addEventListener('input', () => {
                  if (startDateInput.value) {
                       endDateInput.min = startDateInput.value;
-                      // Si la fecha de fin es anterior, igualarla a la de inicio
                       if (endDateInput.value && endDateInput.value < startDateInput.value) {
                            endDateInput.value = startDateInput.value;
                       }
                  } else {
-                     // Si se borra la fecha de inicio, resetear el mínimo de la fecha de fin
                      endDateInput.min = nowString;
                  }
             });
              endDateInput.addEventListener('input', () => {
-                 // Asegurar que la fecha de fin no sea anterior a la de inicio (si existe inicio)
                   if (startDateInput.value && endDateInput.value && endDateInput.value < startDateInput.value) {
                        endDateInput.value = startDateInput.value;
                   }
              });
         }
-    });
+    });
     </script>
     </body>
 </html>
