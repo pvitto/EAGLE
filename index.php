@@ -31,12 +31,37 @@ function getRoleDisplayName($role, $gender) {
 $displayRole = getRoleDisplayName($current_user_role, $current_user_gender);
 
 // Clases CSS para roles
-$role_color_class = 'bg-gray-200 text-gray-800'; $role_nav_class = 'nav-admin';
+// Clases CSS para roles
+$role_color_class = 'bg-gray-200 text-gray-800'; // Color del badge interno
+$role_nav_class = 'nav-admin'; // Clase para la navegación
+$role_container_border_class = 'border-gray-400'; // Borde del contenedor de saludo (default)
+$role_container_bg_class = 'bg-gray-50'; // Fondo del contenedor de saludo (default)
+
 switch ($current_user_role) {
-    case 'Admin': $role_color_class = 'bg-red-200 text-red-800'; $role_nav_class = 'nav-admin'; break;
-    case 'Digitador': $role_color_class = 'bg-blue-200 text-blue-800'; $role_nav_class = 'nav-digitador'; break;
-    case 'Operador': $role_color_class = 'bg-yellow-200 text-yellow-800'; $role_nav_class = 'nav-operador'; break;
-    case 'Checkinero': $role_color_class = 'bg-green-200 text-green-800'; $role_nav_class = 'nav-checkinero'; break;
+    case 'Admin':
+        $role_color_class = 'bg-red-200 text-red-800';
+        $role_nav_class = 'nav-admin';
+        $role_container_border_class = 'border-red-400'; // Borde rojo
+        $role_container_bg_class = 'bg-red-50';         // Fondo rojo claro
+        break;
+    case 'Digitador':
+        $role_color_class = 'bg-blue-200 text-blue-800';
+        $role_nav_class = 'nav-digitador';
+        $role_container_border_class = 'border-blue-400'; // Borde azul
+        $role_container_bg_class = 'bg-blue-50';        // Fondo azul claro
+        break;
+    case 'Operador':
+        $role_color_class = 'bg-yellow-200 text-yellow-800';
+        $role_nav_class = 'nav-operador';
+        $role_container_border_class = 'border-yellow-400'; // Borde amarillo
+        $role_container_bg_class = 'bg-yellow-50';      // Fondo amarillo claro
+        break;
+    case 'Checkinero':
+        $role_color_class = 'bg-green-200 text-green-800';
+        $role_nav_class = 'nav-checkinero';
+        $role_container_border_class = 'border-green-400'; // Borde verde
+        $role_container_bg_class = 'bg-green-50';       // Fondo verde claro
+        break;
 }
 
 // --- LÓGICA DE ALERTAS Y TAREAS PENDIENTES ---
@@ -48,7 +73,6 @@ $user_filter = '';
  }
 
 // Cargar Alertas Pendientes (agrupadas por alerta)
-// (Esta es la *nueva* consulta de alertas, centrada en asignaciones)
 $alerts_sql = "
 SELECT a.*,
        MIN(t.id) AS task_id,
@@ -78,22 +102,18 @@ if ($alerts_result) {
     }
 } else { error_log("Error loading alerts: " . $conn->error); }
 
-// 2. Cargar Tareas Manuales Pendientes
-// *** CAMBIO: GROUP BY RESTAURADO ***
+// Cargar Tareas Manuales Pendientes
 $manual_tasks_sql = "
     SELECT
         t.id, MIN(t.id) as task_id, t.title, t.instruction, t.priority, MIN(t.status) as task_status,
         t.assigned_to_user_id, t.assigned_to_group,
-        -- Obtener nombres solo si NO es de grupo
         GROUP_CONCAT(DISTINCT CASE WHEN t.assigned_to_group IS NULL THEN u.name ELSE NULL END SEPARATOR ', ') as assigned_names,
         t.start_datetime, t.end_datetime,
-        -- Marcar si alguna de las tareas agrupadas pertenece a este usuario
         MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id
     FROM tasks t
     LEFT JOIN users u ON t.assigned_to_user_id = u.id
     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente'
       {$user_filter}
-    -- *** GROUP BY RESTAURADO ***
     GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group, t.created_at), t.id)
     ORDER BY FIELD(t.priority, 'Critica', 'Alta', 'Media', 'Baja'), t.created_at DESC
 ";
@@ -105,7 +125,7 @@ if ($manual_tasks_result) {
     }
 } else { error_log("Error loading manual tasks: " . $conn->error); }
 
-// 3. Procesar y ordenar items
+// Procesar y ordenar items
 $main_priority_items = []; $main_non_priority_items = [];
 $panel_high_priority_items = []; $panel_medium_priority_items = [];
 $now = new DateTime();
@@ -121,7 +141,6 @@ foreach ($all_pending_items as $item) {
         } catch (Exception $e) { /* Log error */ }
     }
     $item['current_priority'] = $current_priority;
-    // Si es tarea de grupo y el usuario pertenece, marcarla como accionable por él
     if (empty($item['user_task_id']) && !empty($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role) {
          $item['user_task_id'] = $item['task_id'] ?? $item['id'];
     }
@@ -152,7 +171,7 @@ $high_priority_badge_count = count($panel_high_priority_items);
 $medium_priority_badge_count = count($panel_medium_priority_items);
 
 // --- OTRAS CONSULTAS DE DATOS ---
-$completed_tasks = []; // Admin's full history
+$completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
     $completed_result = $conn->query(
         "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time, t.assigned_to_group, u_creator.name as created_by_name, t.resolution_note FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' ORDER BY t.completed_at DESC" );
@@ -168,7 +187,6 @@ if ($_SESSION['user_role'] === 'Admin') {
     } else { error_log("Error Admin completed tasks: " . $conn->error); }
 }
 
-// Historial individual
 $user_completed_tasks = [];
 $stmt_user_tasks = $conn->prepare( "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time, t.assigned_to_group, u_creator.name as created_by_name, t.resolution_note FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' AND (t.completed_by_user_id = ?) ORDER BY t.completed_at DESC" );
 $stmt_user_tasks->bind_param("i", $current_user_id);
@@ -186,22 +204,18 @@ if ($user_tasks_result) {
 } else { error_log("Error User completed tasks: " . $conn->error); }
 $stmt_user_tasks->close();
 
-// Recordatorios
 $user_reminders = [];
 $reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
 if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
 
-// Recaudos del Día
 $today_collections = []; $total_recaudado_hoy = 0;
 $today_collections_result = $conn->query(" SELECT oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name, oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins, oc.created_at, ci.invoice_number, f.name as fund_name, u_dig.name as digitador_name, CASE WHEN ci.digitador_status = 'Cerrado' THEN 'Cerrado' WHEN ci.digitador_status = 'Conforme' THEN 'Conforme' WHEN ci.status = 'Rechazado' THEN 'Rechazado' WHEN ci.status = 'Discrepancia' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Procesado' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Pendiente' THEN 'Pendiente (Operador)' ELSE ci.status END AS final_status FROM operator_counts oc INNER JOIN ( SELECT check_in_id, MAX(id) as max_oc_id FROM operator_counts WHERE DATE(created_at) = CURDATE() GROUP BY check_in_id ) latest_oc ON oc.id = latest_oc.max_oc_id JOIN check_ins ci ON oc.check_in_id = ci.id JOIN clients c ON ci.client_id = c.id JOIN users u_op ON oc.operator_id = u_op.id LEFT JOIN funds f ON ci.fund_id = f.id LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id ORDER BY oc.created_at DESC ");
 if ($today_collections_result) { while ($row = $today_collections_result->fetch_assoc()) { $today_collections[] = $row; $total_recaudado_hoy += $row['total_counted']; } }
 else { error_log("Error Today collections: " . $conn->error); }
 
-// Cierres Pendientes
 $cierres_pendientes_result = $conn->query("SELECT COUNT(DISTINCT ci.id) as total FROM check_ins ci WHERE ci.status IN ('Procesado', 'Discrepancia') AND ci.digitador_status IS NULL");
 $cierres_pendientes_count = $cierres_pendientes_result->fetch_assoc()['total'] ?? 0;
 
-// Clientes y Rutas
 $all_clients = [];
 $clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
 if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
@@ -209,7 +223,6 @@ $all_routes = [];
 $routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
 if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
-// Check-ins (Lógica Restaurada)
 $initial_checkins = [];
 $checkins_result = $conn->query("
     SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.id as fund_id, f.name as fund_name,
@@ -220,13 +233,12 @@ $checkins_result = $conn->query("
     JOIN routes r ON ci.route_id = r.id
     JOIN users u ON ci.checkinero_id = u.id
     LEFT JOIN funds f ON ci.fund_id = f.id
-    WHERE ci.status IN ('Pendiente', 'Rechazado') -- <-- LÓGICA RESTAURADA
+    WHERE ci.status IN ('Pendiente', 'Rechazado')
     ORDER BY ci.correction_count DESC, ci.created_at DESC
 ");
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
 else { error_log("Error initial checkins: " . $conn->error); }
 
-// Historial Operador
 $operator_history = [];
 if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . intval($_SESSION['user_id']) : "";
@@ -236,54 +248,17 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     else { error_log("Error operator history: " . $conn->error); }
 }
 
-// Historial Digitador
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
     $digitador_filter = "WHERE ci.digitador_status IN ('Conforme', 'Cerrado', 'Rechazado')";
-    // Si quieres la lógica antigua (solo ver lo propio), descomenta la siguiente línea:
-    // if ($current_user_role === 'Digitador') $digitador_filter .= " AND ci.closed_by_digitador_id = " . $current_user_id;
-
     $closed_history_result = $conn->query(" SELECT ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name, oc.total_counted, oc.discrepancy, oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins, u_op.name as operator_name, ci.closed_by_digitador_at, u_digitador.name as digitador_name, ci.digitador_status, ci.digitador_observations, f.name as fund_name FROM check_ins ci LEFT JOIN clients c ON ci.client_id = c.id LEFT JOIN users u_check ON ci.checkinero_id = u_check.id LEFT JOIN ( SELECT a.* FROM operator_counts a INNER JOIN ( SELECT check_in_id, MAX(id) as max_id FROM operator_counts GROUP BY check_in_id ) b ON a.id = b.max_id ) oc ON ci.id = oc.check_in_id LEFT JOIN users u_op ON oc.operator_id = u_op.id LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id LEFT JOIN funds f ON ci.fund_id = f.id {$digitador_filter} ORDER BY ci.closed_by_digitador_at DESC, ci.id DESC" );
     if($closed_history_result){ while($row = $closed_history_result->fetch_assoc()){ $digitador_closed_history[] = $row; } }
     else { error_log("Error digitador history: " . $conn->error); }
 }
 
 
-// 1) Clases de la pastilla por rol (lo que pones en $role_color_class)
 
-
-// 2) Clases del marco/lineas por rol (deben coincidir en color)
-$ROLE_PILL = [
-  'Admin'       => 'bg-rose-100 text-rose-700',
-  'Digitador'   => 'bg-blue-100 text-blue-700',
-  'Digitadora'  => 'bg-blue-100 text-blue-700',
-  'Supervisor'  => 'bg-amber-100 text-amber-800',
-  'Supervisora' => 'bg-amber-100 text-amber-800',
-  'Operador'    => 'bg-yellow-100 text-yellow-800',
-  'Operadora'   => 'bg-yellow-100 text-yellow-800',
-  'Check-in'    => 'bg-green-100 text-green-700',
-  'Checkin'     => 'bg-green-100 text-green-700',
-];
-
-$ROLE_FRAME = [
-  'Admin'       => 'border-rose-400 ring-rose-200 bg-rose-50',
-  'Digitador'   => 'border-blue-400 ring-blue-200 bg-blue-50',
-  'Digitadora'  => 'border-blue-400 ring-blue-200 bg-blue-50',
-  'Supervisor'  => 'border-amber-400 ring-amber-200 bg-amber-50',
-  'Supervisora' => 'border-amber-400 ring-amber-200 bg-amber-50',
-  'Operador'    => 'border-yellow-400 ring-yellow-200 bg-yellow-50',
-  'Operadora'   => 'border-yellow-400 ring-yellow-200 bg-yellow-50',
-  'Check-in'    => 'border-green-400 ring-green-200 bg-green-50',
-  'Checkin'     => 'border-green-400 ring-green-200 bg-green-50',
-];
-
-
-$role = $displayRole ?? 'Usuario';
-$role_color_class = $ROLE_PILL[$role] ?? 'bg-gray-100 text-gray-700';
-$frame_class      = $ROLE_FRAME[$role] ?? 'border-gray-300 ring-gray-200 bg-white';
-
-
-$conn->close(); // Cerrar DB connection
+$conn->close();
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -298,153 +273,55 @@ $conn->close(); // Cerrar DB connection
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-html {
-  font-size: 12px; /* Prueba con 10px, ajusta si es necesario (original es 16px) */
-}
-
-body {
-  font-family: 'Inter', sans-serif;
-  /* El tamaño de fuente del body ahora heredará o puedes ajustarlo si quieres */
-  /* font-size: 1rem; /* Esto sería 10px ahora */
-}
-
-       /* body { font-family: 'Inter', sans-serif; }*/
-
-      .nav-tab { cursor: pointer; padding: 0.25rem 1rem; /* Reducido aún más el padding vertical */ font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
-        .nav-admin:hover { color: #dc2626; }
-        .nav-admin.active { color: #dc2626; border-bottom-color: #dc2626; background-color: #fee2e2; }
-
-        .nav-digitador { color: #1e40af; } /* text-blue-800 */
-        .nav-digitador:hover { color: #2563eb; }
-        .nav-digitador.active { color: #2563eb; border-bottom-color: #2563eb; background-color: #dbeafe; }
-
-        .nav-operador { color: #a16207; } /* text-yellow-800 */
-        .nav-operador:hover { color: #ca8a04; }
-        .nav-operador.active { color: #ca8a04; border-bottom-color: #ca8a04; background-color: #fefce8; }
-
-        .nav-checkinero { color: #15803d; } /* text-green-800 */
-        .nav-checkinero:hover { color: #16a34a; }
-        .nav-checkinero.active { color: #16a34a; border-bottom-color: #16a34a; background-color: #f0fdf4; }
-
-        #user-modal-overlay, #reminders-panel, #task-notifications-panel, #medium-priority-panel { transition: opacity 0.3s ease; }
-        .task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
-        .task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
-        .details-row { border-top: 1px solid #e5e7eb; }
-        .sortable { transition: background-color 0.2s; }
-        .sortable:hover { background-color: #f3f4f6; }
-
-        /* --- ESTILOS MEJORADOS PARA EL DROPDOWN DE NAVEGACIÓN --- */
-        .nav-dropdown {
-            position: relative; /* Contenedor relativo para el contenido absoluto */
-            display: inline-block; /* Para que se alinee con los otros botones */
-        }
-
-        .nav-dropdown-content {
-            display: none; /* Oculto por defecto */
-            position: absolute; /* Posicionado relativo al .nav-dropdown */
-            background-color: white; /* Fondo blanco como en el ejemplo */
-            min-width: 200px; /* Ancho mínimo, ajusta según necesidad */
-            box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); /* Sombra como en el ejemplo */
-            z-index: 50; /* Asegura que esté por encima de otros elementos */
-            border-radius: 0.375rem; /* Esquinas redondeadas (md en Tailwind) */
-            overflow: hidden; /* Para que el contenido respete el borde redondeado */
-            top: 100%; /* Posiciona justo debajo del botón */
-            left: 0; /* Alinea a la izquierda del botón */
-            margin-top: 0.25rem; /* Pequeño espacio entre el botón y el dropdown (mt-1) */
-        }
-
-        /* Estilos para los enlaces dentro del dropdown */
-        .nav-dropdown-content a {
-            color: #374151; /* Color de texto gris oscuro (text-gray-700) */
-            padding: 0.75rem 1rem; /* Padding (py-3 px-4) */
-            text-decoration: none;
-            display: block;
-            font-weight: 500; /* semi-bold */
-            font-size: 0.875rem; /* text-sm */
-            white-space: nowrap; /* Evita que el texto se divida en líneas */
-            transition: background-color 0.15s ease-in-out; /* Transición suave */
-            cursor: pointer;
-            /* Aplicar los mismos estilos base que nav-tab para consistencia */
-            border-bottom: 3px solid transparent;
-        }
-
-        /* Efecto hover para los enlaces */
-        .nav-dropdown-content a:hover {
-            background-color: #f3f4f6; /* Fondo gris claro al pasar el mouse (bg-gray-100) */
-        }
-
-        /* Muestra el dropdown al hacer hover sobre el contenedor .nav-dropdown */
-        .nav-dropdown:hover .nav-dropdown-content {
-            display: block;
-        }
-
-        /* Opcional: Estilos específicos de rol al pasar el mouse sobre los enlaces */
-        .nav-dropdown-content a.nav-admin:hover { background-color: #fee2e2; }
-        .nav-dropdown-content a.nav-digitador:hover { background-color: #dbeafe; }
-        .nav-dropdown-content a.nav-operador:hover { background-color: #fefce8; }
-        .nav-dropdown-content a.nav-checkinero:hover { background-color: #f0fdf4; }
-
-        /* Ajuste para el botón principal del dropdown para que no cambie de fondo al hacer hover */
-        .nav-dropdown > button.nav-tab:hover {
-             /* Puedes resetear el color de fondo o mantener el que tiene por defecto */
-             /* background-color: transparent; /* O el color base si no es transparente */
-             /* Mantenemos el cambio de color de texto y borde si es necesario */
-        }
-        /* --- FIN DE ESTILOS MEJORADOS --- */
-
-        /* === INICIO DE NUEVOS ESTILOS FUSIONADOS === */
-        .sortable { cursor: pointer; } .sortable span { color: #9ca3af; }
-        /* Header Panel Button Styles */
-        /* Header Panel Button Styles - Modificado para apariencia de caja */
-.header-panel-button {
-  display: inline-block;
-  padding: 0.3rem 0.8rem;
-  margin-left: 0.5rem; /* Mantiene el espacio a la izquierda */
-  font-size: 0.8rem;
-  font-weight: 500;
-  border-radius: 0.375rem; /* Esquinas redondeadas */
-  border: 1px solid; /* Borde sólido por defecto, el color vendrá de la clase de rol */
-  cursor: pointer;
-  transition: all 0.2s;
-  box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); /* Sombra sutil para efecto caja */
-  line-height: 1.5; /* Ajuste vertical del texto si es necesario */
-}
-.header-panel-button:hover {
-  opacity: 0.9; /* Hover más sutil */
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); /* Sombra ligeramente mayor en hover */
-}
-.header-panel-button.active {
-  box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.05); /* Sombra interior cuando está activo */
-  /* Puedes agregar otros estilos para el estado activo si lo deseas, como un borde más grueso */
-  /* border-width: 2px; */
-}
-
-/* Colores específicos de rol (borde más contrastante) */
-.header-panel-button.nav-checkinero { background-color: #dcfce7; border-color: #4ade80; color: #166534; } /* Borde verde más visible */
+html { font-size: 12px; }
+body { font-family: 'Inter', sans-serif; }
+.nav-tab { cursor: pointer; padding: 0.25rem 1rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
+.nav-admin:hover { color: #dc2626; }
+.nav-admin.active { color: #dc2626; border-bottom-color: #dc2626; background-color: #fee2e2; }
+.nav-digitador { color: #1e40af; }
+.nav-digitador:hover { color: #2563eb; }
+.nav-digitador.active { color: #2563eb; border-bottom-color: #2563eb; background-color: #dbeafe; }
+.nav-operador { color: #a16207; }
+.nav-operador:hover { color: #ca8a04; }
+.nav-operador.active { color: #ca8a04; border-bottom-color: #ca8a04; background-color: #fefce8; }
+.nav-checkinero { color: #15803d; }
+.nav-checkinero:hover { color: #16a34a; }
+.nav-checkinero.active { color: #16a34a; border-bottom-color: #16a34a; background-color: #f0fdf4; }
+#user-modal-overlay, #reminders-panel, #task-notifications-panel, #medium-priority-panel { transition: opacity 0.3s ease; }
+.task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
+.task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
+.details-row { border-top: 1px solid #e5e7eb; }
+.sortable { transition: background-color 0.2s; }
+.sortable:hover { background-color: #f3f4f6; }
+.nav-dropdown { position: relative; display: inline-block; }
+.nav-dropdown-content { display: none; position: absolute; background-color: white; min-width: 200px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 50; border-radius: 0.375rem; overflow: hidden; top: 100%; left: 0; margin-top: 0.25rem; }
+.nav-dropdown-content a { color: #374151; padding: 0.75rem 1rem; text-decoration: none; display: block; font-weight: 500; font-size: 0.875rem; white-space: nowrap; transition: background-color 0.15s ease-in-out; cursor: pointer; border-bottom: 3px solid transparent; }
+.nav-dropdown-content a:hover { background-color: #f3f4f6; }
+.nav-dropdown:hover .nav-dropdown-content { display: block; }
+.nav-dropdown-content a.nav-admin:hover { background-color: #fee2e2; }
+.nav-dropdown-content a.nav-digitador:hover { background-color: #dbeafe; }
+.nav-dropdown-content a.nav-operador:hover { background-color: #fefce8; }
+.nav-dropdown-content a.nav-checkinero:hover { background-color: #f0fdf4; }
+.sortable { cursor: pointer; } .sortable span { color: #9ca3af; }
+.header-panel-button { display: inline-block; padding: 0.3rem 0.8rem; margin-left: 0.5rem; font-size: 0.8rem; font-weight: 500; border-radius: 0.375rem; border: 1px solid; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); line-height: 1.5; }
+.header-panel-button:hover { opacity: 0.9; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); }
+.header-panel-button.active { box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
+.header-panel-button.nav-checkinero { background-color: #dcfce7; border-color: #4ade80; color: #166534; }
 .header-panel-button.nav-checkinero:hover { background-color: #bbf7d0; }
-.header-panel-button.nav-checkinero.active { background-color: #a7f3d0; border-color: #22c55e; } /* Borde más oscuro activo */
-
-.header-panel-button.nav-operador { background-color: #fef9c3; border-color: #facc15; color: #854d0e; } /* Borde amarillo más visible */
+.header-panel-button.nav-checkinero.active { background-color: #a7f3d0; border-color: #22c55e; }
+.header-panel-button.nav-operador { background-color: #fef9c3; border-color: #facc15; color: #854d0e; }
 .header-panel-button.nav-operador:hover { background-color: #fde68a; }
-.header-panel-button.nav-operador.active { background-color: #fde047; border-color: #eab308; } /* Borde más oscuro activo */
-
-.header-panel-button.nav-digitador { background-color: #dbeafe; border-color: #60a5fa; color: #1e40af; } /* Borde azul más visible */
+.header-panel-button.nav-operador.active { background-color: #fde047; border-color: #eab308; }
+.header-panel-button.nav-digitador { background-color: #dbeafe; border-color: #60a5fa; color: #1e40af; }
 .header-panel-button.nav-digitador:hover { background-color: #bfdbfe; }
-.header-panel-button.nav-digitador.active { background-color: #93c5fd; border-color: #3b82f6; } /* Borde más oscuro activo */
-
-/* --- Fin de estilos de Header Panel Button --- */
-/* Alert Pop-up Styles */
-        #alert-popup-overlay { transition: opacity 0.3s ease; }
-        #alert-popup { transition: transform 0.3s ease, opacity 0.3s ease; }
-        /* Spinner for AJAX loading */
-        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
-        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        /* === FIN DE NUEVOS ESTILOS FUSIONADOS === */
-
-        /* Estilos de Notificación del Archivo 2 (para compatibilidad con JS) */
-        .notification-panel { position: absolute; right: 0; margin-top: 0.5rem; width: 20rem; background-color: white; border-radius: 0.5rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05); padding: 1rem; z-index: 50; }
-        .notification-list { max-height: 16rem; overflow-y: auto; }
-        .badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
+.header-panel-button.nav-digitador.active { background-color: #93c5fd; border-color: #3b82f6; }
+#alert-popup-overlay { transition: opacity 0.3s ease; }
+#alert-popup { transition: transform 0.3s ease, opacity 0.3s ease; }
+.loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+.notification-panel { position: absolute; right: 0; margin-top: 0.5rem; width: 20rem; background-color: white; border-radius: 0.5rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05); padding: 1rem; z-index: 50; }
+.notification-list { max-height: 16rem; overflow-y: auto; }
+.badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -492,128 +369,138 @@ body {
     </div>
     <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-full mx-auto">
         <header class="flex flex-col sm:flex-row justify-between sm:items-start mb-2 border-b pb-1">
-    <div>
-        <h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1>
-        <p class="text-sm text-gray-500 mb-2">Sistema Integrado de Operaciones y Alertas</p>
-
-
-        <div class="inline-flex items-center gap-2 mt-2 px-4 py-2 rounded-xl border ring-1 shadow-sm <?= $frame_class ?>">
-  <span class="font-semibold text-gray-700">Hola</span>
-
-  <span class="font-bold px-3 py-1 rounded-full <?= $role_color_class ?>">
-    <?= htmlspecialchars($displayRole) ?>
-  </span>
-
-  <span class="font-bold text-gray-900">
-    : <?= htmlspecialchars($_SESSION['user_name']) ?>
-  </span>
+            <div>
+                <h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1>
+                <p class="text-sm text-gray-500 mb-2">Sistema Integrado de Operaciones y Alertas</p>
+               
+         <div class="inline-flex items-center gap-2 mt-2 px-4 py-2 rounded-xl
+            border <?php echo $role_container_border_class; ?> <?php echo $role_container_bg_class; ?>">
+    <span class="font-semibold text-gray-700">Hola</span>
+    <span class="font-bold px-3 py-1 rounded-full <?php echo $role_color_class; ?>">
+        <?php echo htmlspecialchars($displayRole); ?>
+    </span>
+    <span class="font-bold text-gray-900">
+        : <?php echo htmlspecialchars($_SESSION['user_name']); ?>
+    </span>
 </div>
-
-
-
-    </div>
-
-    <div class="mt-4 sm:mt-0 flex flex-col sm:items-end space-y-2">
-        <div class="flex items-center space-x-4">
-            <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
-            <div class="relative">
-                <button id="task-notification-button" onclick="togglePanel('task-notifications-panel')" class="relative text-gray-500 hover:text-gray-700">
-                    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
-                    <?php if ($high_priority_badge_count > 0): ?>
-                    <span id="task-notification-badge" class="absolute -top-2 -right-2 badge-count bg-red-500"><?php echo $high_priority_badge_count; ?></span>
-                    <?php endif; ?>
-                </button>
-                <div id="task-notifications-panel" class="notification-panel hidden">
-                    <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
-                     <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
-                        <?php if(empty($panel_high_priority_items)): ?>
-                             <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
-                        <?php else: foreach($panel_high_priority_items as $item): $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange'; ?>
-                         <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
-                             <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
-                             <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                             <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
-                             <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
-                         </div>
-                        <?php endforeach; endif; ?>
-                     </div>
-                </div>
             </div>
-            <div class="relative">
-                 <button id="medium-priority-button" onclick="togglePanel('medium-priority-panel')" class="relative text-gray-500 hover:text-gray-700">
-                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                     <?php if ($medium_priority_badge_count > 0): ?>
-                     <span id="medium-priority-badge" class="absolute -top-2 -right-2 badge-count bg-yellow-500"><?php echo $medium_priority_badge_count; ?></span>
-                     <?php endif; ?>
-                 </button>
-                 <div id="medium-priority-panel" class="notification-panel hidden">
-                    <h4 class="font-bold text-gray-800 mb-2">Alertas de Prioridad Media</h4>
-                     <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
-                        <?php if(empty($panel_medium_priority_items)): ?>
-                             <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
-                        <?php else: foreach($panel_medium_priority_items as $item): ?>
-                             <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
-                                 <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
-                                 <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                 <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
-                                 <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
-                             </div>
-                        <?php endforeach; endif; ?>
-                     </div>
-                 </div>
-            </div>
-            <div class="relative">
-                 <button id="reminders-button" onclick="togglePanel('reminders-panel')" class="relative text-gray-500 hover:text-gray-700">
-                     <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                     <span id="reminders-badge" class="absolute -top-2 -right-2 badge-count bg-blue-500 hidden"></span>
-                 </button>
-                 <div id="reminders-panel" class="notification-panel hidden">
-                    <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
-                     <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
-                        <?php if(empty($user_reminders)): ?>
-                             <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
-                        <?php else: foreach($user_reminders as $reminder): ?>
-                             <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
-                                 <div class="flex justify-between items-start">
-                                     <div><p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p><p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p></div>
-                                     <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
-                                 </div>
-                             </div>
-                        <?php endforeach; endif; ?>
-                     </div>
-                 </div>
-            </div>
-        </div>
-    <div class="mt-2 flex flex-wrap justify-start sm:justify-end space-x-2 sm:space-x-4">
-                    <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
-                        <button id="tab-checkinero" class="header-panel-button nav-checkinero shadow-sm" onclick="switchTab('checkinero')">Panel Check-in</button>
-                    <?php endif; ?>
-                    <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
-                        <button id="tab-operador" class="header-panel-button nav-operador shadow-sm" onclick="switchTab('operador')">Panel Operador</button>
-                    <?php endif; ?>
-                    <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
-                        <button id="tab-digitador" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button>
-                    <?php endif; ?>
-                </div>
-    </div>
-</header>
-        <nav class="mb-4">
-            <div class="border-b border-gray-200">
-                <div class="-mb-px flex space-x-4 overflow-x-auto">
-                    <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
-                    <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
-                    <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                        <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
-                        <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
-                        <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
-                        <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
-                        <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
-                    <?php endif; ?>
-                </div>
-            </div>
-        </nav>
-        <main>
-            <div id="content-operaciones">
+
+            <div class="mt-4 sm:mt-0 flex flex-col sm:items-end space-y-2">
+                <div class="flex items-center space-x-4">
+                    <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
+                    <div class="relative">
+                        <button id="task-notification-button" onclick="togglePanel('task-notifications-panel')" class="relative text-gray-500 hover:text-gray-700">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
+                            <?php if ($high_priority_badge_count > 0): ?>
+                            <span id="task-notification-badge" class="absolute -top-2 -right-2 badge-count bg-red-500"><?php echo $high_priority_badge_count; ?></span>
+                            <?php endif; ?>
+                        </button>
+                        <div id="task-notifications-panel" class="notification-panel hidden">
+                            <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
+                            <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+                                <?php if(empty($panel_high_priority_items)): ?>
+                                    <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
+                                <?php else: foreach($panel_high_priority_items as $item): $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange'; ?>
+                                <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
+                                    <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
+                                    <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
+                                    <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
+                                    <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
+                                </div>
+                                <?php endforeach; endif; ?>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="relative">
+                        <button id="medium-priority-button" onclick="togglePanel('medium-priority-panel')" class="relative text-gray-500 hover:text-gray-700">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <?php if ($medium_priority_badge_count > 0): ?>
+                            <span id="medium-priority-badge" class="absolute -top-2 -right-2 badge-count bg-yellow-500"><?php echo $medium_priority_badge_count; ?></span>
+                            <?php endif; ?>
+                        </button>
+                        <div id="medium-priority-panel" class="notification-panel hidden">
+                           <h4 class="font-bold text-gray-800 mb-2">Alertas de Prioridad Media</h4>
+                            <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+                               <?php if(empty($panel_medium_priority_items)): ?>
+                                    <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
+                               <?php else: foreach($panel_medium_priority_items as $item): ?>
+                                    <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
+                                        <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
+                                        <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
+                                        <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
+                                        <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
+                                    </div>
+                               <?php endforeach; endif; ?>
+                            </div>
+                        </div>
+                   </div>
+                   <div class="relative">
+                        <button id="reminders-button" onclick="togglePanel('reminders-panel')" class="relative text-gray-500 hover:text-gray-700">
+                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+                            <span id="reminders-badge" class="absolute -top-2 -right-2 badge-count bg-blue-500 hidden"></span>
+                        </button>
+                        <div id="reminders-panel" class="notification-panel hidden">
+                           <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
+                            <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+                               <?php if(empty($user_reminders)): ?>
+                                    <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
+                               <?php else: foreach($user_reminders as $reminder): ?>
+                                    <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
+                                        <div class="flex justify-between items-start">
+                                            <div><p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p><p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p></div>
+                                            <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
+                                        </div>
+                                    </div>
+                               <?php endforeach; endif; ?>
+                            </div>
+                        </div>
+                   </div>
+               </div>
+               <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+               <div class="mt-2 flex flex-wrap justify-start sm:justify-end space-x-2 sm:space-x-4">
+                   <?php // Se mantienen las validaciones internas por si acaso, aunque ya sabemos que es Admin ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
+                       <button id="tab-checkinero" class="header-panel-button nav-checkinero shadow-sm" onclick="switchTab('checkinero')">Panel Check-in</button>
+                   <?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
+                       <button id="tab-operador" class="header-panel-button nav-operador shadow-sm" onclick="switchTab('operador')">Panel Operador</button>
+                   <?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
+                       <button id="tab-digitador" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button>
+                   <?php endif; ?>
+               </div>
+               <?php endif; ?>
+               </div>
+       </header>
+       <nav class="mb-4">
+           <div class="border-b border-gray-200">
+               <div class="-mb-px flex space-x-4 overflow-x-auto">
+                   <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
+
+                   <?php if ($_SESSION['user_role'] === 'Checkinero'): ?>
+                       <button id="tab-checkinero" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('checkinero')">Panel Check-in</button>
+                   <?php endif; ?>
+                   <?php if ($_SESSION['user_role'] === 'Operador'): ?>
+                       <button id="tab-operador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('operador')">Panel Operador</button>
+                   <?php endif; ?>
+                   <?php if ($_SESSION['user_role'] === 'Digitador'): ?>
+                       <button id="tab-digitador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('digitador')">Panel Digitador</button>
+                   <?php endif; ?>
+                   <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
+
+                   <?php // Pestañas exclusivas de Admin
+                   if ($_SESSION['user_role'] === 'Admin'): ?>
+                       <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
+                       <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
+                       <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
+                       <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
+                       <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
+                   <?php endif; ?>
+               </div>
+           </div>
+       </nav>
+       <main>
+           <div id="content-operaciones">
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Recaudos de Hoy</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">$</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo '$' . number_format($total_recaudado_hoy, 0, ',', '.'); ?></p></div>
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Cierres Pendientes</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">🕔</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo $cierres_pendientes_count; ?></p><p class="text-sm text-gray-500 mt-2">Para revisión de Digitador</p></div>
@@ -630,16 +517,11 @@ body {
                             <?php
                                 $is_manual = $item['item_type'] === 'manual_task';
                                 $is_group_task = !empty($item['assigned_to_group']);
-                                $assigned_names = $item['assigned_names'] ?? null; // Usar null para chequear con empty()
-
-                                // task_id es el ID de la *tarea* (o el MIN(t.id) para alertas).
-                                // user_task_id solo existe si esta tarea específica está asignada a ESTE usuario
+                                $assigned_names = $item['assigned_names'] ?? null;
                                 $task_id_to_use = $item['task_id'] ?? $item['id'];
                                 $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
-                                $form_id_prefix = $task_id_to_use; // ID único para el formulario
-
+                                $form_id_prefix = $task_id_to_use;
                                 $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
-
                                 $priority_to_use = $item['current_priority'];
                                 $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
                                 $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
@@ -828,13 +710,10 @@ body {
                                         $is_manual = $item['item_type'] === 'manual_task';
                                         $is_group_task = !empty($item['assigned_to_group']);
                                         $assigned_names = $item['assigned_names'] ?? null;
-
                                         $task_id_to_use = $item['task_id'] ?? $item['id'];
                                         $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
-                                        $form_id_prefix = "np-" . $task_id_to_use; // Prefijo "np" para no prioritarios
-
+                                        $form_id_prefix = "np-" . $task_id_to_use;
                                         $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
-
                                         $priority_to_use = $item['current_priority'];
                                         $color_map = ['Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']];
                                         $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
@@ -909,7 +788,7 @@ body {
                         </div>
                     </div>
                 </div>
-            </div>
+           </div>
 
             <div id="content-checkinero" class="hidden">
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Check-in</h2>
@@ -1077,7 +956,7 @@ body {
                                     <th class="p-3">V. Declarado</th>
                                     <th class="p-3">V. Contado</th>
                                     <th class="p-3">Discrepancia</th>
-                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): /* Modificado */ ?>
+                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?>
                                         <th class="p-3">Operador</th>
                                     <?php endif; ?>
                                     <th class="p-3">Fecha Conteo</th>
@@ -1099,7 +978,6 @@ body {
                 </div>
 
                  <div class="mb-8 flex space-x-2">
-
                     <button id="btn-supervision" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Supervisión de Conteos</button>
                     <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
                     <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
@@ -2077,7 +1955,6 @@ body {
         });
     }
     function populateCheckinsTable(checkins) {
-        // *** Esta función usa la LÓGICA RESTAURADA (solo 'Pendiente'/'Rechazado') ***
         const tbody = document.getElementById('checkins-table-body');
         if (!tbody) return;
         tbody.innerHTML = '';
@@ -2136,7 +2013,6 @@ body {
         });
     }
     function populateOperatorCheckinsTable(checkins) {
-        // Esta función ahora filtra desde los checkins generales
         const tbody = document.getElementById('operator-checkins-table-body');
         if (!tbody) return;
 
@@ -2232,17 +2108,13 @@ body {
         });
     }
     function populateOperatorHistoryForDigitador(history) {
-        // Esta función ahora debe filtrar desde $operator_history
         const tbody = document.getElementById('operator-history-table-body-digitador');
         if (!tbody) return;
         tbody.innerHTML = '';
 
-        // CORRECCIÓN: Usar $digitadorClosedHistory para saber qué *no* mostrar.
-        // Un item está 'pending review' si está en operatorHistory PERO no está en digitadorClosedHistory.
         const closedCheckInIds = new Set(digitadorClosedHistory.map(dh => parseInt(dh.id))); // Asegurarse que sean enteros
 
         const pendingReview = history.filter(item => {
-            // Si el check_in_id NO está en el set de cerrados, está pendiente de revisión.
             // Asegurarse de comparar enteros
             return !closedCheckInIds.has(parseInt(item.check_in_id));
         });
@@ -2290,7 +2162,6 @@ body {
 
             const cerradaPorCol = showCerradaPor ? `<td class="p-3">${item.digitador_name || 'N/A'}</td>` : '';
 
-            // Corregir el ID del desglose para que sea único
             tbody.innerHTML += `
                 <tr class="border-b hover:bg-gray-50">
                     <td class="p-3 font-mono">${item.invoice_number}</td>
@@ -2431,18 +2302,14 @@ body {
         const clientSelect = document.getElementById('client_id');
         clientSelect.value = checkinData.client_id;
 
-        // Trigger change and wait for funds to load
         await new Promise(resolve => {
             clientSelect.dispatchEvent(new Event('change'));
-            // Wait a bit for the async fund loading to potentially finish
-            setTimeout(resolve, 300); // Adjust timeout if needed
+            setTimeout(resolve, 300);
         });
 
-        // Now set the fund and route
         document.getElementById('fund_id').value = checkinData.fund_id;
         document.getElementById('route_id').value = checkinData.route_id;
 
-        // Update form title and buttons
         document.getElementById('checkin-form-title').textContent = 'Corregir Check-in';
         const buttonsContainer = document.getElementById('checkin-form-buttons');
         buttonsContainer.innerHTML = `
@@ -2450,7 +2317,6 @@ body {
             <button type="button" onclick="cancelEdit()" class="w-full bg-gray-300 text-gray-800 font-bold py-3 rounded-md hover:bg-gray-400">Cancelar</button>
         `;
 
-        // Scroll to the form
         document.getElementById('checkin-form-title').scrollIntoView({ behavior: 'smooth' });
     }
     function cancelEdit() {
@@ -2461,7 +2327,6 @@ body {
         buttonsContainer.innerHTML = `
             <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
         `;
-        // Reset fund dropdown
         const fundSelect = document.getElementById('fund_id');
         fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
         fundSelect.disabled = true;
@@ -2525,8 +2390,6 @@ body {
             const result = await response.json();
             if (result.success && result.alerts && result.alerts.length > 0) {
                 showAlertPopup(result.alerts[0]);
-                // Podríamos recargar o actualizar los badges aquí si es necesario
-                // location.reload(); // Opcional: forzar recarga
             }
             lastCheckedAlertTime = result.timestamp || Math.floor(Date.now() / 1000);
         } catch (error) { console.error("Network error checking alerts:", error); }
@@ -2546,23 +2409,20 @@ body {
      // --- Check-in Polling Functions ---
      async function fetchAndUpdateCheckins() {
          try {
-             const response = await fetch('api/realtime_checkins_api.php'); // Llama a la nueva API
+             const response = await fetch('api/realtime_checkins_api.php');
              if (!response.ok) {
                  if (response.status === 401) { console.warn("Polling detenido: No autenticado."); stopCheckinPolling(); }
                  return;
              }
              const result = await response.json();
              if (result.success && result.checkins) {
-                 // Comparar si la data cambió
                  if (JSON.stringify(result.checkins) !== JSON.stringify(currentCheckinData)) {
                      console.log("Checkin data changed, updating table.");
-                     currentCheckinData = result.checkins; // Actualizar la data global
+                     currentCheckinData = result.checkins;
 
-                     // Solo redibujar si la pestaña 'checkinero' está activa
                      if (!document.getElementById('content-checkinero').classList.contains('hidden')) {
                          populateCheckinsTable(currentCheckinData);
                      }
-                     // Actualizar la vista del Admin en el panel de Operador también
                      if (currentUserRole === 'Admin' && document.getElementById('operator-checkins-table-body')) {
                          populateOperatorCheckinsTable(currentCheckinData);
                      }
@@ -2572,20 +2432,19 @@ body {
      }
      function startCheckinPolling(intervalSeconds = 10) {
          if (checkinPollingInterval) clearInterval(checkinPollingInterval);
-         fetchAndUpdateCheckins(); // Fetch immediately
+         fetchAndUpdateCheckins();
          checkinPollingInterval = setInterval(fetchAndUpdateCheckins, intervalSeconds * 1000);
          console.log(`Checkin polling started every ${intervalSeconds} seconds.`);
      }
      function stopCheckinPolling() {
          if (checkinPollingInterval) { clearInterval(checkinPollingInterval); checkinPollingInterval = null; console.log("Checkin polling stopped."); }
      }
-     // Stop polling on page unload
      window.addEventListener('beforeunload', () => {
          stopAlertPolling();
          stopCheckinPolling();
      });
 
-    // --- Tab Switching & Dynamic Content Loading (NUEVA FUNCIÓN) ---
+    // --- Tab Switching & Dynamic Content Loading ---
     async function switchTab(tabName) {
         sessionStorage.setItem('activeTab', tabName);
 
@@ -2597,26 +2456,21 @@ body {
         allContentPanels.forEach(panel => document.getElementById(`content-${panel}`)?.classList.add('hidden'));
 
         const activeContent = document.getElementById(`content-${tabName}`);
+        // Find the button whether it's in the header or nav
         const activeTabElement = document.getElementById(`tab-${tabName}`);
 
         if (activeContent) {
             activeContent.classList.remove('hidden');
             activeTabElement?.classList.add('active'); // Activate the button/tab
 
-            // --- INICIO DE LÓGICA DE POLLING ---
-            // Detener polling de checkin por defecto
             stopCheckinPolling();
-            // (El polling de alertas sigue corriendo, es global)
-
-            // Iniciar polling específico si estamos en la pestaña correcta
             if (tabName === 'checkinero' || (tabName === 'operador' && currentUserRole === 'Admin')) {
-                 startCheckinPolling(10); // Inicia en checkinero Y en operador (si es admin)
+                 startCheckinPolling(10);
             }
-            // --- FIN DE LÓGICA DE POLLING ---
 
 
             if (dynamicContentPanels.includes(tabName) && !loadedContent[tabName]) {
-                activeContent.innerHTML = '<div class="loader"></div><p class="text-center text-gray-500">Cargando...</p>'; // Loading indicator
+                activeContent.innerHTML = '<div class="loader"></div><p class="text-center text-gray-500">Cargando...</p>';
                 try {
                     let phpFile = '';
                     if (tabName === 'manage-clients') phpFile = 'manage_clients.php';
@@ -2630,7 +2484,6 @@ body {
                         activeContent.innerHTML = htmlContent;
                         loadedContent[tabName] = true;
 
-                        // Re-execute scripts
                         activeContent.querySelectorAll('script').forEach(script => {
                             try {
                                 const newScript = document.createElement('script');
@@ -2649,9 +2502,8 @@ body {
 
     // --- Initialization ---
     document.addEventListener('DOMContentLoaded', () => {
-        const savedTab = sessionStorage.getItem('activeTab') || 'operaciones'; // Default to operations
+        const savedTab = sessionStorage.getItem('activeTab') || 'operaciones';
 
-        // Initial population of static tables based on role and existence
         if (document.getElementById('user-table-body') && currentUserRole === 'Admin') populateUserTable(adminUsersData);
         if (document.getElementById('historial-individual-tbody')) populateUserHistoryTable(userCompletedTasksData);
         if (currentUserRole === 'Admin' && document.getElementById('trazabilidad-tbody')) {
@@ -2659,7 +2511,7 @@ body {
             populateTrazabilidadTable(currentFilteredTrazabilidadData);
         }
         if (document.getElementById('content-checkinero')) {
-             populateCheckinsTable(initialCheckins); // Poblar con los datos iniciales
+             populateCheckinsTable(initialCheckins);
              document.getElementById('checkin-form')?.addEventListener('submit', handleCheckinSubmit);
              const clientSelect = document.getElementById('client_id');
              const fundSelect = document.getElementById('fund_id');
@@ -2667,20 +2519,19 @@ body {
                 const clientId = clientSelect.value; fundSelect.innerHTML = '<option value="">Cargando...</option>'; fundSelect.disabled = true; fundSelect.classList.add('bg-gray-200');
                 if (!clientId) { fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>'; return; }
                 try {
-                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`); const funds = await response.json(); fundSelect.innerHTML = '<option value="">Seleccione fondo...</option>'; // Added default option
+                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`); const funds = await response.json(); fundSelect.innerHTML = '<option value="">Seleccione fondo...</option>';
                     if (funds.length > 0) { funds.forEach(fund => { fundSelect.add(new Option(fund.name, fund.id)); }); fundSelect.disabled = false; fundSelect.classList.remove('bg-gray-200'); }
                     else { fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>'; }
                 } catch (error) { console.error('Error fetching funds:', error); fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>'; }
             });
         }
         if (document.getElementById('content-operador')) {
-            if (currentUserRole === 'Admin') populateOperatorCheckinsTable(initialCheckins); // Poblar con datos iniciales
+            if (currentUserRole === 'Admin') populateOperatorCheckinsTable(initialCheckins);
             populateOperatorHistoryTable(operatorHistoryData);
             document.getElementById('consultation-form')?.addEventListener('submit', handleConsultation);
             document.getElementById('denomination-form')?.addEventListener('submit', handleDenominationSave);
         }
         if (document.getElementById('content-digitador')) {
-            // --- LÓGICA PARA SUB-PESTAÑAS DEL DIGITADOR ---
             const btnSupervision = document.getElementById('btn-supervision');
             const btnCierre = document.getElementById('btn-cierre');
             const btnHistorialCierre = document.getElementById('btn-historial-cierre');
@@ -2703,7 +2554,7 @@ body {
 
             btnSupervision.addEventListener('click', () => { setActiveDigitadorButton(btnSupervision); showDigitadorPanel(panelSupervision); sessionStorage.setItem('activeDigitadorSubTab', 'supervision'); });
             btnCierre.addEventListener('click', () => { setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre); sessionStorage.setItem('activeDigitadorSubTab', 'cierre'); loadFundsForCierre(); });
-            btnHistorialCierre.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); /* Podrías recargar aquí si es necesario */ });
+            btnHistorialCierre.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); });
             btnInformes.addEventListener('click', () => { setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes); sessionStorage.setItem('activeDigitadorSubTab', 'informes'); loadInformes(); });
 
             const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
@@ -2722,7 +2573,6 @@ body {
         updateReminderCount();
         startAlertPolling(20); // Start checking for new alerts (Global)
 
-        // Countdown timer interval
         setInterval(() => {
             document.querySelectorAll('.countdown-timer').forEach(timerEl => {
                 const endTimeStr = timerEl.dataset.endTime;
@@ -2767,7 +2617,6 @@ body {
                 }
             });
         }, 1000);
-        // Manual task date input logic
         const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
         if(startDateInput && endDateInput) {
             const getLocalISOString = (date) => {
