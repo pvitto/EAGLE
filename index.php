@@ -873,9 +873,6 @@ $can_complete = $user_can_act && $task_is_active;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
     const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
-    const currentUserRole = '<?php echo $current_user_role; ?>';
-
-
 let repeatingToasts = new Map(); // Guarda { intervalId, count, alertData } para toasts repetitivos
 // =======================================================
 // Hook de arranque para el panel de Check-in (DOM listo)
@@ -931,18 +928,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     let selectedFundForClosure = null;
     let alertPollingInterval = null;
-    // ===== Discrepancias: estado para evitar toasts repetidos =====
-let lastDiscrepancyIds = new Set();   // record de IDs ya vistos
-let lastDiscrepancyCount = 0;         // respaldo si no vinieran IDs
-let discrepancySnapshotReady = false; // evita toasts en la primera carga
-
     let checkinPollingInterval = null;
     let trazabilidadPollingInterval = null; // Para trazabilidad
     let lastCheckedAlertTime = Math.floor(Date.now() / 1000);
     let currentCheckinData = JSON.parse(JSON.stringify(initialCheckins));
     let currentFilteredTrazabilidadData = [];
     let loadedContent = {};
-    
 
     // --- Sets para Tiempo Real ---
     let activeCheckinsIds = new Set(); // Para tabla Checkinero
@@ -2185,15 +2176,16 @@ function populateDigitadorOperatorHistoryTable(historyData) {
 
     // --- Alert Pop-up & Polling ---
     // --- Toast Notification Function ---
-//function showToastNotification(alertData) {
+function showToastNotification(alertData) {
   // adapta tus campos reales:
   const msg = alertData?.message || 'Notificación';
   // mapea prioridad a tipo:
   const type = ({ high:'error', medium:'warning', low:'info' }[alertData?.priority]) || 'info';
   showToast(msg, type, 5000);
+}
 
 
-/*function closeToast(toastId) {
+function closeToast(toastId) {
     const toast = document.getElementById(toastId);
     if (toast) {
         toast.classList.remove('show');
@@ -2202,7 +2194,7 @@ function populateDigitadorOperatorHistoryTable(historyData) {
             toast.remove();
         }, 500); // Coincide con la duración de la transición CSS
     }
-}*/
+}
 // --- End Toast Notification Function ---
     function showAlertPopup(alertData) {
         if (!alertPopupOverlay || !alertPopup || !alertPopupTitle || !alertPopupDescription || !alertPopupHeader) return;
@@ -2300,127 +2292,104 @@ function populateDigitadorOperatorHistoryTable(historyData) {
         else if (Notification.permission === "granted") { new Notification(title, { body: body }); }
         else if (Notification.permission !== "denied") { Notification.requestPermission().then(function (permission) { if (permission === "granted") new Notification(title, { body: body }); }); }
     }
+
 // Función para actualizar Paneles/Badges de Alertas
 function updateAlertsDisplay(newAlerts) {
-  console.log('updateAlertsDisplay recibió:', newAlerts);
+    console.log('updateAlertsDisplay recibió:', newAlerts);
+    const highPriorityList = document.getElementById('task-notifications-list');
+    const mediumPriorityList = document.getElementById('medium-priority-list');
+    const highPriorityBadge = document.getElementById('task-notification-badge');
+    const mediumPriorityBadge = document.getElementById('medium-priority-badge');
 
-  // --- elementos del DOM ---
-  const highPriorityList    = document.getElementById('task-notifications-list');
-  const mediumPriorityList  = document.getElementById('medium-priority-list');
-  const highPriorityBadge   = document.getElementById('task-notification-badge');
-  const mediumPriorityBadge = document.getElementById('medium-priority-badge');
-  if (!highPriorityList || !mediumPriorityList || !highPriorityBadge || !mediumPriorityBadge) return;
+    if (!highPriorityList || !mediumPriorityList || !highPriorityBadge || !mediumPriorityBadge) return;
 
-  // --- separar por prioridad según tu enumeración ---
-  const highs = [];  // 'critica' | 'alta'
-  const meds  = [];  // 'media'
+    let highCount = parseInt(highPriorityBadge.textContent || '0');
+    let mediumCount = parseInt(mediumPriorityBadge.textContent || '0');
+    let highUpdated = false;
+    let mediumUpdated = false;
+    // let newHighPriorityAlerts = []; // Ya no necesitamos esto para el popup modal
 
-  (newAlerts || []).forEach(a => {
-    const p = (a?.priority || '').toString().toLowerCase(); // 'critica','alta','media','baja'
-    if (p === 'critica' || p === 'alta') {
-      highs.push(a);
-    } else if (p === 'media') {
-      meds.push(a);
+    newAlerts.forEach(alert => {
+        const isHighPriority = alert.priority === 'Critica' || alert.priority === 'Alta';
+        const list = isHighPriority ? highPriorityList : mediumPriorityList;
+        const colorClass = isHighPriority ? (alert.priority === 'Critica' ? 'red' : 'orange') : 'yellow';
+        const alertId = alert.id; // Usamos el ID de la tarea como identificador único
+
+        // Evitar duplicados visuales en el panel
+        if (list.querySelector(`[data-alert-id="${alertId}"]`)) return;
+
+        const alertHtml = `
+            <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
+                <p class="font-semibold text-${colorClass}-800">${alert.title || ''}</p>
+                <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
+                </div>`;
+        list.insertAdjacentHTML('afterbegin', alertHtml);
+
+        if (isHighPriority) {
+            highCount++;
+            highUpdated = true;
+
+            // --- CORRECCIÓN: Mostrar SIEMPRE un Toast para nuevas alertas críticas/altas ---
+            // Solo empezar a repetir si no lo está haciendo ya para esta alerta
+            if (!repeatingToasts.has(alertId)) {
+                console.log(`Mostrando toast inicial para ${alertId}`);
+                showToastNotification(alert); // Mostrar inmediatamente
+
+                let repeatCount = 0;
+                const maxRepeats = 4; // Repetir 4 veces (4 * 30s = 2 minutos)
+
+                const intervalId = setInterval(() => {
+                    // Doble chequeo por si se canceló la repetición
+                    if (!repeatingToasts.has(alertId)) {
+                        clearInterval(intervalId);
+                        return;
+                    }
+
+                    repeatCount++;
+                    console.log(`Repitiendo toast para ${alertId}, repetición #${repeatCount}`);
+                    showToastNotification(alert); // Mostrar el toast de nuevo
+
+                    if (repeatCount >= maxRepeats) {
+                        clearInterval(intervalId);
+                        repeatingToasts.delete(alertId);
+                        console.log(`Se detuvo la repetición de toast para ${alertId}`);
+                    } else {
+                        // Actualizar el contador en el mapa (opcional, para seguimiento)
+                        const currentData = repeatingToasts.get(alertId);
+                        if (currentData) currentData.count = repeatCount;
+                    }
+                }, 30 * 1000); // Repetir cada 30 segundos
+
+                // Guardar el ID del intervalo y los datos iniciales
+                repeatingToasts.set(alertId, { intervalId: intervalId, count: 0, alertData: alert });
+                console.log(`Se inició el temporizador de repetición para ${alertId}`);
+
+            } else {
+                console.log(`El toast para ${alertId} ya está en ciclo de repetición.`);
+            }
+            // showSimpleNotification(`Alerta ${alert.priority}`, alert.title); // Opcional: Notif. navegador
+        } else { // Media o Baja
+            mediumCount++;
+            mediumUpdated = true;
+            // Opcional: Mostrar Toast para prioridad Media también
+            // showToastNotification(alert);
+        }
+    });
+
+    // Actualizar badges y mensajes de "No hay alertas"
+    if (highUpdated) {
+        highPriorityBadge.textContent = highCount;
+        highPriorityBadge.classList.remove('hidden');
+        const noAlertsMsg = highPriorityList.querySelector('.text-gray-500');
+        if (noAlertsMsg) noAlertsMsg.remove();
     }
-    // si quieres usar 'baja', crea otra lista visual aparte
-  });
-
-  // --- helper de item ---
-  const renderItem = (a) => {
-    const li = document.createElement('li');
-    li.className = 'px-3 py-2 rounded-md bg-white shadow border border-slate-200 text-sm flex items-start gap-2';
-    const when  = a?.created_at ? String(a.created_at) : '';
-    const title = a?.title || 'Alerta';
-    const role  = a?.suggested_role ? ` · ${a.suggested_role}` : '';
-    li.innerHTML = `
-      <span class="mt-0.5 text-red-600">•</span>
-      <div class="flex-1">
-        <div class="font-medium">${title}${role}</div>
-        ${when ? `<div class="text-xs text-slate-500">${when}</div>` : ''}
-      </div>`;
-    return li;
-  };
-
-  // --- pintar ALTA ---
-  highPriorityList.innerHTML = '';
-  if (highs.length) {
-    highs.forEach(a => highPriorityList.appendChild(renderItem(a)));
-    highPriorityBadge.textContent = String(highs.length);
-    highPriorityBadge.classList.remove('hidden');
-  } else {
-    highPriorityList.innerHTML = `<li class="p-4 text-center text-gray-500">No hay alertas de alta prioridad</li>`;
-    highPriorityBadge.textContent = '0';
-    highPriorityBadge.classList.add('hidden');
-  }
-
-  // --- pintar MEDIA ---
-  mediumPriorityList.innerHTML = '';
-  if (meds.length) {
-    meds.forEach(a => mediumPriorityList.appendChild(renderItem(a)));
-    mediumPriorityBadge.textContent = String(meds.length);
-    mediumPriorityBadge.classList.remove('hidden');
-  } else {
-    mediumPriorityList.innerHTML = `<li class="p-4 text-center text-gray-500">No hay alertas</li>`;
-    mediumPriorityBadge.textContent = '0';
-    mediumPriorityBadge.classList.add('hidden');
-  }
-
-  // ======== TOASTS SOLO PARA DISCREPANCIAS NUEVAS ========
-  try {
-    // Detectar “discrepancia” por texto en title/description (ajusta si luego agregas un campo type explícito)
-    const isDiscrepancy = (a) => {
-      const t = (a?.title || '').toLowerCase();
-      const d = (a?.description || '').toLowerCase();
-      return t.includes('discrep') || d.includes('discrep'); // “discrepancia”
-    };
-    // ID único de la alerta (tu API entrega 'id')
-    const getId = (a) => a?.id ?? null;
-
-    const discrepancyAlerts = (newAlerts || []).filter(isDiscrepancy);
-    const currentIds = new Set(discrepancyAlerts.map(getId).filter(Boolean));
-
-    // Primera carga: tomar “foto” y NO notificar
-    if (!discrepancySnapshotReady) {
-      if (currentIds.size > 0) {
-        lastDiscrepancyIds = currentIds;
-        lastDiscrepancyCount = currentIds.size;
-      } else {
-        lastDiscrepancyCount = discrepancyAlerts.length;
-      }
-      discrepancySnapshotReady = true;
-      return; // no toast en la primera pintura
+    if (mediumUpdated) {
+        mediumPriorityBadge.textContent = mediumCount;
+        mediumPriorityBadge.classList.remove('hidden');
+        const noAlertsMsg = mediumPriorityList.querySelector('.text-gray-500');
+        if (noAlertsMsg) noAlertsMsg.remove();
     }
-
-    if (currentIds.size > 0) {
-      // calcular cuántos IDs realmente nuevos
-      let fresh = 0;
-      for (const id of currentIds) {
-        if (!lastDiscrepancyIds.has(id)) fresh++;
-      }
-      if (fresh > 0 && typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts()) {
-        showToast(fresh === 1 ? 'Hay 1 discrepancia nueva.' : `Hay ${fresh} discrepancias nuevas.`, 'warning', 6000);
-      }
-      // actualizar memoria
-      lastDiscrepancyIds = currentIds;
-      lastDiscrepancyCount = currentIds.size;
-
-    } else {
-      // Fallback por conteo si no vinieran IDs (no debería pasar si usas id)
-      const currentCount = discrepancyAlerts.length;
-      const delta = currentCount - lastDiscrepancyCount;
-      if (delta > 0 && typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts()) {
-        showToast(delta === 1 ? 'Hay 1 discrepancia nueva.' : `Hay ${delta} discrepancias nuevas.`, 'warning', 6000);
-      }
-      lastDiscrepancyCount = currentCount;
-    }
-  } catch (e) {
-    console.debug('Toast discrepancias: no se pudo evaluar', e);
-  }
 }
-
-
-
-
 // --- Polling Control ---
     function startAlertPolling(intervalSeconds = 15) { // Default 15 segundos
         stopAlertPolling(); // Limpia cualquier intervalo anterior
@@ -2438,14 +2407,7 @@ function updateAlertsDisplay(newAlerts) {
             alertPollingInterval = null;
         }
     }
-// 2) Helper de permisos (Admin o Digitadores)
-function canSeeDiscrepancyToasts() {
-  const role = (window.currentUserRole || '').toLowerCase();
-  const groups = Array.isArray(window.currentUserGroups)
-    ? window.currentUserGroups.map(g => String(g).toLowerCase())
-    : [];
-  return role === 'admin' || role === 'digitador' || groups.includes('digitador') || groups.includes('digitadores');
-}
+
     // --- Asegúrate que también tengas estas si las necesitas ---
     function startCheckinPolling(intervalSeconds = 15) {
         stopCheckinPolling();
@@ -2493,22 +2455,22 @@ function canSeeDiscrepancyToasts() {
 
 
 // Función Polling Alertas
-async function pollAlerts() {
+   async function pollAlerts() {
   try {
-    const r = await fetch('/realtime_alerts_api.php', { headers: { 'Accept': 'application/json' } });
+    const r = await fetch('/realtime_alerts_api.php');
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
 
-    // Usa el array correcto
-    const alerts = Array.isArray(data?.alerts) ? data.alerts : (Array.isArray(data) ? data : []);
-    updateAlertsDisplay(alerts); // <-- FALTABA ESTO
-
+    // Ejemplo: si llegaron nuevas discrepancias
+    if (data?.newDiscrepancies > 0) {
+      showToast(`Hay ${data.newDiscrepancies} discrepancias nuevas asignadas a Digitador.`, 'warning');
+    }
   } catch (err) {
+    // Evitar spam de errores:
     if (!window._pollToastShown) {
       showToast('Fallo el polling de alertas. Verifica tu conexión.', 'error', 7000);
       window._pollToastShown = true;
     }
-    console.error('pollAlerts error:', err);
   }
 }
 
@@ -2856,10 +2818,10 @@ async function toastAsync(promise, messages) {
 
 
 // PRUEBAS (puedes borrar luego)
-/*showToast('Cambios guardados correctamente.', 'success');
+showToast('Cambios guardados correctamente.', 'success');
 showToast('No pudimos conectar con el servidor.', 'error', 6000);
 showToast('Tienes 3 tareas pendientes de revisión.', 'warning');
-showToast('Sin novedades por ahora.', 'info', 2500);*/
+showToast('Sin novedades por ahora.', 'info', 2500);
 
 
 
