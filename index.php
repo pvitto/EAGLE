@@ -873,7 +873,70 @@ $can_complete = $user_can_act && $task_is_active;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
     const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
-let repeatingToasts = new Map(); // Guarda { intervalId, count, alertData } para toasts repetitivos
+//let repeatingToasts = new Map(); // Guarda { intervalId, count, alertData } para toasts repetitivos
+let lastDiscrepancyIds = new Set();
+let lastDiscrepancyCount = 0;
+let discrepancySnapshotReady = false;
+
+function canSeeDiscrepancyToasts() {
+  const role = (window.currentUserRole || '').toLowerCase();
+  return role === 'admin' || role === 'digitador' || role === 'digitadora';
+}
+// ===== Discrepancias: control anti-spam / multi-pestaña (PÉGALO AQUÍ) =====
+// ===== Discrepancias: control anti-spam / multi-pestaña =====
+const DISCREP_LS_KEY = 'seen_discrepancy_ids_v1';
+const DISCREP_TTL_MS = 5 * 60 * 1000; // “olvida” IDs después de 5 minutos
+
+function loadSeenDiscrepFromLS() {
+  try {
+    const raw = localStorage.getItem(DISCREP_LS_KEY);
+    if (!raw) return { ids: [], ts: Date.now() };
+    const data = JSON.parse(raw);
+    // TTL: si expiró, resetea
+    if (!data.ts || (Date.now() - data.ts) > DISCREP_TTL_MS) return { ids: [], ts: Date.now() };
+    return data;
+  } catch { return { ids: [], ts: Date.now() }; }
+}
+function saveSeenDiscrepToLS(ids) {
+  try { localStorage.setItem(DISCREP_LS_KEY, JSON.stringify({ ids: Array.from(ids), ts: Date.now() })); } catch {}
+}
+
+// Sonido corto de alerta (WebAudio, no bloquea)
+function beepOnce() {
+  try {
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    const o = ctx.createOscillator();
+    const g = ctx.createGain();
+    o.type = 'sine';
+    o.frequency.value = 880;      // tono
+    g.gain.setValueAtTime(0.0001, ctx.currentTime);
+    g.gain.exponentialRampToValueAtTime(0.15, ctx.currentTime + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, ctx.currentTime + 0.25);
+    o.connect(g); g.connect(ctx.destination);
+    o.start(); o.stop(ctx.currentTime + 0.26);
+  } catch {}
+}
+
+
+
+// (opcional, recomendado) hidratar estado al cargar
+try {
+  const boot = loadSeenDiscrepFromLS();
+  if (boot?.ids?.length) {
+    lastDiscrepancyIds = new Set(boot.ids);
+    lastDiscrepancyCount = boot.ids.length;
+  }
+} catch {}
+// Inicializa memoria desde localStorage al cargar
+try {
+  const boot = loadSeenDiscrepFromLS();
+  if (boot?.ids?.length) {
+    lastDiscrepancyIds = new Set(boot.ids);
+    lastDiscrepancyCount = boot.ids.length;
+  }
+} catch {}
+
+/* loadSeenDiscrepFromLS(), saveSeenDiscrepToLS(), beepOnce() */
 // =======================================================
 // Hook de arranque para el panel de Check-in (DOM listo)
 // =======================================================
@@ -2389,16 +2452,73 @@ function updateAlertsDisplay(newAlerts) {
         const noAlertsMsg = mediumPriorityList.querySelector('.text-gray-500');
         if (noAlertsMsg) noAlertsMsg.remove();
     }
+
+    // ======== TOASTS SOLO PARA DISCREPANCIAS NUEVAS ========
+try {
+  const isDiscrepancy = (a) => {
+    const t = (a?.title || '').toLowerCase();
+    const d = (a?.description || '').toLowerCase();
+    return t.includes('discrep') || d.includes('discrep');
+  };
+  const getId = (a) => a?.id ?? null;
+
+  const discrepancyAlerts = (newAlerts || []).filter(isDiscrepancy);
+  const currentIds = new Set(discrepancyAlerts.map(getId).filter(Boolean));
+
+  // Primera carga: tomar “foto” y NO notificar
+  if (!discrepancySnapshotReady) {
+    lastDiscrepancyIds = currentIds;
+    lastDiscrepancyCount = currentIds.size || discrepancyAlerts.length;
+    discrepancySnapshotReady = true;
+    // sincroniza memoria con LS
+    saveSeenDiscrepToLS(lastDiscrepancyIds);
+    return;
+  }
+
+  // cálculo de nuevos por ID
+  let fresh = 0;
+  if (currentIds.size > 0) {
+    for (const id of currentIds) if (!lastDiscrepancyIds.has(id)) fresh++;
+  } else {
+    // Fallback por conteo si no hay IDs
+    const delta = discrepancyAlerts.length - lastDiscrepancyCount;
+    fresh = delta > 0 ? delta : 0;
+  }
+
+  // Aplica reglas de visibilidad y permisos
+  const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
+  if (fresh > 0 && canNotify && !document.hidden) {
+    showToast(fresh === 1 ? 'Hay 1 discrepancia nueva.' : `Hay ${fresh} discrepancias nuevas.`, 'warning', 6000);
+    beepOnce(); // sonido corto una sola vez por lote
+  }
+
+  // Actualiza memorias en RAM y en localStorage
+  if (currentIds.size > 0) {
+    lastDiscrepancyIds = currentIds;
+    lastDiscrepancyCount = currentIds.size;
+  } else {
+    lastDiscrepancyCount = discrepancyAlerts.length;
+  }
+  saveSeenDiscrepToLS(lastDiscrepancyIds);
+} catch (e) {
+  console.debug('Toast discrepancias: no se pudo evaluar', e);
+}
+
+
 }
 // --- Polling Control ---
-    function startAlertPolling(intervalSeconds = 15) { // Default 15 segundos
-        stopAlertPolling(); // Limpia cualquier intervalo anterior
-        console.log(`Iniciando sondeo de alertas cada ${intervalSeconds}s.`);
-        // Llama una vez de inmediato para verificar si hay alertas pendientes al cargar
-        pollAlerts();
-        // Luego establece el intervalo para buscar nuevas
-        alertPollingInterval = setInterval(pollAlerts, intervalSeconds * 1000);
-    }
+
+function startAlertPolling(intervalSeconds = 15) {
+  if (alertPollingInterval) clearInterval(alertPollingInterval);
+  // primera carga inmediata
+  pollAlerts().catch(()=>{});
+  // siguientes ciclos
+  alertPollingInterval = setInterval(() => { pollAlerts().catch(()=>{}); }, intervalSeconds * 1000);
+}
+
+// …al final del DOM ready:
+startAlertPolling(15);
+
 
     function stopAlertPolling() {
         if (alertPollingInterval) {
@@ -2455,24 +2575,22 @@ function updateAlertsDisplay(newAlerts) {
 
 
 // Función Polling Alertas
-   async function pollAlerts() {
+async function pollAlerts() {
   try {
-    const r = await fetch('/realtime_alerts_api.php');
+    const r = await fetch(`${apiRealtimeBase}/realtime_alerts_api.php`, { headers: { 'Accept': 'application/json' } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
-
-    // Ejemplo: si llegaron nuevas discrepancias
-    if (data?.newDiscrepancies > 0) {
-      showToast(`Hay ${data.newDiscrepancies} discrepancias nuevas asignadas a Digitador.`, 'warning');
-    }
+    const alerts = Array.isArray(data?.alerts) ? data.alerts : (Array.isArray(data) ? data : []);
+    updateAlertsDisplay(alerts); // <- NECESARIO
   } catch (err) {
-    // Evitar spam de errores:
     if (!window._pollToastShown) {
       showToast('Fallo el polling de alertas. Verifica tu conexión.', 'error', 7000);
       window._pollToastShown = true;
     }
+    console.error('pollAlerts error:', err);
   }
 }
+
 
 
      // Función Polling Trazabilidad
@@ -2794,6 +2912,39 @@ function createToastContainer() {
   document.body.appendChild(c);
   return c;
 }
+// --- Refrescar alertas inmediatamente después de crear una discrepancia ---
+(function patchFetchForDiscrepancies() {
+  const _fetch = window.fetch;
+
+  // Endpoints reales de tu proyecto que pueden generar discrepancias
+  const DISCREPANCY_ENDPOINT_PATTERNS = [
+    /\/api\/checkin_api\.php/i,          // checkin
+    /\/api\/digitador_cierre_api\.php/i, // cierre / consolidación
+    /\/api\/discrepancy_api\.php/i,      // creación explícita de discrepancias
+    /\/api\/.*denomin/i,                 // si manejas denominaciones por otro endpoint
+    /\/api\/.*cierre/i,                  // resguardo genérico
+    /\/api\/.*discrep/i                  // cualquier otro con "discrep"
+  ];
+
+  window.fetch = async function(input, init = {}) {
+    const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
+    const url = typeof input === 'string' ? input : (input?.url || '');
+
+    const resp = await _fetch(input, init);
+
+    try {
+      const looksLikeDiscrepancyPOST =
+        method === 'POST' &&
+        DISCREPANCY_ENDPOINT_PATTERNS.some(rx => rx.test(url));
+
+      if (looksLikeDiscrepancyPOST && resp.ok && typeof pollAlerts === 'function') {
+        pollAlerts().catch(() => {}); // 🔔 refresca al instante (sin romper si falla)
+      }
+    } catch (_) {}
+
+    return resp;
+  };
+})();
 
 // ======= Azúcar para promesas (éxito / error automáticos) =======
 /**
@@ -2819,29 +2970,19 @@ async function toastAsync(promise, messages) {
 
 // PRUEBAS (puedes borrar luego)
 showToast('Cambios guardados correctamente.', 'success');
-showToast('No pudimos conectar con el servidor.', 'error', 6000);
-showToast('Tienes 3 tareas pendientes de revisión.', 'warning');
-showToast('Sin novedades por ahora.', 'info', 2500);
 
 
 
 async function guardarFormulario(data) {
-  await toastAsync(
-    fetch('/api/guardar', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' }, // importante
-      body: JSON.stringify(data)
-    }).then(r => {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.json();
-    }),
-    {
-      loading: 'Guardando…',
-      success: 'Guardado con éxito',
-      error: 'No se pudo guardar',
-    }
-  );
-}
+await toastAsync(
+  fetch(`${apiUrlBase}/checkin_api.php`, {/*...*/})
+    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
+  {
+    loading: 'Guardando…',
+    success: 'Check-in registrado con éxito.',
+    error:   'No se pudo guardar el check-in.',
+  }
+);
 
 
 const form = document.getElementById('checkin-form');
