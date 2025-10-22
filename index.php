@@ -31,7 +31,6 @@ function getRoleDisplayName($role, $gender) {
 $displayRole = getRoleDisplayName($current_user_role, $current_user_gender);
 
 // Clases CSS para roles
-// Clases CSS para roles
 $role_color_class = 'bg-gray-200 text-gray-800'; // Color del badge interno
 $role_nav_class = 'nav-admin'; // Clase para la navegación
 $role_container_border_class = 'border-gray-400'; // Borde del contenedor de saludo (default)
@@ -39,46 +38,57 @@ $role_container_bg_class = 'bg-gray-50'; // Fondo del contenedor de saludo (defa
 
 switch ($current_user_role) {
     case 'Admin':
-        $role_color_class = 'bg-red-200 text-red-800';
-        $role_nav_class = 'nav-admin';
-        $role_container_border_class = 'border-red-400'; // Borde rojo
-        $role_container_bg_class = 'bg-red-50';         // Fondo rojo claro
-        break;
+        $role_color_class = 'bg-red-200 text-red-800'; $role_nav_class = 'nav-admin';
+        $role_container_border_class = 'border-red-400'; $role_container_bg_class = 'bg-red-50'; break;
     case 'Digitador':
-        $role_color_class = 'bg-blue-200 text-blue-800';
-        $role_nav_class = 'nav-digitador';
-        $role_container_border_class = 'border-blue-400'; // Borde azul
-        $role_container_bg_class = 'bg-blue-50';        // Fondo azul claro
-        break;
+        $role_color_class = 'bg-blue-200 text-blue-800'; $role_nav_class = 'nav-digitador';
+        $role_container_border_class = 'border-blue-400'; $role_container_bg_class = 'bg-blue-50'; break;
     case 'Operador':
-        $role_color_class = 'bg-yellow-200 text-yellow-800';
-        $role_nav_class = 'nav-operador';
-        $role_container_border_class = 'border-yellow-400'; // Borde amarillo
-        $role_container_bg_class = 'bg-yellow-50';      // Fondo amarillo claro
-        break;
+        $role_color_class = 'bg-yellow-200 text-yellow-800'; $role_nav_class = 'nav-operador';
+        $role_container_border_class = 'border-yellow-400'; $role_container_bg_class = 'bg-yellow-50'; break;
     case 'Checkinero':
-        $role_color_class = 'bg-green-200 text-green-800';
-        $role_nav_class = 'nav-checkinero';
-        $role_container_border_class = 'border-green-400'; // Borde verde
-        $role_container_bg_class = 'bg-green-50';       // Fondo verde claro
-        break;
+        $role_color_class = 'bg-green-200 text-green-800'; $role_nav_class = 'nav-checkinero';
+        $role_container_border_class = 'border-green-400'; $role_container_bg_class = 'bg-green-50'; break;
 }
 
 // --- LÓGICA DE ALERTAS Y TAREAS PENDIENTES ---
+$current_user_id = $_SESSION['user_id'];
+$current_user_role = $_SESSION['user_role'];
+// --- LÓGICA DE ALERTAS Y TAREAS PENDIENTES ---
 $all_pending_items = [];
-$user_filter = '';
- if ($current_user_role !== 'Admin') {
-    // Asegura que el usuario vea tareas asignadas a él o a su grupo si no están asignadas individualmente
-    $user_filter = $conn->real_escape_string(" AND (t.assigned_to_user_id = {$current_user_id} OR (t.assigned_to_group = '{$current_user_role}' AND t.assigned_to_user_id IS NULL))");
- }
+
+// --- FILTRO PARA TAREAS MANUALES ---
+// --- FILTRO PARA TAREAS MANUALES ---
+$task_filter = '';
+if ($current_user_role !== 'Admin') {
+    $escaped_role = $conn->real_escape_string($current_user_role);
+    // Filtro solo para tareas: asignadas a mí O a mi grupo
+    $task_filter = " AND (
+        t.assigned_to_user_id = {$current_user_id} 
+        OR (t.assigned_to_group = '{$escaped_role}' AND t.assigned_to_user_id IS NULL)
+    )";
+}
+
+// --- FILTRO PARA ALERTAS (COMBINA LÓGICA NUEVA Y ESTABLE) ---
+$alert_filter = $task_filter; // Empezamos con el filtro de tareas
+if ($current_user_role === 'Digitador') {
+    $escaped_role = $conn->real_escape_string($current_user_role);
+    // Lógica especial de la versión estable:
+    // Muestra si la TAREA es para mí/mi grupo O si la ALERTA es para mi rol
+    $alert_filter = " AND (
+        (t.assigned_to_user_id = {$current_user_id} OR (t.assigned_to_group = '{$escaped_role}' AND t.assigned_to_user_id IS NULL))
+        OR a.suggested_role = '{$escaped_role}'
+    )";
+}
+// Para Admin, $alert_filter sigue siendo = '' (correcto)
+
 
 // Cargar Alertas Pendientes (agrupadas por alerta)
 $alerts_sql = "
 SELECT a.*,
        MIN(t.id) AS task_id,
        MIN(t.status) AS task_status,
-       t.assigned_to_group,
-       MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id,
+       COALESCE(MAX(t.assigned_to_group), a.suggested_role) AS assigned_to_group,       MAX(CASE WHEN t.assigned_to_user_id = {$current_user_id} THEN t.id ELSE NULL END) as user_task_id,
        GROUP_CONCAT(DISTINCT CASE WHEN t.assigned_to_group IS NULL THEN u_assigned.name ELSE NULL END SEPARATOR ', ') as assigned_names,
        MIN(t.type) AS task_type,
        MIN(t.instruction) as instruction,
@@ -89,11 +99,13 @@ FROM alerts a
 LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente'
 LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id
 LEFT JOIN check_ins ci ON a.check_in_id = ci.id
-WHERE a.status = 'Asignada'
-  {$user_filter}
+WHERE a.status IN ('Pendiente', 'Asignada') -- CORRECCIÓN: Buscamos ambas (como en v. estable)
+  {$alert_filter} -- CORRECCIÓN: Usamos el nuevo filtro de alertas
 GROUP BY a.id
 ORDER BY FIELD(a.priority, 'Critica', 'Alta', 'Media', 'Baja'), a.created_at DESC
 ";
+// ... (el resto de la lógica de $alerts_result no cambia) ...
+
 $alerts_result = $conn->query($alerts_sql);
 if ($alerts_result) {
     while ($row = $alerts_result->fetch_assoc()) {
@@ -113,7 +125,7 @@ $manual_tasks_sql = "
     FROM tasks t
     LEFT JOIN users u ON t.assigned_to_user_id = u.id
     WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente'
-      {$user_filter}
+      {$task_filter} -- Se aplica el filtro corregido
     GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group, t.created_at), t.id)
     ORDER BY FIELD(t.priority, 'Critica', 'Alta', 'Media', 'Baja'), t.created_at DESC
 ";
@@ -141,6 +153,7 @@ foreach ($all_pending_items as $item) {
         } catch (Exception $e) { /* Log error */ }
     }
     $item['current_priority'] = $current_priority;
+    // Si no tiene user_task_id pero sí grupo y el grupo coincide, usa el task_id general (para el botón completar)
     if (empty($item['user_task_id']) && !empty($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role) {
          $item['user_task_id'] = $item['task_id'] ?? $item['id'];
     }
@@ -173,6 +186,7 @@ $medium_priority_badge_count = count($panel_medium_priority_items);
 // --- OTRAS CONSULTAS DE DATOS ---
 $completed_tasks = [];
 if ($_SESSION['user_role'] === 'Admin') {
+    // Consulta para Trazabilidad (Admin)
     $completed_result = $conn->query(
         "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time, t.assigned_to_group, u_creator.name as created_by_name, t.resolution_note FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' ORDER BY t.completed_at DESC" );
     if ($completed_result) {
@@ -187,6 +201,7 @@ if ($_SESSION['user_role'] === 'Admin') {
     } else { error_log("Error Admin completed tasks: " . $conn->error); }
 }
 
+// Consulta para Mi Historial (Usuario actual)
 $user_completed_tasks = [];
 $stmt_user_tasks = $conn->prepare( "SELECT t.id, COALESCE(a.title, t.title) as title, t.instruction, t.priority, t.start_datetime, t.end_datetime, u_assigned.name as assigned_to, u_completed.name as completed_by, t.created_at, t.completed_at, TIMEDIFF(t.completed_at, t.created_at) as response_time, t.assigned_to_group, u_creator.name as created_by_name, t.resolution_note FROM tasks t LEFT JOIN users u_assigned ON t.assigned_to_user_id = u_assigned.id LEFT JOIN users u_completed ON t.completed_by_user_id = u_completed.id LEFT JOIN users u_creator ON t.created_by_user_id = u_creator.id LEFT JOIN alerts a ON t.alert_id = a.id WHERE t.status = 'Completada' AND (t.completed_by_user_id = ?) ORDER BY t.completed_at DESC" );
 $stmt_user_tasks->bind_param("i", $current_user_id);
@@ -204,10 +219,26 @@ if ($user_tasks_result) {
 } else { error_log("Error User completed tasks: " . $conn->error); }
 $stmt_user_tasks->close();
 
+// Recordatorios del usuario
 $user_reminders = [];
-$reminders_result = $conn->query("SELECT id, message, created_at FROM reminders WHERE user_id = $current_user_id AND is_read = 0 ORDER BY created_at DESC");
-if($reminders_result) { while($row = $reminders_result->fetch_assoc()){ $user_reminders[] = $row; } }
+// --- MODIFICADO: Añadir JOIN con users para obtener el nombre del creador ---
+$reminders_sql = "
+    SELECT r.id, r.message, r.created_at, u.name as creator_name
+    FROM reminders r
+    LEFT JOIN users u ON r.created_by_user_id = u.id
+    WHERE r.user_id = {$current_user_id} AND r.is_read = 0
+    ORDER BY r.created_at DESC
+";
+$reminders_result = $conn->query($reminders_sql);
+if($reminders_result) {
+    while($row = $reminders_result->fetch_assoc()){
+        $user_reminders[] = $row;
+    }
+} else {
+    error_log("Error loading user reminders: " . $conn->error);
+}
 
+// Datos para el Dashboard (Panel General)
 $today_collections = []; $total_recaudado_hoy = 0;
 $today_collections_result = $conn->query(" SELECT oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name, oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins, oc.created_at, ci.invoice_number, f.name as fund_name, u_dig.name as digitador_name, CASE WHEN ci.digitador_status = 'Cerrado' THEN 'Cerrado' WHEN ci.digitador_status = 'Conforme' THEN 'Conforme' WHEN ci.status = 'Rechazado' THEN 'Rechazado' WHEN ci.status = 'Discrepancia' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Procesado' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Pendiente' THEN 'Pendiente (Operador)' ELSE ci.status END AS final_status FROM operator_counts oc INNER JOIN ( SELECT check_in_id, MAX(id) as max_oc_id FROM operator_counts WHERE DATE(created_at) = CURDATE() GROUP BY check_in_id ) latest_oc ON oc.id = latest_oc.max_oc_id JOIN check_ins ci ON oc.check_in_id = ci.id JOIN clients c ON ci.client_id = c.id JOIN users u_op ON oc.operator_id = u_op.id LEFT JOIN funds f ON ci.fund_id = f.id LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id ORDER BY oc.created_at DESC ");
 if ($today_collections_result) { while ($row = $today_collections_result->fetch_assoc()) { $today_collections[] = $row; $total_recaudado_hoy += $row['total_counted']; } }
@@ -216,6 +247,20 @@ else { error_log("Error Today collections: " . $conn->error); }
 $cierres_pendientes_result = $conn->query("SELECT COUNT(DISTINCT ci.id) as total FROM check_ins ci WHERE ci.status IN ('Procesado', 'Discrepancia') AND ci.digitador_status IS NULL");
 $cierres_pendientes_count = $cierres_pendientes_result->fetch_assoc()['total'] ?? 0;
 
+// Datos para Selects (Checkinero)
+$all_clients = [];
+$clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
+if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
+$all_routes = [];
+$routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
+if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
+
+// Checkins Iniciales (Checkinero y también base para realtime)
+
+$total_alerts_count_for_user = count($all_pending_items);
+$priority_summary_count = count($main_priority_items);
+$high_priority_badge_count = count($panel_high_priority_items);
+$medium_priority_badge_count = count($panel_medium_priority_items);
 $all_clients = [];
 $clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
 if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
@@ -233,14 +278,14 @@ $checkins_result = $conn->query("
     JOIN routes r ON ci.route_id = r.id
     JOIN users u ON ci.checkinero_id = u.id
     LEFT JOIN funds f ON ci.fund_id = f.id
-    WHERE ci.status IN ('Pendiente', 'Rechazado')
+    WHERE ci.status IN ('Pendiente', 'Rechazado', 'Procesado', 'Discrepancia')
     ORDER BY ci.correction_count DESC, ci.created_at DESC
 ");
 if ($checkins_result) { while ($row = $checkins_result->fetch_assoc()) { $initial_checkins[] = $row; } }
-else { error_log("Error initial checkins: " . $conn->error); }
 
+// Historial Operador (Operador y Admin)
 $operator_history = [];
-if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
+if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) { // Digitador también puede verlo
     $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . intval($_SESSION['user_id']) : "";
     $history_query = " SELECT op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date, ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name FROM operator_counts op INNER JOIN ( SELECT check_in_id, MAX(id) as max_id FROM operator_counts GROUP BY check_in_id ) as latest_oc ON op.id = latest_oc.max_id JOIN check_ins ci ON op.check_in_id = ci.id JOIN clients c ON ci.client_id = c.id JOIN users u ON op.operator_id = u.id {$operator_id_filter} ORDER BY op.created_at DESC ";
     $history_result = $conn->query($history_query);
@@ -248,15 +293,15 @@ if (in_array($_SESSION['user_role'], ['Operador', 'Admin', 'Digitador'])) {
     else { error_log("Error operator history: " . $conn->error); }
 }
 
+// Historial Cierres Digitador (Digitador y Admin)
 $digitador_closed_history = [];
 if (in_array($current_user_role, ['Digitador', 'Admin'])) {
-    $digitador_filter = "WHERE ci.digitador_status IN ('Conforme', 'Cerrado', 'Rechazado')";
+   $digitador_filter = "WHERE ci.digitador_status IN ('Procesado', 'Discrepancia', 'Cerrado')";
+
     $closed_history_result = $conn->query(" SELECT ci.id, ci.invoice_number, c.name as client_name, u_check.name as checkinero_name, oc.total_counted, oc.discrepancy, oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins, u_op.name as operator_name, ci.closed_by_digitador_at, u_digitador.name as digitador_name, ci.digitador_status, ci.digitador_observations, f.name as fund_name FROM check_ins ci LEFT JOIN clients c ON ci.client_id = c.id LEFT JOIN users u_check ON ci.checkinero_id = u_check.id LEFT JOIN ( SELECT a.* FROM operator_counts a INNER JOIN ( SELECT check_in_id, MAX(id) as max_id FROM operator_counts GROUP BY check_in_id ) b ON a.id = b.max_id ) oc ON ci.id = oc.check_in_id LEFT JOIN users u_op ON oc.operator_id = u_op.id LEFT JOIN users u_digitador ON ci.closed_by_digitador_id = u_digitador.id LEFT JOIN funds f ON ci.fund_id = f.id {$digitador_filter} ORDER BY ci.closed_by_digitador_at DESC, ci.id DESC" );
     if($closed_history_result){ while($row = $closed_history_result->fetch_assoc()){ $digitador_closed_history[] = $row; } }
     else { error_log("Error digitador history: " . $conn->error); }
 }
-
-
 
 $conn->close();
 ?>
@@ -273,55 +318,113 @@ $conn->close();
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-html { font-size: 12px; }
-body { font-family: 'Inter', sans-serif; }
-.nav-tab { cursor: pointer; padding: 0.25rem 1rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
-.nav-admin:hover { color: #dc2626; }
-.nav-admin.active { color: #dc2626; border-bottom-color: #dc2626; background-color: #fee2e2; }
-.nav-digitador { color: #1e40af; }
-.nav-digitador:hover { color: #2563eb; }
-.nav-digitador.active { color: #2563eb; border-bottom-color: #2563eb; background-color: #dbeafe; }
-.nav-operador { color: #a16207; }
-.nav-operador:hover { color: #ca8a04; }
-.nav-operador.active { color: #ca8a04; border-bottom-color: #ca8a04; background-color: #fefce8; }
-.nav-checkinero { color: #15803d; }
-.nav-checkinero:hover { color: #16a34a; }
-.nav-checkinero.active { color: #16a34a; border-bottom-color: #16a34a; background-color: #f0fdf4; }
-#user-modal-overlay, #reminders-panel, #task-notifications-panel, #medium-priority-panel { transition: opacity 0.3s ease; }
-.task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
-.task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
-.details-row { border-top: 1px solid #e5e7eb; }
-.sortable { transition: background-color 0.2s; }
-.sortable:hover { background-color: #f3f4f6; }
-.nav-dropdown { position: relative; display: inline-block; }
-.nav-dropdown-content { display: none; position: absolute; background-color: white; min-width: 200px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 50; border-radius: 0.375rem; overflow: hidden; top: 100%; left: 0; margin-top: 0.25rem; }
-.nav-dropdown-content a { color: #374151; padding: 0.75rem 1rem; text-decoration: none; display: block; font-weight: 500; font-size: 0.875rem; white-space: nowrap; transition: background-color 0.15s ease-in-out; cursor: pointer; border-bottom: 3px solid transparent; }
-.nav-dropdown-content a:hover { background-color: #f3f4f6; }
-.nav-dropdown:hover .nav-dropdown-content { display: block; }
-.nav-dropdown-content a.nav-admin:hover { background-color: #fee2e2; }
-.nav-dropdown-content a.nav-digitador:hover { background-color: #dbeafe; }
-.nav-dropdown-content a.nav-operador:hover { background-color: #fefce8; }
-.nav-dropdown-content a.nav-checkinero:hover { background-color: #f0fdf4; }
-.sortable { cursor: pointer; } .sortable span { color: #9ca3af; }
-.header-panel-button { display: inline-block; padding: 0.3rem 0.8rem; margin-left: 0.5rem; font-size: 0.8rem; font-weight: 500; border-radius: 0.375rem; border: 1px solid; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); line-height: 1.5; }
-.header-panel-button:hover { opacity: 0.9; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); }
-.header-panel-button.active { box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
-.header-panel-button.nav-checkinero { background-color: #dcfce7; border-color: #4ade80; color: #166534; }
-.header-panel-button.nav-checkinero:hover { background-color: #bbf7d0; }
-.header-panel-button.nav-checkinero.active { background-color: #a7f3d0; border-color: #22c55e; }
-.header-panel-button.nav-operador { background-color: #fef9c3; border-color: #facc15; color: #854d0e; }
-.header-panel-button.nav-operador:hover { background-color: #fde68a; }
-.header-panel-button.nav-operador.active { background-color: #fde047; border-color: #eab308; }
-.header-panel-button.nav-digitador { background-color: #dbeafe; border-color: #60a5fa; color: #1e40af; }
-.header-panel-button.nav-digitador:hover { background-color: #bfdbfe; }
-.header-panel-button.nav-digitador.active { background-color: #93c5fd; border-color: #3b82f6; }
-#alert-popup-overlay { transition: opacity 0.3s ease; }
-#alert-popup { transition: transform 0.3s ease, opacity 0.3s ease; }
-.loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
-@keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-.notification-panel { position: absolute; right: 0; margin-top: 0.5rem; width: 20rem; background-color: white; border-radius: 0.5rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05); padding: 1rem; z-index: 50; }
-.notification-list { max-height: 16rem; overflow-y: auto; }
-.badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
+        
+        html { font-size: 12px; }
+        body { font-family: 'Inter', sans-serif; }
+        .nav-tab { cursor: pointer; padding: 0.25rem 1rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
+        .nav-admin:hover { color: #dc2626; }
+        .nav-admin.active { color: #dc2626; border-bottom-color: #dc2626; background-color: #fee2e2; }
+        .nav-digitador { color: #1e40af; }
+        .nav-digitador:hover { color: #2563eb; }
+        .nav-digitador.active { color: #2563eb; border-bottom-color: #2563eb; background-color: #dbeafe; }
+        .nav-operador { color: #a16207; }
+        .nav-operador:hover { color: #ca8a04; }
+        .nav-operador.active { color: #ca8a04; border-bottom-color: #ca8a04; background-color: #fefce8; }
+        .nav-checkinero { color: #15803d; }
+        .nav-checkinero:hover { color: #16a34a; }
+        .nav-checkinero.active { color: #16a34a; border-bottom-color: #16a34a; background-color: #f0fdf4; }
+        #user-modal-overlay, #reminders-panel, #task-notifications-panel, #medium-priority-panel { transition: opacity 0.3s ease; }
+        .task-form, .cash-breakdown { transition: all 0.4s ease-in-out; max-height: 0; overflow: hidden; padding-top: 0; padding-bottom: 0; opacity: 0;}
+        .task-form.active, .cash-breakdown.active { max-height: 800px; padding-top: 1rem; padding-bottom: 1rem; opacity: 1;}
+        .details-row { border-top: 1px solid #e5e7eb; }
+        .sortable { transition: background-color 0.2s; cursor: pointer; }
+        .sortable:hover { background-color: #f3f4f6; }
+        .sortable span { color: #9ca3af; }
+        .nav-dropdown { position: relative; display: inline-block; }
+        .nav-dropdown-content { display: none; position: absolute; background-color: white; min-width: 200px; box-shadow: 0px 8px 16px 0px rgba(0,0,0,0.2); z-index: 50; border-radius: 0.375rem; overflow: hidden; top: 100%; left: 0; margin-top: 0.25rem; }
+        .nav-dropdown-content a { color: #374151; padding: 0.75rem 1rem; text-decoration: none; display: block; font-weight: 500; font-size: 0.875rem; white-space: nowrap; transition: background-color 0.15s ease-in-out; cursor: pointer; border-bottom: 3px solid transparent; }
+        .nav-dropdown-content a:hover { background-color: #f3f4f6; }
+        .nav-dropdown:hover .nav-dropdown-content { display: block; }
+        .nav-dropdown-content a.nav-admin:hover { background-color: #fee2e2; }
+        .nav-dropdown-content a.nav-digitador:hover { background-color: #dbeafe; }
+        .nav-dropdown-content a.nav-operador:hover { background-color: #fefce8; }
+        .nav-dropdown-content a.nav-checkinero:hover { background-color: #f0fdf4; }
+        .header-panel-button { display: inline-block; padding: 0.3rem 0.8rem; margin-left: 0.5rem; font-size: 0.8rem; font-weight: 500; border-radius: 0.375rem; border: 1px solid; cursor: pointer; transition: all 0.2s; box-shadow: 0 1px 2px 0 rgba(0, 0, 0, 0.05); line-height: 1.5; }
+        .header-panel-button:hover { opacity: 0.9; box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.1), 0 1px 2px 0 rgba(0, 0, 0, 0.06); }
+        .header-panel-button.active { box-shadow: inset 0 1px 2px 0 rgba(0, 0, 0, 0.05); }
+        .header-panel-button.nav-checkinero { background-color: #dcfce7; border-color: #4ade80; color: #166534; }
+        .header-panel-button.nav-checkinero:hover { background-color: #bbf7d0; }
+        .header-panel-button.nav-checkinero.active { background-color: #a7f3d0; border-color: #22c55e; }
+        .header-panel-button.nav-operador { background-color: #fef9c3; border-color: #facc15; color: #854d0e; }
+        .header-panel-button.nav-operador:hover { background-color: #fde68a; }
+        .header-panel-button.nav-operador.active { background-color: #fde047; border-color: #eab308; }
+        .header-panel-button.nav-digitador { background-color: #dbeafe; border-color: #60a5fa; color: #1e40af; }
+        .header-panel-button.nav-digitador:hover { background-color: #bfdbfe; }
+        .header-panel-button.nav-digitador.active { background-color: #93c5fd; border-color: #3b82f6; }
+        #alert-popup-overlay { transition: opacity 0.3s ease; }
+        #alert-popup { transition: transform 0.3s ease, opacity 0.3s ease; }
+        .loader { border: 4px solid #f3f3f3; border-top: 4px solid #3498db; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 20px auto; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+        .notification-panel { position: absolute; right: 0; margin-top: 0.5rem; width: 20rem; background-color: white; border-radius: 0.5rem; box-shadow: 0 10px 15px -3px rgba(0,0,0,0.1), 0 4px 6px -2px rgba(0,0,0,0.05); padding: 1rem; z-index: 50; }
+        .notification-list { max-height: 16rem; overflow-y: auto; }
+        .badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
+        /* Toast Notification Styles */
+.toast {
+    background-color: white;
+    color: #333;
+    padding: 1rem 1.5rem;
+    border-radius: 0.375rem; /* rounded-md */
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); /* shadow-md */
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 250px;
+    max-width: 400px;
+    opacity: 0;
+    transform: translateX(100%);
+    transition: all 0.5s ease-in-out;
+    border-left: 4px solid; /* Placeholder for priority color */
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.toast .toast-content {
+    margin-right: 1rem;
+}
+
+.toast .toast-title {
+    font-weight: 600; /* font-semibold */
+    margin-bottom: 0.25rem;
+}
+
+.toast .toast-body {
+    font-size: 0.875rem; /* text-sm */
+    color: #6b7280; /* text-gray-500 */
+}
+
+.toast .toast-close {
+    background: none;
+    border: none;
+    color: #9ca3af; /* text-gray-400 */
+    font-size: 1.5rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.5rem;
+}
+.toast .toast-close:hover {
+    color: #374151; /* text-gray-700 */
+}
+
+/* Priority Colors */
+.toast.toast-critica { border-left-color: #ef4444; /* red-500 */ }
+.toast.toast-alta { border-left-color: #f97316; /* orange-500 */ }
+.toast.toast-media { border-left-color: #eab308; /* yellow-500 */ }
+.toast.toast-baja { border-left-color: #6b7280; /* gray-500 */ }
+    
+    
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -338,9 +441,7 @@ body { font-family: 'Inter', sans-serif; }
                     <div>
                         <label for="user-gender" class="block text-sm font-medium text-gray-700 mb-1">Sexo</label>
                         <select id="user-gender" name="gender" class="w-full px-3 py-2 border border-gray-300 rounded-md" required>
-                            <option value="">Seleccionar...</option>
-                            <option value="M">Masculino</option>
-                            <option value="F">Femenino</option>
+                            <option value="">Seleccionar...</option><option value="M">Masculino</option><option value="F">Femenino</option>
                         </select>
                     </div>
                     <div><label for="user-password" class="block text-sm font-medium text-gray-700 mb-1">Contraseña</label><input type="password" id="user-password" name="password" class="w-full px-3 py-2 border border-gray-300 rounded-md"><p id="password-hint" class="text-xs text-gray-500 mt-1"></p></div>
@@ -352,155 +453,121 @@ body { font-family: 'Inter', sans-serif; }
 
     <div id="alert-popup-overlay" class="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center p-4 hidden z-[100]">
         <div id="alert-popup" class="bg-white rounded-lg shadow-xl w-full max-w-lg transform scale-95 opacity-0">
-             <div id="alert-popup-header" class="p-4 border-b rounded-t-lg bg-red-100 border-red-200">
-                <div class="flex justify-between items-center">
-                    <h3 id="alert-popup-title" class="text-xl font-bold text-red-800">¡Nueva Alerta Prioritaria!</h3>
-                    <button onclick="closeAlertPopup()" class="text-red-400 hover:text-red-600 text-3xl leading-none">&times;</button>
-                </div>
-             </div>
-             <div class="p-6 space-y-3">
-                <p id="alert-popup-description" class="text-gray-700"></p>
-                <p class="text-sm text-gray-500">Por favor, revisa el panel de alertas para más detalles y acciones.</p>
-             </div>
-             <div class="p-4 bg-gray-50 border-t rounded-b-lg flex justify-end">
-                <button onclick="closeAlertPopup()" class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700">Entendido</button>
-             </div>
+             <div id="alert-popup-header" class="p-4 border-b rounded-t-lg bg-red-100 border-red-200"><div class="flex justify-between items-center"><h3 id="alert-popup-title" class="text-xl font-bold text-red-800"></h3><button onclick="closeAlertPopup()" class="text-red-400 hover:text-red-600 text-3xl leading-none">&times;</button></div></div>
+             <div class="p-6 space-y-3"><p id="alert-popup-description" class="text-gray-700"></p><p class="text-sm text-gray-500">Por favor, revisa el panel de alertas para más detalles y acciones.</p></div>
+             <div class="p-4 bg-gray-50 border-t rounded-b-lg flex justify-end"><button onclick="closeAlertPopup()" class="px-4 py-2 bg-blue-600 text-white font-semibold rounded-md hover:bg-blue-700">Entendido</button></div>
         </div>
     </div>
+
     <div id="app" class="p-4 sm:p-6 lg:p-8 max-w-full mx-auto">
         <header class="flex flex-col sm:flex-row justify-between sm:items-start mb-2 border-b pb-1">
-            <div>
+             <div>
                 <h1 class="text-2xl md:text-3xl font-bold text-gray-900">EAGLE 3.0</h1>
                 <p class="text-sm text-gray-500 mb-2">Sistema Integrado de Operaciones y Alertas</p>
-               
-         <div class="inline-flex items-center gap-2 mt-2 px-4 py-2 rounded-xl
-            border <?php echo $role_container_border_class; ?> <?php echo $role_container_bg_class; ?>">
-    <span class="font-semibold text-gray-700">Hola</span>
-    <span class="font-bold px-3 py-1 rounded-full <?php echo $role_color_class; ?>">
-        <?php echo htmlspecialchars($displayRole); ?>
-    </span>
-    <span class="font-bold text-gray-900">
-        : <?php echo htmlspecialchars($_SESSION['user_name']); ?>
-    </span>
-</div>
+                <div class="inline-flex items-center gap-2 mt-2 px-4 py-2 rounded-xl border <?php echo $role_container_border_class; ?> <?php echo $role_container_bg_class; ?>">
+                    <span class="font-semibold text-gray-700">Hola</span>
+                    <span class="font-bold px-3 py-1 rounded-full <?php echo $role_color_class; ?>"><?php echo htmlspecialchars($displayRole); ?></span>
+                    <span class="font-bold text-gray-900">: <?php echo htmlspecialchars($_SESSION['user_name']); ?></span>
+                </div>
             </div>
-
             <div class="mt-4 sm:mt-0 flex flex-col sm:items-end space-y-2">
                 <div class="flex items-center space-x-4">
                     <a href="logout.php" class="text-blue-600 hover:underline">Cerrar Sesión</a>
                     <div class="relative">
                         <button id="task-notification-button" onclick="togglePanel('task-notifications-panel')" class="relative text-gray-500 hover:text-gray-700">
                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6H5a2 2 0 00-2 2zm0 0h7"></path></svg>
-                            <?php if ($high_priority_badge_count > 0): ?>
-                            <span id="task-notification-badge" class="absolute -top-2 -right-2 badge-count bg-red-500"><?php echo $high_priority_badge_count; ?></span>
-                            <?php endif; ?>
+                            <span id="task-notification-badge" class="absolute -top-2 -right-2 badge-count bg-red-500 <?php echo $high_priority_badge_count == 0 ? 'hidden' : ''; ?>"><?php echo $high_priority_badge_count; ?></span>
                         </button>
                         <div id="task-notifications-panel" class="notification-panel hidden">
                             <h4 class="font-bold text-gray-800 mb-2">Alertas de Tareas Prioritarias</h4>
                             <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
-                                <?php if(empty($panel_high_priority_items)): ?>
-                                    <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
+                                <?php if(empty($panel_high_priority_items)): ?> <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
                                 <?php else: foreach($panel_high_priority_items as $item): $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange'; ?>
                                 <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
                                     <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
                                     <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
                                     <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
-                                </div>
-                                <?php endforeach; endif; ?>
+                                </div> <?php endforeach; endif; ?>
                             </div>
                         </div>
                     </div>
                     <div class="relative">
                         <button id="medium-priority-button" onclick="togglePanel('medium-priority-panel')" class="relative text-gray-500 hover:text-gray-700">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
-                            <?php if ($medium_priority_badge_count > 0): ?>
-                            <span id="medium-priority-badge" class="absolute -top-2 -right-2 badge-count bg-yellow-500"><?php echo $medium_priority_badge_count; ?></span>
-                            <?php endif; ?>
+                             <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                            <span id="medium-priority-badge" class="absolute -top-2 -right-2 badge-count bg-yellow-500 <?php echo $medium_priority_badge_count == 0 ? 'hidden' : ''; ?>"><?php echo $medium_priority_badge_count; ?></span>
                         </button>
                         <div id="medium-priority-panel" class="notification-panel hidden">
                            <h4 class="font-bold text-gray-800 mb-2">Alertas de Prioridad Media</h4>
                             <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
-                               <?php if(empty($panel_medium_priority_items)): ?>
-                                    <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
+                               <?php if(empty($panel_medium_priority_items)): ?> <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
                                <?php else: foreach($panel_medium_priority_items as $item): ?>
                                     <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
                                         <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
                                         <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
                                         <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
                                         <?php if (!empty($item['end_datetime'])): ?><div class="countdown-timer text-xs font-bold mt-1" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div><?php endif; ?>
-                                    </div>
-                               <?php endforeach; endif; ?>
+                                    </div> <?php endforeach; endif; ?>
                             </div>
                         </div>
                    </div>
                    <div class="relative">
-                        <button id="reminders-button" onclick="togglePanel('reminders-panel')" class="relative text-gray-500 hover:text-gray-700">
-                            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                            <span id="reminders-badge" class="absolute -top-2 -right-2 badge-count bg-blue-500 hidden"></span>
-                        </button>
-                        <div id="reminders-panel" class="notification-panel hidden">
-                           <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
-                            <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
-                               <?php if(empty($user_reminders)): ?>
-                                    <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
-                               <?php else: foreach($user_reminders as $reminder): ?>
-                                    <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
-                                        <div class="flex justify-between items-start">
-                                            <div><p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p><p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p></div>
-                                            <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
-                                        </div>
-                                    </div>
-                               <?php endforeach; endif; ?>
-                            </div>
+                            <button id="reminders-button" onclick="togglePanel('reminders-panel')" class="relative text-gray-500 hover:text-gray-700">
+    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+    <span id="reminders-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-blue-500 text-white text-xs font-bold hidden"></span>
+</button>
+<div id="reminders-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+    <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
+    <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+       <?php if(empty($user_reminders)): ?>
+           <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
+       <?php else: ?>
+           <?php foreach($user_reminders as $reminder): ?>
+                <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p>
+                            <p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p>
+                            <p class="text-xs text-blue-600 mt-1">Enviado por: <?php echo htmlspecialchars($reminder['creator_name'] ?? 'Desconocido'); ?></p>
                         </div>
+                        <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
+                    </div>
+                </div>
+           <?php endforeach; ?>
+       <?php endif; // <--- ¡Añade esta línea! ?>
+    </div>
+</div>
                    </div>
                </div>
                <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                <div class="mt-2 flex flex-wrap justify-start sm:justify-end space-x-2 sm:space-x-4">
-                   <?php // Se mantienen las validaciones internas por si acaso, aunque ya sabemos que es Admin ?>
-                   <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?>
-                       <button id="tab-checkinero" class="header-panel-button nav-checkinero shadow-sm" onclick="switchTab('checkinero')">Panel Check-in</button>
-                   <?php endif; ?>
-                   <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?>
-                       <button id="tab-operador" class="header-panel-button nav-operador shadow-sm" onclick="switchTab('operador')">Panel Operador</button>
-                   <?php endif; ?>
-                   <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
-                       <button id="tab-digitador" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button>
-                   <?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?><button id="tab-checkinero" class="header-panel-button nav-checkinero shadow-sm" onclick="switchTab('checkinero')">Panel Check-in</button><?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?><button id="tab-operador" class="header-panel-button nav-operador shadow-sm" onclick="switchTab('operador')">Panel Operador</button><?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?><button id="tab-digitador" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button><?php endif; ?>
                </div>
                <?php endif; ?>
                </div>
        </header>
-       <nav class="mb-4">
-           <div class="border-b border-gray-200">
-               <div class="-mb-px flex space-x-4 overflow-x-auto">
-                   <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
 
-                   <?php if ($_SESSION['user_role'] === 'Checkinero'): ?>
-                       <button id="tab-checkinero" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('checkinero')">Panel Check-in</button>
-                   <?php endif; ?>
-                   <?php if ($_SESSION['user_role'] === 'Operador'): ?>
-                       <button id="tab-operador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('operador')">Panel Operador</button>
-                   <?php endif; ?>
-                   <?php if ($_SESSION['user_role'] === 'Digitador'): ?>
-                       <button id="tab-digitador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('digitador')">Panel Digitador</button>
-                   <?php endif; ?>
-                   <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
-
-                   <?php // Pestañas exclusivas de Admin
-                   if ($_SESSION['user_role'] === 'Admin'): ?>
-                       <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
-                       <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
-                       <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
-                       <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
-                       <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
-                   <?php endif; ?>
-               </div>
-           </div>
+        <nav class="mb-4">
+           <div class="border-b border-gray-200"><div class="-mb-px flex space-x-4 overflow-x-auto">
+               <button id="tab-operaciones" class="nav-tab active <?php echo $role_nav_class; ?>" onclick="switchTab('operaciones')">Panel General</button>
+               <?php if ($_SESSION['user_role'] === 'Checkinero'): ?><button id="tab-checkinero" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('checkinero')">Panel Check-in</button><?php endif; ?>
+               <?php if ($_SESSION['user_role'] === 'Operador'): ?><button id="tab-operador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('operador')">Panel Operador</button><?php endif; ?>
+               <?php if ($_SESSION['user_role'] === 'Digitador'): ?><button id="tab-digitador" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('digitador')">Panel Digitador</button><?php endif; ?>
+               <button id="tab-mi-historial" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('mi-historial')">Mi Historial de Tareas</button>
+               <?php if ($_SESSION['user_role'] === 'Admin'): ?>
+                   <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
+                   <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
+                   <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
+                   <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
+                   <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
+               <?php endif; ?>
+           </div></div>
        </nav>
-       <main>
-           <div id="content-operaciones">
+
+        <main>
+            <div id="content-operaciones">
                 <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Recaudos de Hoy</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">$</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo '$' . number_format($total_recaudado_hoy, 0, ',', '.'); ?></p></div>
                     <div class="bg-white p-6 rounded-xl shadow-sm"><div class="flex justify-between items-start"><p class="text-sm font-medium text-gray-500">Cierres Pendientes</p><div class="text-blue-500 p-2 bg-blue-100 rounded-full">🕔</div></div><p class="text-3xl font-bold text-gray-900 mt-2"><?php echo $cierres_pendientes_count; ?></p><p class="text-sm text-gray-500 mt-2">Para revisión de Digitador</p></div>
@@ -518,10 +585,29 @@ body { font-family: 'Inter', sans-serif; }
                                 $is_manual = $item['item_type'] === 'manual_task';
                                 $is_group_task = !empty($item['assigned_to_group']);
                                 $assigned_names = $item['assigned_names'] ?? null;
-                                $task_id_to_use = $item['task_id'] ?? $item['id'];
+                                $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                 $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
                                 $form_id_prefix = $task_id_to_use;
-                                $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
+                                // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
+                                // --- INICIO: Lógica Corregida para $can_complete ---
+// --- INICIO: Lógica Corregida para $can_complete (v2) ---
+$is_admin = $current_user_role === 'Admin';
+$is_assigned_individually = !empty($item['user_task_id']);
+$is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
+
+// El usuario puede completar si es Admin O la tarea es suya (individual o grupo)
+$user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
+
+// La tarea se considera "activa" si:
+// 1. Es una tarea nueva con estado Pendiente
+// 2. Es una alerta vieja sin tarea (task_status es NULL), la cual tratamos como pendiente
+$task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica']))
+                   || !isset($item['task_status']);
+
+$can_complete = $user_can_act && $task_is_active;
+// --- FIN: Lógica Corregida para $can_complete (v2) ---
+// --- FIN: Lógica Corregida para $can_complete ---
+                                // --- FIN CAMBIO ---
                                 $priority_to_use = $item['current_priority'];
                                 $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
                                 $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
@@ -531,30 +617,22 @@ body { font-family: 'Inter', sans-serif; }
                                     <div class="flex justify-between items-start">
                                         <p class="font-semibold <?php echo $color['text']; ?> text-lg">
                                             <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?>
-                                            <?php if (!empty($item['invoice_number'])): ?>
-                                                <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
-                                            <?php endif; ?>
+                                            <?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span> <?php endif; ?>
                                             <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                         </p>
-                                        </div>
-                                    <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                    <?php if (!empty($item['end_datetime'])): ?>
-                                        <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
-                                    <?php endif; ?>
-                                    <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                         <?php if ($can_complete): ?>
-                                            <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
-                                        <?php endif; ?>
-                                        <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                            <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300 ml-auto" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
+                                         <?php endif; ?>
+                                    </div>
+                                    <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
+                                    <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                                    <div class="mt-4 flex items-center space-x-4 border-t pt-3">
+                                         <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                         <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                         <div class="flex-grow text-right text-sm">
-                                            <?php if($is_group_task): ?>
-                                                <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
-                                            <?php elseif (!empty($assigned_names)): ?>
-                                                <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
-                                            <?php else: ?>
-                                                <span class="font-semibold text-gray-500">Pendiente de Asignación</span>
-                                            <?php endif; ?>
+                                            <?php if($is_group_task): ?> <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
+                                            <?php elseif (!empty($assigned_names)): ?> <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
+                                            <?php else: ?> <span class="font-semibold text-gray-500">Pendiente de Asignación</span> <?php endif; ?>
                                         </div>
                                     </div>
                                 </div>
@@ -564,140 +642,29 @@ body { font-family: 'Inter', sans-serif; }
                                     <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
                                 </div>
                                 <div id="assign-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
-                                    <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                    <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
-                                        <optgroup label="Grupos">
-                                            <option value="group-todos">Todos los Usuarios</option>
-                                            <option value="group-Operador">Todos los Operadores</option>
-                                            <option value="group-Checkinero">Todos los Checkineros</option>
-                                            <option value="group-Digitador">Todos los Digitadores</option>
-                                        </optgroup>
-                                        <optgroup label="Usuarios Individuales">
-                                            <?php foreach ($all_users as $user): ?>
-                                                <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option>
-                                            <?php endforeach; ?>
-                                        </optgroup>
-                                    </select>
-                                    <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                    <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                     <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
+                                     <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><optgroup label="Grupos"><option value="group-todos">Todos</option><option value="group-Operador">Operadores</option><option value="group-Checkinero">Checkineros</option><option value="group-Digitador">Digitadores</option></optgroup><optgroup label="Individuales"><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option><?php endforeach; ?></optgroup></select>
+                                     <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                                     <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                 </div>
                                 <div id="reminder-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
-                                    <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                    <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
-                                         <option value="">Seleccione usuario...</option> <?php foreach ($all_users as $user): ?>
-                                            <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                    <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                     <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
+                                     <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><option value="">Seleccione usuario...</option><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option><?php endforeach; ?></select>
+                                     <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
 
                        <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
                          <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
-                         <div class="overflow-x-auto">
-                            <table class="w-full text-sm text-left">
-                                <thead class="text-xs text-gray-500 uppercase bg-gray-50">
-                                    <tr>
-                                        <th class="px-6 py-3">Planilla</th>
-                                        <th class="px-6 py-3">Fondo</th>
-                                        <th class="px-6 py-3">Cliente / Tienda</th>
-                                        <th class="px-6 py-3">Operador</th>
-                                        <th class="px-6 py-3">Digitador</th>
-                                        <th class="px-6 py-3">Hora Conteo</th>
-                                        <th class="px-6 py-3">Monto Contado</th>
-                                        <th class="px-6 py-3">Estado</th>
-                                        <th class="px-6 py-3"></th>
-                                    </tr>
-                                </thead>
-                                <tbody id="recaudos-tbody">
-                                    <?php if (empty($today_collections)): ?>
-                                        <tr><td colspan="9" class="px-6 py-4 text-center text-gray-500">No hay recaudos registrados hoy.</td></tr>
-                                    <?php else: ?>
-                                        <?php foreach ($today_collections as $recaudo): ?>
-                                            <?php
-                                                $status_badge = '';
-                                                switch ($recaudo['final_status']) {
-                                                    case 'Conforme': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>'; break;
-                                                    case 'Cerrado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">Cerrado</span>'; break;
-                                                    case 'Rechazado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>'; break;
-                                                    case 'En Revisión (Digitador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>'; break;
-                                                    case 'Pendiente (Operador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">Pendiente</span>'; break;
-                                                    default: $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">' . htmlspecialchars($recaudo['final_status']) . '</span>'; break;
-                                                }
-                                            ?>
-                                            <tr class="border-b">
-                                                <td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($recaudo['invoice_number']); ?></td>
-                                                <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['fund_name'] ?? 'N/A'); ?></td>
-                                                <td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td>
-                                                <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td>
-                                                <td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['digitador_name'] ?? 'N/A'); ?></td>
-                                                <td class="px-6 py-4 text-xs"><?php echo date('h:i a', strtotime($recaudo['created_at'])); ?></td>
-                                                <td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td>
-                                                <td class="px-6 py-4"><?php echo $status_badge; ?></td>
-                                                <td class="px-6 py-4 text-right">
-                                                    <button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button>
-                                                </td>
-                                            </tr>
-                                            <tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>">
-                                                <td colspan="9" class="p-0">
-                                                    <div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50">
-                                                        <div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs">
-                                                            <span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span>
-                                                            <span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span>
-                                                            <span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span>
-                                                            <span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span>
-                                                            <span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span>
-                                                            <span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span>
-                                                            <span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span>
-                                                        </div>
-                                                    </div>
-                                                </td>
-                                            </tr>
-                                        <?php endforeach; ?>
-                                    <?php endif; ?>
-                                </tbody>
-                            </table>
-                        </div>
+                         <div class="overflow-x-auto"><table class="w-full text-sm text-left"><thead class="text-xs text-gray-500 uppercase bg-gray-50"><tr><th class="px-6 py-3">Planilla</th><th class="px-6 py-3">Fondo</th><th class="px-6 py-3">Cliente</th><th class="px-6 py-3">Operador</th><th class="px-6 py-3">Digitador</th><th class="px-6 py-3">Hora</th><th class="px-6 py-3">Monto</th><th class="px-6 py-3">Estado</th><th class="px-6 py-3"></th></tr></thead><tbody id="recaudos-tbody"><?php if (empty($today_collections)): ?><tr><td colspan="9" class="px-6 py-4 text-center text-gray-500">No hay recaudos hoy.</td></tr><?php else: ?><?php foreach ($today_collections as $recaudo): ?><?php $status_badge = ''; switch ($recaudo['final_status']) { case 'Conforme': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>'; break; case 'Cerrado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">Cerrado</span>'; break; case 'Rechazado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>'; break; case 'En Revisión (Digitador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>'; break; case 'Pendiente (Operador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">Pendiente</span>'; break; default: $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">' . htmlspecialchars($recaudo['final_status']) . '</span>'; break; } ?><tr class="border-b"><td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($recaudo['invoice_number']); ?></td><td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['fund_name'] ?? 'N/A'); ?></td><td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td><td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td><td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['digitador_name'] ?? 'N/A'); ?></td><td class="px-6 py-4 text-xs"><?php echo date('h:i a', strtotime($recaudo['created_at'])); ?></td><td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td><td class="px-6 py-4"><?php echo $status_badge; ?></td><td class="px-6 py-4 text-right"><button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button></td></tr><tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>"><td colspan="9" class="p-0"><div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50"><div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs"><span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span><span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span><span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span><span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span><span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span><span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span><span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span></div></div></td></tr><?php endforeach; ?><?php endif; ?></tbody></table></div>
                     </div>
                     </div>
 
                     <div class="space-y-8">
                         <div class="bg-white p-6 rounded-xl shadow-sm">
                             <h2 class="text-lg font-semibold text-gray-900 mb-4">Crear Tarea Manual</h2>
-                            <form id="manual-task-form" class="space-y-3">
-                                <div><label for="manual-task-title" class="text-sm font-medium">Título</label><input type="text" id="manual-task-title" required class="w-full p-2 text-sm border rounded-md mt-1"></div>
-                                <div><label for="manual-task-desc" class="text-sm font-medium">Descripción</label><textarea id="manual-task-desc" rows="3" class="w-full p-2 text-sm border rounded-md mt-1"></textarea></div>
-                                <div><label for="manual-task-priority" class="text-sm font-medium">Prioridad</label><select id="manual-task-priority" required class="w-full p-2 text-sm border rounded-md mt-1"><option value="Alta">Alta</option><option value="Media" selected>Media</option><option value="Baja">Baja</option></select></div>
-                                <div class="grid grid-cols-2 gap-4">
-                                    <div>
-                                        <label for="manual-task-start" class="text-sm font-medium">Fecha/Hora Inicio</label>
-                                        <input type="datetime-local" id="manual-task-start" class="w-full p-2 text-sm border rounded-md mt-1">
-                                    </div>
-                                    <div>
-                                        <label for="manual-task-end" class="text-sm font-medium">Fecha/Hora Fin</label>
-                                        <input type="datetime-local" id="manual-task-end" class="w-full p-2 text-sm border rounded-md mt-1">
-                                    </div>
-                                </div>
-                                <div>
-                                    <label for="manual-task-user" class="text-sm font-medium">Asignar a</label>
-                                    <select id="manual-task-user" required class="w-full p-2 text-sm border rounded-md mt-1">
-                                        <option value="">Seleccionar...</option>
-                                        <optgroup label="Grupos">
-                                            <option value="group-todos">Todos los Usuarios</option>
-                                            <option value="group-Operador">Todos los Operadores</option>
-                                            <option value="group-Checkinero">Todos los Checkineros</option>
-                                            <option value="group-Digitador">Todos los Digitadores</option>
-                                        </optgroup>
-                                        <optgroup label="Usuarios Individuales">
-                                            <?php foreach ($all_users as $user):?>
-                                                <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?> (<?php echo $user['role']; ?>)</option>
-                                            <?php endforeach; ?>
-                                        </optgroup>
-                                    </select>
-                                </div>
-                                <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-md">Crear Tarea</button>
-                            </form>
+                            <form id="manual-task-form" class="space-y-3"><div><label for="manual-task-title" class="text-sm font-medium">Título</label><input type="text" id="manual-task-title" required class="w-full p-2 text-sm border rounded-md mt-1"></div><div><label for="manual-task-desc" class="text-sm font-medium">Descripción</label><textarea id="manual-task-desc" rows="3" class="w-full p-2 text-sm border rounded-md mt-1"></textarea></div><div><label for="manual-task-priority" class="text-sm font-medium">Prioridad</label><select id="manual-task-priority" required class="w-full p-2 text-sm border rounded-md mt-1"><option value="Alta">Alta</option><option value="Media" selected>Media</option><option value="Baja">Baja</option></select></div><div class="grid grid-cols-2 gap-4"><div><label for="manual-task-start" class="text-sm font-medium">Inicio</label><input type="datetime-local" id="manual-task-start" class="w-full p-2 text-sm border rounded-md mt-1"></div><div><label for="manual-task-end" class="text-sm font-medium">Fin</label><input type="datetime-local" id="manual-task-end" class="w-full p-2 text-sm border rounded-md mt-1"></div></div><div><label for="manual-task-user" class="text-sm font-medium">Asignar a</label><select id="manual-task-user" required class="w-full p-2 text-sm border rounded-md mt-1"><option value="">Seleccionar...</option><optgroup label="Grupos"><option value="group-todos">Todos</option><option value="group-Operador">Operadores</option><option value="group-Checkinero">Checkineros</option><option value="group-Digitador">Digitadores</option></optgroup><optgroup label="Individuales"><?php foreach ($all_users as $user):?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?> (<?php echo $user['role']; ?>)</option><?php endforeach; ?></optgroup></select></div><button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 rounded-md">Crear Tarea</button></form>
                         </div>
 
                         <div class="bg-white p-6 rounded-xl shadow-sm">
@@ -710,10 +677,26 @@ body { font-family: 'Inter', sans-serif; }
                                         $is_manual = $item['item_type'] === 'manual_task';
                                         $is_group_task = !empty($item['assigned_to_group']);
                                         $assigned_names = $item['assigned_names'] ?? null;
-                                        $task_id_to_use = $item['task_id'] ?? $item['id'];
+                                        $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                         $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
                                         $form_id_prefix = "np-" . $task_id_to_use;
-                                        $can_complete = isset($item['task_status']) && $item['task_status'] === 'Pendiente' && !empty($item['user_task_id']);
+                                        // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
+// --- INICIO: Lógica Corregida para $can_complete (v2) ---
+$is_admin = $current_user_role === 'Admin';
+$is_assigned_individually = !empty($item['user_task_id']);
+$is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
+
+// El usuario puede completar si es Admin O la tarea es suya (individual o grupo)
+$user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
+
+// La tarea se considera "activa" si:
+// 1. Es una tarea nueva con estado Pendiente
+// 2. Es una alerta vieja sin tarea (task_status es NULL), la cual tratamos como pendiente
+$task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica']))
+                   || !isset($item['task_status']);
+
+$can_complete = $user_can_act && $task_is_active;
+// --- FIN: Lógica Corregida para $can_complete (v2) ---                                        // --- FIN CAMBIO ---
                                         $priority_to_use = $item['current_priority'];
                                         $color_map = ['Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']];
                                         $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
@@ -723,30 +706,22 @@ body { font-family: 'Inter', sans-serif; }
                                             <div class="flex justify-between items-start">
                                                 <p class="font-semibold <?php echo $color['text']; ?> text-md">
                                                     <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?>
-                                                    <?php if (!empty($item['invoice_number'])): ?>
-                                                        <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span>
-                                                    <?php endif; ?>
+                                                    <?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span> <?php endif; ?>
                                                     <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                                 </p>
-                                                </div>
+                                                 <?php if ($can_complete): ?>
+                                                    <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300 ml-auto" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
+                                                 <?php endif; ?>
+                                            </div>
                                             <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                            <?php if (!empty($item['end_datetime'])): ?>
-                                                <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div>
-                                            <?php endif; ?>
+                                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
-                                                <?php if ($can_complete): ?>
-                                                    <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-green-600 hover:text-green-800">Completar</button>
-                                                <?php endif; ?>
-                                                <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                                 <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                                 <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                                 <div class="flex-grow text-right text-sm">
-                                                     <?php if($is_group_task): ?>
-                                                        <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
-                                                    <?php elseif (!empty($assigned_names)): ?>
-                                                        <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
-                                                    <?php else: ?>
-                                                        <span class="font-semibold text-gray-500">Pendiente de Asignación</span>
-                                                    <?php endif; ?>
+                                                     <?php if($is_group_task): ?> <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
+                                                    <?php elseif (!empty($assigned_names)): ?> <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
+                                                    <?php else: ?> <span class="font-semibold text-gray-500">Pendiente de Asignación</span> <?php endif; ?>
                                                 </div>
                                             </div>
                                         </div>
@@ -757,29 +732,13 @@ body { font-family: 'Inter', sans-serif; }
                                         </div>
                                         <div id="assign-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                            <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
-                                                <optgroup label="Grupos">
-                                                    <option value="group-todos">Todos los Usuarios</option>
-                                                    <option value="group-Operador">Todos los Operadores</option>
-                                                    <option value="group-Checkinero">Todos los Checkineros</option>
-                                                    <option value="group-Digitador">Todos los Digitadores</option>
-                                                </optgroup>
-                                                <optgroup label="Usuarios Individuales">
-                                                    <?php foreach ($all_users as $user): ?>
-                                                        <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option>
-                                                    <?php endforeach; ?>
-                                                </optgroup>
-                                            </select>
+                                            <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><optgroup label="Grupos"><option value="group-todos">Todos</option><option value="group-Operador">Operadores</option><option value="group-Checkinero">Checkineros</option><option value="group-Digitador">Digitadores</option></optgroup><optgroup label="Individuales"><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option><?php endforeach; ?></optgroup></select>
                                             <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
                                             <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                         </div>
                                         <div id="reminder-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                            <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md">
-                                                 <option value="">Seleccione usuario...</option> <?php foreach ($all_users as $user): ?>
-                                                    <option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option>
-                                                <?php endforeach; ?>
-                                            </select>
+                                            <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><option value="">Seleccione usuario...</option><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option><?php endforeach; ?></select>
                                             <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                         </div>
                                     </div>
@@ -797,46 +756,10 @@ body { font-family: 'Inter', sans-serif; }
                         <h3 id="checkin-form-title" class="text-xl font-semibold mb-4">Registrar Nuevo Check-in</h3>
                         <form id="checkin-form" class="space-y-4">
                              <input type="hidden" id="check_in_id_field">
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label for="invoice_number" class="block text-sm font-medium">Número de Factura/Planilla</label>
-                                    <input type="text" id="invoice_number" required class="mt-1 w-full p-2 border rounded-md">
-                                </div>
-                                <div>
-                                    <label for="seal_number" class="block text-sm font-medium">Número de Sello</label>
-                                    <input type="text" id="seal_number" required class="mt-1 w-full p-2 border rounded-md">
-                                </div>
-                            </div>
-                            <div>
-                                <label for="client_id" class="block text-sm font-medium">Cliente</label>
-                                <select id="client_id" required class="mt-1 w-full p-2 border rounded-md">
-                                    <option value="">Seleccione un cliente...</option>
-                                    <?php foreach($all_clients as $client): ?>
-                                        <option value="<?php echo $client['id']; ?>"><?php echo htmlspecialchars($client['name']) . ' (NIT: ' . htmlspecialchars($client['nit'] ?? 'N/A') . ')'; ?></option>
-                                    <?php endforeach; ?>
-                                </select>
-                            </div>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div>
-                                    <label for="route_id" class="block text-sm font-medium">Ruta</label>
-                                    <select id="route_id" required class="mt-1 w-full p-2 border rounded-md">
-                                        <option value="">Seleccione una ruta...</option>
-                                        <?php foreach($all_routes as $route): ?>
-                                            <option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option>
-                                        <?php endforeach; ?>
-                                    </select>
-                                </div>
-                                <div>
-                                    <label for="fund_id" class="block text-sm font-medium">Fondo</label>
-                                    <select id="fund_id" required class="mt-1 w-full p-2 border rounded-md bg-gray-200" disabled>
-                                        <option value="">Seleccione un cliente primero...</option>
-                                    </select>
-                                </div>
-                            </div>
-                            <div>
-                                <label for="declared_value" class="block text-sm font-medium">Valor Declarado</label>
-                                <input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md">
-                            </div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label for="invoice_number" class="block text-sm font-medium">Nro Planilla</label><input type="text" id="invoice_number" required class="mt-1 w-full p-2 border rounded-md"></div><div><label for="seal_number" class="block text-sm font-medium">Nro Sello</label><input type="text" id="seal_number" required class="mt-1 w-full p-2 border rounded-md"></div></div>
+                            <div><label for="client_id" class="block text-sm font-medium">Cliente</label><select id="client_id" required class="mt-1 w-full p-2 border rounded-md"><option value="">Seleccione...</option><?php foreach($all_clients as $client): ?><option value="<?php echo $client['id']; ?>"><?php echo htmlspecialchars($client['name']) . ' (NIT: ' . htmlspecialchars($client['nit'] ?? 'N/A') . ')'; ?></option><?php endforeach; ?></select></div>
+                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label for="route_id" class="block text-sm font-medium">Ruta</label><select id="route_id" required class="mt-1 w-full p-2 border rounded-md"><option value="">Seleccione...</option><?php foreach($all_routes as $route): ?><option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option><?php endforeach; ?></select></div><div><label for="fund_id" class="block text-sm font-medium">Fondo</label><select id="fund_id" required class="mt-1 w-full p-2 border rounded-md bg-gray-200" disabled><option value="">Seleccione cliente...</option></select></div></div>
+                            <div><label for="declared_value" class="block text-sm font-medium">Valor Declarado</label><input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md"></div>
                              <div id="checkin-form-buttons" class="flex space-x-4 pt-4">
                                 <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
                             </div>
@@ -847,10 +770,8 @@ body { font-family: 'Inter', sans-serif; }
                         <h3 class="text-xl font-semibold mb-4">Últimos Check-ins Registrados</h3>
                         <div class="overflow-auto max-h-[600px]">
                             <table class="w-full text-sm text-left">
-                                <thead class="bg-gray-50 sticky top-0">
-                                     </thead>
-                                <tbody id="checkins-table-body">
-                                    </tbody>
+                             <thead class="bg-gray-50 sticky top-0">
+                                <tbody id="checkins-table-body"></tbody>
                             </table>
                         </div>
                     </div>
@@ -858,386 +779,167 @@ body { font-family: 'Inter', sans-serif; }
             </div>
 
             <div id="content-operador" class="hidden">
-                <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Operador</h2>
-
-                <div id="consultation-section" class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Operador</h2>
+                 <div id="consultation-section" class="bg-white p-6 rounded-xl shadow-lg mb-8">
                      <h3 class="text-xl font-semibold mb-4">Buscar Planilla para Detallar</h3>
-                     <form id="consultation-form" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-center">
-                         <div>
-                             <label for="consult-invoice" class="block text-sm font-medium">Número de Planilla</label>
-                             <input type="text" id="consult-invoice" required class="mt-1 w-full p-2 border rounded-md">
-                         </div>
-                         <div class="pt-6">
-                             <button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">Consultar</button>
-                         </div>
-                     </form>
+                     <form id="consultation-form" class="grid grid-cols-1 md:grid-cols-4 gap-4 items-center"><label class="block text-sm font-medium">Nro Planilla<input type="text" id="consult-invoice" required class="mt-1 w-full p-2 border rounded-md"></label><div class="pt-6"><button type="submit" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-blue-700">Consultar</button></div></form>
                 </div>
-
-                <div id="operator-panel" class="hidden">
-                    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
-                        <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 pb-4 border-b">
-                            <div><span class="block text-sm text-gray-500">Número de Planilla</span><strong id="display-invoice" class="text-lg"></strong></div>
-                            <div><span class="block text-sm text-gray-500">Sello de la Factura</span><strong id="display-seal" class="text-lg"></strong></div>
-                            <div><span class="block text-sm text-gray-500">Nombre del Cliente</span><strong id="display-client" class="text-lg"></strong></div>
-                            <div><span class="block text-sm text-gray-500">Valor Declarado</span><strong id="display-declared" class="text-lg text-blue-600"></strong></div>
-                        </div>
-
-                        <h3 class="text-xl font-semibold mb-4">Detalle de Denominación</h3>
-                        <form id="denomination-form">
-                            <input type="hidden" id="op-checkin-id">
-                            <div class="space-y-2">
-                                <?php
-                                    $denominations = [100000, 50000, 20000, 10000, 5000, 2000];
-                                    foreach($denominations as $value):
-                                ?>
-                                <div class="grid grid-cols-5 gap-4 items-center denomination-row" data-value="<?php echo $value; ?>">
-                                    <div class="col-span-2 font-medium text-gray-700"><?php echo '$' . number_format($value, 0, ',', '.'); ?></div>
-                                    <div class="col-span-2 flex items-center">
-                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-l-md font-bold text-lg" onclick="updateQty(this, -1)">-</button>
-                                        <input type="number" value="0" min="0" class="w-full text-center border-t border-b p-1 denomination-qty" oninput="calculateTotals()">
-                                        <button type="button" class="px-3 py-1 bg-gray-200 rounded-r-md font-bold text-lg" onclick="updateQty(this, 1)">+</button>
-                                    </div>
-                                    <div class="text-right font-mono subtotal">$ 0</div>
-                                </div>
-                                <?php endforeach; ?>
-
-                                <div class="grid grid-cols-5 gap-4 items-center pt-2 border-t">
-                                    <div class="col-span-2 font-medium text-gray-700">Monedas</div>
-                                    <div class="col-span-2">
-                                        <input type="number" id="coins-value" value="0" min="0" step="50" class="w-full border p-1" oninput="calculateTotals()" placeholder="Valor total en monedas">
-                                    </div>
-                                    <div class="text-right font-mono" id="coins-subtotal">$ 0</div>
-                                </div>
-
-                                <div class="grid grid-cols-5 gap-4 items-center pt-4 mt-4 border-t-2">
-                                    <div class="col-span-2 font-bold text-xl">Total</div>
-                                    <div class="col-span-3 text-right font-mono text-xl" id="total-counted">$ 0</div>
-                                </div>
-                                <div class="grid grid-cols-5 gap-4 items-center">
-                                    <div class="col-span-2 font-bold text-xl">Diferencia</div>
-                                    <div class="col-span-3 text-right font-mono text-xl" id="discrepancy">$ 0</div>
-                                </div>
-                            </div>
-
-                            <div class="mt-6">
-                                <label for="observations" class="block text-sm font-medium">Observación</label>
-                                <textarea id="observations" rows="3" class="mt-1 w-full border rounded-md p-2"></textarea>
-                            </div>
-
-                            <div class="mt-6 flex justify-end">
-                                <button type="submit" class="bg-green-600 text-white font-bold py-3 px-6 rounded-md hover:bg-green-700">Guardar y Cerrar</button>
-                            </div>
-                        </form>
-                    </div>
-                </div>
-
-                <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
-                    <h3 class="text-xl font-semibold mb-4">Planillas Pendientes de Detallar (Visible solo para Admin)</h3>
-                    <div class="overflow-auto max-h-[600px]">
-                        <table class="w-full text-sm text-left">
-                            <thead class="bg-gray-50 sticky top-0">
-                                </thead>
-                            <tbody id="operator-checkins-table-body">
-                                </tbody>
-                        </table>
-                    </div>
-                </div>
-                <?php endif; ?>
-
-                <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
-                    <h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados</h3>
-                    <div class="overflow-auto max-h-[600px]">
-                        <table class="w-full text-sm text-left">
-                            <thead class="bg-gray-50 sticky top-0">
-                                <tr>
-                                    <th class="p-3">Planilla</th>
-                                    <th class="p-3">Cliente</th>
-                                    <th class="p-3">V. Declarado</th>
-                                    <th class="p-3">V. Contado</th>
-                                    <th class="p-3">Discrepancia</th>
-                                    <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?>
-                                        <th class="p-3">Operador</th>
-                                    <?php endif; ?>
-                                    <th class="p-3">Fecha Conteo</th>
-                                    <th class="p-3">Observaciones</th>
-                                    <?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Acciones</th><?php endif; ?>
-                                </tr>
-                            </thead>
-                            <tbody id="operator-history-table-body">
-                                </tbody>
-                        </table>
-                    </div>
-                </div>
+                <div id="operator-panel" class="hidden"><div class="bg-white p-6 rounded-xl shadow-lg mb-8"><div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6 pb-4 border-b"><div><span class="block text-sm text-gray-500">Nro Planilla</span><strong id="display-invoice" class="text-lg"></strong></div><div><span class="block text-sm text-gray-500">Nro Sello</span><strong id="display-seal" class="text-lg"></strong></div><div><span class="block text-sm text-gray-500">Cliente</span><strong id="display-client" class="text-lg"></strong></div><div><span class="block text-sm text-gray-500">Valor Declarado</span><strong id="display-declared" class="text-lg text-blue-600"></strong></div></div><h3 class="text-xl font-semibold mb-4">Detalle de Denominación</h3><form id="denomination-form"><input type="hidden" id="op-checkin-id"><div class="space-y-2"><?php $denominations = [100000, 50000, 20000, 10000, 5000, 2000]; foreach($denominations as $value): ?><div class="grid grid-cols-5 gap-4 items-center denomination-row" data-value="<?php echo $value; ?>"><div class="col-span-2 font-medium text-gray-700"><?php echo '$' . number_format($value, 0, ',', '.'); ?></div><div class="col-span-2 flex items-center"><button type="button" class="px-3 py-1 bg-gray-200 rounded-l-md font-bold text-lg" onclick="updateQty(this, -1)">-</button><input type="number" value="0" min="0" class="w-full text-center border-t border-b p-1 denomination-qty" oninput="calculateTotals()"><button type="button" class="px-3 py-1 bg-gray-200 rounded-r-md font-bold text-lg" onclick="updateQty(this, 1)">+</button></div><div class="text-right font-mono subtotal">$ 0</div></div><?php endforeach; ?><div class="grid grid-cols-5 gap-4 items-center pt-2 border-t"><div class="col-span-2 font-medium text-gray-700">Monedas</div><div class="col-span-2"><input type="number" id="coins-value" value="0" min="0" step="50" class="w-full border p-1" oninput="calculateTotals()" placeholder="Valor total en monedas"></div><div class="text-right font-mono" id="coins-subtotal">$ 0</div></div><div class="grid grid-cols-5 gap-4 items-center pt-4 mt-4 border-t-2"><div class="col-span-2 font-bold text-xl">Total</div><div class="col-span-3 text-right font-mono text-xl" id="total-counted">$ 0</div></div><div class="grid grid-cols-5 gap-4 items-center"><div class="col-span-2 font-bold text-xl">Diferencia</div><div class="col-span-3 text-right font-mono text-xl" id="discrepancy">$ 0</div></div></div><div class="mt-6"><label for="observations" class="block text-sm font-medium">Observación</label><textarea id="observations" rows="3" class="mt-1 w-full border rounded-md p-2"></textarea></div><div class="mt-6 flex justify-end"><button type="submit" class="bg-green-600 text-white font-bold py-3 px-6 rounded-md hover:bg-green-700">Guardar y Cerrar</button></div></form></div></div>
+                <?php if ($_SESSION['user_role'] === 'Admin'): ?><div class="bg-white p-6 rounded-xl shadow-lg mt-8"><h3 class="text-xl font-semibold mb-4">Planillas Pendientes de Detallar (Admin)</h3><div class="overflow-auto max-h-[600px]"><table class="w-full text-sm text-left"><thead class="bg-gray-50 sticky top-0"></thead><tbody id="operator-checkins-table-body"></tbody></table></div></div><?php endif; ?>
+                <div class="bg-white p-6 rounded-xl shadow-lg mt-8"><h3 class="text-xl font-semibold mb-4">Historial de Conteos Realizados</h3><div class="overflow-auto max-h-[600px]"><table class="w-full text-sm text-left"><thead class="bg-gray-50 sticky top-0"><tr><th class="p-3">Planilla</th><th class="p-3">Cliente</th><th class="p-3">Valor Declarado</th><th class="p-3">Valor Contado</th><th class="p-3">Discrep.</th><?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?><th class="p-3">Operador</th><?php endif; ?><th class="p-3">Fecha</th><th class="p-3">Obs.</th><?php if ($_SESSION['user_role'] === 'Admin'): ?><th class="p-3">Acciones</th><?php endif; ?></tr></thead><tbody id="operator-history-table-body"></tbody></table></div></div>
             </div>
 
             <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
             <div id="content-digitador" class="hidden">
                 <div class="flex justify-between items-center mb-6">
-                    <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión y Supervisión</h2>
+                    <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión de Cierre e Informes</h2>
                 </div>
-
-                 <div class="mb-8 flex space-x-2">
-                    <button id="btn-supervision" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Supervisión de Conteos</button>
-                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
-                    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
-                    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
-                </div>
-
-                <div id="panel-supervision" class="hidden">
-                    <h2 class="text-2xl font-bold text-gray-900 mb-6">Supervisión de Operaciones</h2>
-                    <div id="operator-panel-digitador" class="hidden bg-blue-50 border border-blue-200 p-6 rounded-xl shadow-lg mb-8">
-                        </div>
-                    <div class="bg-white p-6 rounded-xl shadow-lg">
-                        <h3 class="text-xl font-semibold mb-4">Conteos Pendientes de Supervisión</h3>
-                        <p class="text-sm text-gray-500 mb-4">Planillas procesadas por el operador que requieren aprobación o rechazo.</p>
-                        <div class="overflow-auto max-h-[600px]">
-                            <table class="w-full text-sm text-left">
-                                <thead class="bg-gray-50 sticky top-0">
-                                    <tr>
-                                        <th class="p-3">Revisar</th>
-                                        <th class="p-3">Planilla</th>
-                                        <th class="p-3">Cliente</th>
-                                        <th class="p-3">V. Declarado</th>
-                                        <th class="p-3">V. Contado</th>
-                                        <th class="p-3">Discrepancia</th>
-                                        <th class="p-3">Operador</th>
-                                        <th class="p-3">Fecha Conteo</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="operator-history-table-body-digitador"></tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
+                            <div class="mb-8 flex space-x-2">
+    <button id="btn-supervision-operador" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Abrir llegadas de Operador</button>
+    
+    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
+    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
+    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
+</div>
+<div id="panel-supervision-operador" class="hidden">
+    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
+    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <div class="overflow-auto max-h-[400px]">
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-50 sticky top-0">
+                    <tr>
+                        <th class="p-3">Planilla</th>
+                        <th class="p-3">Cliente</th>
+                        <th class="p-3">Valor Declarado</th>
+                        <th class="p-3">Valor Contado</th>
+                        <th class="p-3">Discrep.</th>
+                        <th class="p-3">Operador</th>
+                        <th class="p-3">Fecha Conteo</th>
+                        <th class="p-3">Obs. Operador</th>
+                    </tr>
+                </thead>
+                <tbody id="digitador-operator-history-tbody">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+   
 
                 <div id="panel-cierre">
                      <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre por Fondo</h2>
-                     <div class="bg-white p-6 rounded-xl shadow-lg">
-                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre</h3>
-                        <p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas ('Conforme') y proceder con el cierre.</p>
-                        <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
-                            <div>
-                                <h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4>
-                                <div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto">
-                                    </div>
-                            </div>
-                            <div>
-                                <h4 class="font-semibold mb-2">2. Planillas a incluir en el cierre</h4>
-                                <div id="services-list-container" class="space-y-3">
-                                    <p class="text-gray-500 text-sm">Seleccione un fondo de la lista.</p>
-                                </div>
-                                <button id="close-fund-button" onclick="closeFund()" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-teal-600 mt-4 hidden">
-                                    Cerrar Fondo Seleccionado
-                                </button>
-                            </div>
-                        </div>
-                    </div>
+                     <div class="bg-white p-6 rounded-xl shadow-lg"><h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre</h3><p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas ('Conforme') y proceder con el cierre.</p><div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div><h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4><div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto"></div></div><div><h4 class="font-semibold mb-2">2. Planillas a incluir</h4><div id="services-list-container" class="space-y-3"><p class="text-gray-500 text-sm">Seleccione un fondo.</p></div><button id="close-fund-button" onclick="closeFund()" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-teal-600 mt-4 hidden">Cerrar Fondo</button></div></div></div>
                 </div>
 
                  <div id="panel-historial-cierre" class="hidden">
                     <h2 class="text-2xl font-bold text-gray-900 mb-6">Historial de Planillas Revisadas/Cerradas</h2>
-                    <div class="bg-white p-6 rounded-xl shadow-lg mt-8">
-                        <h3 class="text-xl font-semibold mb-4">Historial</h3>
-                        <div class="overflow-auto max-h-[700px]">
-                            <table class="w-full text-sm text-left">
-                                <thead class="bg-gray-50 sticky top-0">
-                                    <tr>
-                                        <th class="p-3">Planilla</th>
-                                        <th class="p-3">Fondo</th>
-                                        <th class="p-3">Cierre</th>
-                                        <th class="p-3">Total Recaudado</th>
-                                        <th class="p-3">Discrepancia</th>
-                                        <th class="p-3">Estado Final</th>
-                                        <th class="p-3">Observaciones</th>
-                                        <?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?>
-                                            <th class="p-3">Cerrada por</th>
-                                        <?php endif; ?>
-                                        <th class="p-3">Acciones</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="digitador-closed-history-body"></tbody>
-                            </table>
-                        </div>
-                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg mt-8"><h3 class="text-xl font-semibold mb-4">Historial</h3><div class="overflow-auto max-h-[700px]"><table class="w-full text-sm text-left"><thead class="bg-gray-50 sticky top-0"><tr><th class="p-3">Planilla</th><th class="p-3">Fondo</th><th class="p-3">Cierre</th><th class="p-3">Total Rec.</th><th class="p-3">Discrep.</th><th class="p-3">Estado</th><th class="p-3">Obs.</th><?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?><th class="p-3">Cerrada por</th><?php endif; ?><th class="p-3">Acciones</th></tr></thead><tbody id="digitador-closed-history-body"></tbody></table></div></div>
                 </div>
 
                 <div id="panel-informes" class="hidden">
                     <h2 class="text-2xl font-bold text-gray-900 mb-6">Generar Informes</h2>
-                    <div class="bg-white p-6 rounded-xl shadow-lg">
-                        <h3 class="text-xl font-semibold mb-4 text-gray-900">Informes por Fondo (PDF)</h3>
-                        <p class="text-sm text-gray-500 mb-4">Seleccione un fondo cerrado para generar el informe PDF consolidado.</p>
-                        <div class="overflow-auto max-h-[500px]">
-                            <table class="w-full text-sm">
-                                <thead class="bg-gray-50 sticky top-0">
-                                    <tr>
-                                        <th class="p-3 text-left">Fondo</th>
-                                        <th class="p-3 text-left">Cliente</th>
-                                        <th class="p-3 text-left">Fecha de Cierre</th>
-                                        <th class="p-3 text-center">Acción</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="informes-table-body">
-                                    </tbody>
-                            </table>
-                        </div>
-                    </div>
+                    <div class="bg-white p-6 rounded-xl shadow-lg"><h3 class="text-xl font-semibold mb-4 text-gray-900">Informes por Fondo (PDF)</h3><p class="text-sm text-gray-500 mb-4">Seleccione un fondo cerrado para generar el informe PDF.</p><div class="overflow-auto max-h-[500px]"><table class="w-full text-sm"><thead class="bg-gray-50 sticky top-0"><tr><th class="p-3 text-left">Fondo</th><th class="p-3 text-left">Cliente</th><th class="p-3 text-left">Fecha Cierre</th><th class="p-3 text-center">Acción</th></tr></thead><tbody id="informes-table-body"></tbody></table></div></div>
                 </div>
             </div>
             <?php endif; ?>
 
             <div id="content-mi-historial" class="hidden">
                 <h2 class="text-xl font-bold text-gray-900 mb-4">Mi Historial de Tareas Completadas</h2>
-                <p class="text-sm text-gray-500 mb-6">Este es un registro de todas las tareas (manuales y alertas) que tú has completado.</p>
-
-                <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table id="historial-individual-table" class="w-full text-sm">
-                            <thead class="bg-gray-50">
-                                <tr class="text-left">
-                                    <th class="px-6 py-3">Tarea</th>
-                                    <th class="px-6 py-3">Descripción</th>
-                                    <th class="px-6 py-3">Prioridad Inicial</th>
-                                    <th class="px-6 py-3">Prioridad Final</th>
-                                    <th class="px-6 py-3">Asignado por</th>
-                                    <th class="px-6 py-3">Check por</th>
-                                    <th class="px-6 py-3">Fecha Inicio</th>
-                                    <th class="px-6 py-3">Fecha Fin</th>
-                                    <th class="px-6 py-3">Tiempo Resp.</th>
-                                    <th class="px-6 py-3">Observaciones de Cierre</th>
-                                </tr>
-                            </thead>
-                            <tbody id="historial-individual-tbody">
-                                </tbody>
-                        </table>
-                    </div>
-                </div>
+                <p class="text-sm text-gray-500 mb-6">Registro de tareas (manuales y alertas) completadas por ti.</p>
+                <div class="bg-white rounded-xl shadow-sm overflow-hidden"><div class="overflow-x-auto"><table id="historial-individual-table" class="w-full text-sm"><thead class="bg-gray-50"><tr class="text-left"><th class="px-6 py-3">Tarea</th><th class="px-6 py-3">Descripción</th><th class="px-6 py-3">P. Ini.</th><th class="px-6 py-3">P. Fin.</th><th class="px-6 py-3">Asig. por</th><th class="px-6 py-3">Check por</th><th class="px-6 py-3">F. Inicio</th><th class="px-6 py-3">F. Fin</th><th class="px-6 py-3">T. Resp.</th><th class="px-6 py-3">Obs. Cierre</th></tr></thead><tbody id="historial-individual-tbody"></tbody></table></div></div>
             </div>
-
 
             <?php if ($_SESSION['user_role'] === 'Admin'): ?>
-            <div id="content-roles" class="hidden">
-                 <div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold">Gestionar Usuarios</h2><button onclick="openModal()" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg">Agregar Usuario</button></div>
-                <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-                    <table class="w-full text-sm">
-                        <thead class="bg-gray-50">
-                            <tr class="text-left">
-                                <th class="px-6 py-3">Nombre</th>
-                                <th class="px-6 py-3">Email</th>
-                                <th class="px-6 py-3">Rol</th>
-                                <th class="px-6 py-3 text-center">Sexo</th>
-                                <th class="px-6 py-3 text-center">Acciones</th>
-                            </tr>
-                        </thead>
-                        <tbody id="user-table-body"></tbody>
-                    </table>
-                </div>
-            </div>
-            <div id="content-trazabilidad" class="hidden">
-                <h2 class="text-xl font-bold text-gray-900 mb-4">Trazabilidad de Tareas Completadas (Admin)</h2>
-
-                <div class="bg-white p-4 rounded-xl shadow-sm mb-6">
-                    <div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4">
-                        <div>
-                            <label for="filter-start-date" class="text-sm font-medium text-gray-700">Fecha Inicio</label>
-                            <input type="date" id="filter-start-date" class="mt-1 w-full p-2 border rounded-md text-sm">
-                        </div>
-                        <div>
-                            <label for="filter-end-date" class="text-sm font-medium text-gray-700">Fecha Fin</label>
-                            <input type="date" id="filter-end-date" class="mt-1 w-full p-2 border rounded-md text-sm">
-                        </div>
-                        <div>
-                            <label for="filter-user" class="text-sm font-medium text-gray-700">Asignado a</label>
-                            <select id="filter-user" class="mt-1 w-full p-2 border rounded-md text-sm">
-                                <option value="">Todos</option>
-                                <?php foreach($all_users as $user): ?>
-                                    <option value="<?php echo htmlspecialchars($user['name']); ?>"><?php echo htmlspecialchars($user['name']); ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div>
-                            <label for="filter-checker" class="text-sm font-medium text-gray-700">Check por</label>
-                            <select id="filter-checker" class="mt-1 w-full p-2 border rounded-md text-sm">
-                                <option value="">Todos</option>
-                                <?php foreach($all_users as $user): ?>
-                                    <option value="<?php echo htmlspecialchars($user['name']); ?>"><?php echo htmlspecialchars($user['name']); ?></option>
-                                <?php endforeach; ?>
-                            </select>
-                        </div>
-                        <div>
-                            <label for="filter-priority" class="text-sm font-medium text-gray-700">Prioridad Final</label>
-                            <select id="filter-priority" class="mt-1 w-full p-2 border rounded-md text-sm">
-                                <option value="">Todas</option>
-                                <option value="Alta">Alta</option>
-                                <option value="Media">Media</option>
-                                <option value="Baja">Baja</option>
-                            </select>
-                        </div>
-                        <div class="flex items-end space-x-2">
-                            <button onclick="applyTrazabilidadFilters()" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">Filtrar</button>
-                            <button onclick="exportToExcel()" class="w-full bg-green-600 text-white font-semibold py-2 px-4 rounded-md">Excel</button>
-                        </div>
-                    </div>
-                </div>
-
-                <div class="bg-white rounded-xl shadow-sm overflow-hidden">
-                    <div class="overflow-x-auto">
-                        <table id="trazabilidad-table" class="w-full text-sm">
-                            <thead class="bg-gray-50">
-                                <tr class="text-left">
-                                    <th class="px-6 py-3">Tarea</th>
-                                    <th class="px-6 py-3">Descripción</th>
-                                    <th class="px-6 py-3">Prioridad Inicial</th>
-                                    <th class="px-6 py-3">Prioridad Final</th>
-                                    <th class="px-6 py-3 sortable cursor-pointer" data-column-name="created_at" onclick="sortTableByDate('created_at')">Hora Inicio <span class="text-gray-400"></span></th>
-                                    <th class="px-6 py-3 sortable cursor-pointer" data-column-name="completed_at" onclick="sortTableByDate('completed_at')">Hora Fin <span class="text-gray-400"></span></th>
-                                    <th class="px-6 py-3">Tiempo Resp.</th>
-                                    <th class="px-6 py-3">Asignado a</th>
-                                    <th class="px-6 py-3">Asignado por</th>
-                                    <th class="px-6 py-3">Check por</th>
-                                    <th class="px-6 py-3">Observaciones de Cierre</th>
-                                    <th class="px-6 py-3">Acciones</th>
-                                </tr>
-                            </thead>
-                            <tbody id="trazabilidad-tbody">
-                                </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-
-            <div id="content-manage-clients" class="hidden">
-                <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
-            </div>
-            <div id="content-manage-routes" class="hidden">
-                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
-            </div>
-            <div id="content-manage-funds" class="hidden">
-                 <div class="loader"></div> <p class="text-center text-gray-500">Cargando...</p>
-            </div>
+            <div id="content-roles" class="hidden"><div class="flex justify-between items-center mb-4"><h2 class="text-xl font-bold">Gestionar Usuarios</h2><button onclick="openModal()" class="bg-green-600 text-white font-semibold px-4 py-2 rounded-lg">Agregar Usuario</button></div><div class="bg-white rounded-xl shadow-sm overflow-hidden"><table class="w-full text-sm"><thead class="bg-gray-50"><tr class="text-left"><th class="px-6 py-3">Nombre</th><th class="px-6 py-3">Email</th><th class="px-6 py-3">Rol</th><th class="px-6 py-3 text-center">Sexo</th><th class="px-6 py-3 text-center">Acciones</th></tr></thead><tbody id="user-table-body"></tbody></table></div></div>
+            <div id="content-trazabilidad" class="hidden"><h2 class="text-xl font-bold text-gray-900 mb-4">Trazabilidad de Tareas Completadas</h2><div class="bg-white p-4 rounded-xl shadow-sm mb-6"><div class="grid grid-cols-1 md:grid-cols-3 lg:grid-cols-6 gap-4"><div><label for="filter-start-date" class="text-sm">F. Inicio</label><input type="date" id="filter-start-date" class="mt-1 w-full p-2 border rounded-md text-sm"></div><div><label for="filter-end-date" class="text-sm">F. Fin</label><input type="date" id="filter-end-date" class="mt-1 w-full p-2 border rounded-md text-sm"></div><div><label for="filter-user" class="text-sm">Asignado a</label><select id="filter-user" class="mt-1 w-full p-2 border rounded-md text-sm"><option value="">Todos</option><?php foreach($all_users as $user): ?><option value="<?php echo htmlspecialchars($user['name']); ?>"><?php echo htmlspecialchars($user['name']); ?></option><?php endforeach; ?></select></div><div><label for="filter-checker" class="text-sm">Check por</label><select id="filter-checker" class="mt-1 w-full p-2 border rounded-md text-sm"><option value="">Todos</option><?php foreach($all_users as $user): ?><option value="<?php echo htmlspecialchars($user['name']); ?>"><?php echo htmlspecialchars($user['name']); ?></option><?php endforeach; ?></select></div><div><label for="filter-priority" class="text-sm">P. Final</label><select id="filter-priority" class="mt-1 w-full p-2 border rounded-md text-sm"><option value="">Todas</option><option value="Alta">Alta</option><option value="Media">Media</option><option value="Baja">Baja</option></select></div><div class="flex items-end space-x-2"><button onclick="applyTrazabilidadFilters()" class="w-full bg-blue-600 text-white font-semibold py-2 px-4 rounded-md">Filtrar</button><button onclick="exportToExcel()" class="w-full bg-green-600 text-white font-semibold py-2 px-4 rounded-md">Excel</button></div></div></div><div class="bg-white rounded-xl shadow-sm overflow-hidden"><div class="overflow-x-auto"><table id="trazabilidad-table" class="w-full text-sm"><thead class="bg-gray-50"><tr class="text-left"><th class="px-6 py-3">Tarea</th><th class="px-6 py-3">Desc.</th><th class="px-6 py-3">P. Ini.</th><th class="px-6 py-3">P. Fin.</th><th class="px-6 py-3 sortable" data-column-name="created_at" onclick="sortTableByDate('created_at')">H. Inicio <span></span></th><th class="px-6 py-3 sortable" data-column-name="completed_at" onclick="sortTableByDate('completed_at')">H. Fin <span></span></th><th class="px-6 py-3">T. Resp.</th><th class="px-6 py-3">Asig. a</th><th class="px-6 py-3">Asig. por</th><th class="px-6 py-3">Check por</th><th class="px-6 py-3">Obs. Cierre</th><th class="px-6 py-3">Acciones</th></tr></thead><tbody id="trazabilidad-tbody"></tbody></table></div></div></div>
+            <div id="content-manage-clients" class="hidden"><div class="loader"></div><p class="text-center text-gray-500">Cargando...</p></div>
+            <div id="content-manage-routes" class="hidden"><div class="loader"></div><p class="text-center text-gray-500">Cargando...</p></div>
+            <div id="content-manage-funds" class="hidden"><div class="loader"></div><p class="text-center text-gray-500">Cargando...</p></div>
             <?php endif; ?>
         </main>
     </div>
 
     <script>
+
     // --- Global Variables ---
     const allUsers = <?php echo json_encode($all_users); ?>;
     const adminUsersData = <?php echo json_encode($admin_users_list); ?>;
     const currentUserId = <?php echo $current_user_id; ?>;
     const currentUserRole = '<?php echo $current_user_role; ?>';
-    const apiUrlBase = 'api';
+    const apiUrlBase = 'api'; // Base para APIs normales
+    const apiRealtimeBase = 'api/realtime'; // --- NUEVO: Base para APIs de tiempo real ---
     const initialCheckins = <?php echo json_encode($initial_checkins); ?>;
     const operatorHistoryData = <?php echo json_encode($operator_history); ?>;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
     const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
+let repeatingToasts = new Map(); // Guarda { intervalId, count, alertData } para toasts repetitivos
+// =======================================================
+// Hook de arranque para el panel de Check-in (DOM listo)
+// =======================================================
+document.addEventListener('DOMContentLoaded', () => {
+    startAlertPolling(10);
+  // Solo si estás en el panel de Check-in
+  if (document.getElementById('content-checkinero')) {
+    // Pintamos la tabla con lo que vino de PHP
+    populateCheckinsTable(window.initialCheckins || []);
+
+    // Enganchamos el submit del form
+    const form = document.getElementById('checkin-form');
+    if (form) form.addEventListener('submit', handleCheckinSubmit);
+
+    // Cliente -> Fondos
+    const clientSelect = document.getElementById('client_id');
+    const fundSelect   = document.getElementById('fund_id');
+    if (clientSelect && fundSelect) {
+      clientSelect.addEventListener('change', async () => {
+        const clientId = clientSelect.value;
+        fundSelect.disabled = true;
+        fundSelect.classList.add('bg-gray-200');
+        if (!clientId) {
+          fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
+          return;
+        }
+        try {
+          const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
+          const funds = await response.json();
+          fundSelect.innerHTML = '';
+          if (Array.isArray(funds) && funds.length > 0) {
+            funds.forEach(f => {
+              const opt = document.createElement('option');
+              opt.value = f.id;
+              opt.textContent = f.name;
+              fundSelect.appendChild(opt);
+            });
+            fundSelect.disabled = false;
+            fundSelect.classList.remove('bg-gray-200');
+          } else {
+            fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>';
+          }
+        } catch (e) {
+          console.error('Error cargando fondos:', e);
+          fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>';
+        }
+      });
+    }
+  }
+});
+
+
     let selectedFundForClosure = null;
     let alertPollingInterval = null;
-    let checkinPollingInterval = null; // Separate interval for checkins
+    let checkinPollingInterval = null;
+    let trazabilidadPollingInterval = null; // Para trazabilidad
     let lastCheckedAlertTime = Math.floor(Date.now() / 1000);
-    let currentCheckinData = JSON.parse(JSON.stringify(initialCheckins)); // Store initial checkins
+    let currentCheckinData = JSON.parse(JSON.stringify(initialCheckins));
     let currentFilteredTrazabilidadData = [];
-    let loadedContent = {}; // Cache for AJAX
+    let loadedContent = {};
+
+    // --- Sets para Tiempo Real ---
+    let activeCheckinsIds = new Set(); // Para tabla Checkinero
+    let operatorPendingIds = new Set(); // Para tabla Operador (Pendientes)
+    let digitadorPendingIds = new Set(); // Para tabla Digitador (Pendientes)
+    let lastTrazabilidadTaskId = 0; // Para tabla Trazabilidad (Admin)
 
     // --- UI Element References ---
     const remindersPanel = document.getElementById('reminders-panel');
@@ -1316,6 +1018,101 @@ body { font-family: 'Inter', sans-serif; }
            return date.toLocaleDateString('es-CO', { day: '2-digit', month: 'short' }) + ' ' + date.toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit', hour12: true });
        } catch (e) { return ''; }
     }
+// === Dibuja la tabla de "Últimos Check-ins" (Pendientes/Rechazados) ===
+function populateCheckinsTable(rows) {
+  const tbody = document.getElementById('checkins-table-body');
+  if (!tbody) return;
+  tbody.innerHTML = '';
+
+  // Si quieres ver SOLO Pendientes/Rechazados:
+  const visibles = Array.isArray(rows)
+    ? rows.filter(r => ['Pendiente','Rechazado'].includes((r.status || '').trim()))
+    : [];
+
+  if (visibles.length === 0) {
+    tbody.innerHTML = `
+      <tr><td colspan="11" class="text-center text-gray-500 py-6">
+        No hay registros de check-in.
+      </td></tr>`;
+    return;
+  }
+
+  visibles.forEach(r => {
+    const tr = document.createElement('tr');
+    tr.className = 'border-b';
+
+    const corr = (r.correction_count ?? 0);
+    const fecha = r.created_at ? new Date(r.created_at).toLocaleString('es-CO') : '';
+
+    tr.innerHTML = `
+      <td class="px-3 py-2 text-center font-mono">${corr}</td>
+      <td class="px-3 py-2">${r.status || ''}</td>
+      <td class="px-3 py-2 font-mono">${r.invoice_number || ''}</td>
+      <td class="px-3 py-2 font-mono">${r.seal_number || ''}</td>
+      <td class="px-3 py-2 font-mono">${Number(r.declared_value || 0).toLocaleString('es-CO')}</td>
+      <td class="px-3 py-2">${r.route_name || ''}</td>
+      <td class="px-3 py-2 text-xs">${fecha}</td>
+      <td class="px-3 py-2">${r.checkinero_name || ''}</td>
+      <td class="px-3 py-2">${r.client_name || ''}</td>
+      <td class="px-3 py-2">${r.fund_name || 'N/A'}</td>
+      <td class="px-3 py-2 text-right">
+         <!-- aquí puedes poner botones si quieres -->
+      </td>
+    `;
+    tbody.appendChild(tr);
+  });
+}
+
+
+    function renderCheckinsTable() {
+  const tbody = document.getElementById('checkins-table-body');
+  if (!tbody) return;
+
+  // Mostramos Pendiente, Rechazado, Procesado y Discrepancia
+  const visibleStatuses = new Set(['Pendiente','Rechazado','Procesado','Discrepancia']);
+  const rows = (currentCheckinData || []).filter(ci => visibleStatuses.has(ci.status));
+
+  if (rows.length === 0) {
+  const colspan = currentUserRole === 'Admin' ? 12 : 11;
+tbody.innerHTML = `<tr><td colspan="${colspan}"class="px-6 py-4 text-center text-gray-500">
+        No hay registros pendientes, rechazados o procesados.
+      </td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = rows.map(ci => {
+    const dateTxt = formatDate(ci.created_at);
+    const fund = ci.fund_name || 'N/A';
+    return `
+      <tr class="border-b">
+        <td class="p-3 font-mono">${ci.invoice_number ?? ''}</td>
+        <td class="p-3">${ci.client_name ?? ''}</td>
+        <td class="p-3">${ci.route_name ?? ''}</td>
+        <td class="p-3">${fund}</td>
+        <td class="p-3">${ci.status}</td>
+        <td class="p-3 text-xs">${dateTxt}</td>
+      </tr>`;
+  }).join('');
+}
+
+// Lánzalo al cargar:
+document.addEventListener('DOMContentLoaded', renderCheckinsTable);
+
+// Si tienes polling en “tiempo real”, actualiza la tabla al refrescar datos:
+async function refreshCheckinsRealtime() {
+  try {
+    const resp = await fetch(`${apiRealtimeBase}/realtime_checkins_api.php`);
+    const json = await resp.json();
+    if (json && json.success && Array.isArray(json.data)) {
+      currentCheckinData = json.data;
+      renderCheckinsTable();
+    }
+  } catch (e) { console.error('realtime_checkins:', e); }
+}
+// Arranque y cada 15s (ajusta si quieres)
+refreshCheckinsRealtime();
+checkinPollingInterval = setInterval(refreshCheckinsRealtime, 15000);
+
     function getPriorityClass(priority) {
        if (priority === 'Alta' || priority === 'Critica') return 'bg-red-100 text-red-800';
        if (priority === 'Media') return 'bg-yellow-100 text-yellow-800';
@@ -1345,14 +1142,9 @@ body { font-family: 'Inter', sans-serif; }
         } catch (error) { console.error('Error deleting reminder:', error); alert('Error de conexión.'); }
     }
 
-    async function completeTask(taskId, formIdPrefix) {
-        if (!taskId) {
-            alert('Error: No se pudo identificar la tarea a completar.');
-            return;
-        }
-
-        const noteTextarea = document.getElementById(`resolution-note-${formIdPrefix}`);
-        const resolution_note = noteTextarea ? noteTextarea.value : ''; // Manejar caso donde no existe el textarea
+async function completeTask(taskId, formIdPrefix) {
+    const noteTextarea = document.getElementById(`resolution-note-${formIdPrefix}`);
+    const resolution_note = noteTextarea ? noteTextarea.value : '';
 
         if (!resolution_note.trim()) {
             alert('Por favor, ingrese una observación de cierre.');
@@ -1448,6 +1240,67 @@ body { font-family: 'Inter', sans-serif; }
         } catch (error) { console.error('Error en sendTaskRequest:', error); alert(`Error de conexión: ${error.message}`); }
     }
 
+// === SUBMIT DEL FORM DE CHECK-IN (GUARDA EN LA BD) ===
+async function handleCheckinSubmit(event) {
+  event.preventDefault();
+
+  const checkInIdField = document.getElementById('check_in_id_field');
+
+  const invoice_number = document.getElementById('invoice_number')?.value.trim();
+  const seal_number    = document.getElementById('seal_number')?.value.trim();
+  const client_id      = document.getElementById('client_id')?.value;
+  const route_id       = document.getElementById('route_id')?.value;
+  const fund_id_raw    = document.getElementById('fund_id')?.value; // puede venir vacío si el select está deshabilitado
+  const declared_value = document.getElementById('declared_value')?.value;
+
+  // Validación mínima en front
+  if (!invoice_number || !seal_number || !client_id || !route_id || !declared_value) {
+    alert('Completa Planilla, Sello, Cliente, Ruta y Valor declarado.');
+    return;
+  }
+
+  // Si fund_id está vacío, mandamos null (compatible con tu API)
+  const fund_id = (fund_id_raw && fund_id_raw !== '0') ? Number(fund_id_raw) : null;
+
+  const payload = {
+    invoice_number,
+    seal_number,
+    client_id: Number(client_id),
+    route_id: Number(route_id),
+    fund_id,
+    declared_value: Number(declared_value)
+  };
+
+  // Si estás corrigiendo un check-in rechazado:
+  if (checkInIdField && checkInIdField.value) {
+    payload.check_in_id = Number(checkInIdField.value);
+  }
+
+  try {
+    const resp = await fetch(`${apiUrlBase}/checkin_api.php`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const json = await resp.json();
+
+    if (!resp.ok || !json.success) {
+      throw new Error(json?.error || `Error HTTP ${resp.status}`);
+    }
+
+    alert(json.message || 'Check-in registrado.');
+    // Refresca para ver el nuevo check-in en la tabla
+    location.reload();
+
+    // (Si prefieres sin recargar, llama a tu realtime y repinta la tabla)
+    // await refreshCheckinsRealtime();
+    // populateCheckinsTable(currentCheckinData);
+  } catch (err) {
+    console.error('checkin submit error:', err);
+    alert(`No se pudo guardar el check-in: ${err.message}`);
+  }
+}
+
     document.getElementById('manual-task-form')?.addEventListener('submit', async function(e) {
         e.preventDefault();
         const title = document.getElementById('manual-task-title').value;
@@ -1469,6 +1322,8 @@ body { font-family: 'Inter', sans-serif; }
 
         await sendTaskRequest(payload); // Reutilizar la función sendTaskRequest
     });
+    document.getElementById('checkin-form')?.addEventListener('submit', handleCheckinSubmit);
+
 
     userForm.addEventListener('submit', async function(event) {
         event.preventDefault();
@@ -1514,9 +1369,9 @@ body { font-family: 'Inter', sans-serif; }
              alert(`Error de conexión al eliminar: ${error.message}`);
         }
     }
+    // --- CAMBIO: handleCheckinSubmit simplificado (sin edición) ---
     async function handleCheckinSubmit(event) {
         event.preventDefault();
-        const checkInIdField = document.getElementById('check_in_id_field');
         const payload = {
             invoice_number: document.getElementById('invoice_number').value,
             seal_number: document.getElementById('seal_number').value,
@@ -1525,29 +1380,18 @@ body { font-family: 'Inter', sans-serif; }
             fund_id: document.getElementById('fund_id').value,
             declared_value: document.getElementById('declared_value').value,
         };
-
-        if (checkInIdField.value) {
-            payload.check_in_id = checkInIdField.value;
-        }
-
+        // Ya no se necesita check_in_id_field ni la lógica de edición
         try {
-            const response = await fetch('api/checkin_api.php', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
-            });
+            const response = await fetch('api/checkin_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
-            if (result.success) {
-                alert(result.message);
-                location.reload(); // Recargar para obtener la lista más reciente (incluyendo el polling)
-            } else {
-                alert('Error: ' + result.error);
-            }
-        } catch (error) {
-            console.error('Error en el check-in:', error);
-            alert('Error de conexión al procesar.');
-        }
+            if (result.success) { alert(result.message); location.reload(); }
+            else { alert('Error: ' + result.error); }
+        } catch (error) { console.error('Error:', error); alert('Error de conexión.'); }
     }
+
+
+
+
     async function handleConsultation(event) {
         event.preventDefault();
         const invoiceInput = document.getElementById('consult-invoice');
@@ -1594,36 +1438,9 @@ body { font-family: 'Inter', sans-serif; }
             else { alert('Error al guardar: ' + result.error); }
         } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
     }
-    async function submitDigitadorReview(checkInId, status) {
-        const observations = document.getElementById('digitador-observations').value;
-        if (!observations.trim()) {
-            alert('Las observaciones finales son requeridas para aceptar o rechazar.');
-            return;
-        }
-        const confirmationText = status === 'Conforme' ? '¿Está seguro de que desea APROBAR este conteo?' : '¿Está seguro de que desea RECHAZAR este conteo? La planilla volverá al Checkinero para corrección.';
-        if (!confirm(confirmationText)) return;
 
-        try {
-            const response = await fetch(`${apiUrlBase}/digitador_review_api.php`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ check_in_id: checkInId, status: status, observations: observations })
-            });
 
-            const result = await response.json();
 
-            if (response.ok && result.success) {
-                alert(result.message);
-            } else {
-                 alert('Error: ' + (result.error || `Error ${response.status} - ${response.statusText}`));
-            }
-        } catch (error) {
-            console.error('Error al enviar la revisión:', error);
-            alert('Error de conexión.');
-        } finally {
-            location.reload(); // Recargar siempre para reflejar cambios
-        }
-    }
     async function deleteCheckIn(checkInId) {
         if (!confirm('¿Está seguro de que desea eliminar permanentemente esta planilla y todos sus registros asociados (conteo, alertas, etc.)? Esta acción no se puede deshacer.')) {
             return;
@@ -1954,64 +1771,95 @@ body { font-family: 'Inter', sans-serif; }
                 </tr>`;
         });
     }
-    function populateCheckinsTable(checkins) {
-        const tbody = document.getElementById('checkins-table-body');
-        if (!tbody) return;
-        tbody.innerHTML = '';
-        const colspan = currentUserRole === 'Admin' ? 12 : 11;
-        if (!checkins || checkins.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros de check-in pendientes o rechazados.</td></tr>`;
-            return;
-        }
 
-        const thead = tbody.previousElementSibling;
-        thead.innerHTML = `
-            <tr>
-                <th class="p-2 w-28">Corrección</th>
-                <th class="p-2 w-28">Estado</th>
-                <th class="p-2">Planilla</th>
-                <th class="p-2">Sello</th>
-                <th class="p-2">Declarado</th>
-                <th class="p-2">Ruta</th>
-                <th class="p-2">Fecha de Registro</th>
-                <th class="p-2">Checkinero</th>
-                <th class="p-2">Cliente</th>
-                <th class="p-2">Fondo</th>
-                <th class="p-2 w-20">Acciones</th>
-                ${currentUserRole === 'Admin' ? '<th class="p-2 w-20">Admin</th>' : ''}
-            </tr>
-        `;
+  function populateCheckinsTable(checkins) {
+  const tbody = document.getElementById('checkins-table-body');
+  if (!tbody) return;
 
-        checkins.forEach(ci => {
-            let correctionBadge = (ci.correction_count > 0) ? `<span class="bg-red-100 text-red-800 text-xs font-bold px-2.5 py-1 rounded-full"> ${ci.correction_count}</span>` : '';
-            let statusBadge = (ci.status === 'Rechazado') ? `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>` : `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
+  const thead = tbody.previousElementSibling; // el <thead>
+  // Admin tiene una columna adicional ("Admin")
+  const hasAdmin = (window.currentUserRole === 'Admin');
 
-            let actionButton = '';
-             // Botón Editar: Solo para 'Rechazado', o 'Pendiente' si es Admin
-            if (ci.status === 'Rechazado' || (currentUserRole === 'Admin' && ci.status === 'Pendiente')) {
-                const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
-                actionButton = `<button onclick='editCheckIn(${checkinData})' class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Editar</button>`;
-            }
+  // Encabezado
+  thead.innerHTML = `
+    <tr>
+      <th class="p-2 w-28">Estado</th>
+      <th class="p-2">Planilla</th>
+      <th class="p-2">Sello</th>
+      <th class="p-2">Declarado</th>
+      <th class="p-2">Ruta</th>
+      <th class="p-2">Fecha de Registro</th>
+      <th class="p-2">Checkinero</th>
+      <th class="p-2">Cliente</th>
+      <th class="p-2">Fondo</th>
+      ${hasAdmin ? '<th class="p-2 w-20">Admin</th>' : ''}
+    </tr>
+  `;
 
-            const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-2"><button onclick="deleteCheckIn(${ci.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
+  tbody.innerHTML = '';
 
-            tbody.innerHTML += `
-                <tr class="border-b hover:bg-gray-50">
-                    <td class="p-2">${correctionBadge}</td>
-                    <td class="p-2">${statusBadge}</td>
-                    <td class="p-2 font-mono">${ci.invoice_number}</td>
-                    <td class="p-2 font-mono">${ci.seal_number}</td>
-                    <td class="p-2 text-right">${formatCurrency(ci.declared_value)}</td>
-                    <td class="p-2">${ci.route_name}</td>
-                    <td class="p-2 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                    <td class="p-2">${ci.checkinero_name}</td>
-                    <td class="p-2">${ci.client_name}</td>
-                    <td class="p-2">${ci.fund_name || 'N/A'}</td>
-                    <td class="p-2">${actionButton}</td>
-                    ${adminDeleteButton}
-                </tr>`;
-        });
+  if (!checkins || checkins.length === 0) {
+    const colspan = hasAdmin ? 10 : 9; // Ajusta según si tienes la columna Admin
+tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">
+  No hay registros de check-in.
+</td></tr>`;
+    return;
+  }
+
+  checkins.forEach(ci => {
+    // Badge de corrección
+
+
+    // Badge de estado
+    let statusBadge = '';
+    switch (ci.status) {
+      case 'Rechazado':
+        statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`;
+        break;
+      case 'Procesado':
+        statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`;
+        break;
+      case 'Discrepancia':
+        statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`;
+        break;
+      default:
+        statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
     }
+
+    // Acción (solo para Rechazado: permitir editar)
+    /*let actionButton = '';
+    if (ci.status === 'Rechazado') {
+      const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
+      actionButton = `
+        <button onclick='editCheckIn(${checkinData})'
+                class="bg-blue-500 text-white px-3 py-1 rounded-md text-xs font-semibold hover:bg-blue-600">
+          Editar
+        </button>`;
+    }*/
+
+    const adminDeleteButton = hasAdmin
+      ? `<td class="p-2"><button data-id="${ci.id}"
+           class="text-red-600 hover:text-red-800 text-xs font-semibold"
+           onclick="deleteCheckinById(${ci.id})">Eliminar</button></td>`
+      : '';
+
+    const row = `
+  <tr class="border-b hover:bg-gray-50">
+    <td class="p-2">${statusBadge}</td>
+    <td class="p-2 font-mono">${ci.invoice_number || ''}</td>
+    <td class="p-2 font-mono">${ci.seal_number || ''}</td>
+    <td class="p-2 text-right">${formatCurrency(ci.declared_value)}</td>
+    <td class="p-2">${ci.route_name || ''}</td>
+    <td class="p-2 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+    <td class="p-2">${ci.checkinero_name || ''}</td>
+    <td class="p-2">${ci.client_name || ''}</td>
+    <td class="p-2">${ci.fund_name || 'N/A'}</td>
+    ${adminDeleteButton}
+  </tr>`;
+    tbody.insertAdjacentHTML('beforeend', row);
+  });
+}
+
     function populateOperatorCheckinsTable(checkins) {
         const tbody = document.getElementById('operator-checkins-table-body');
         if (!tbody) return;
@@ -2081,6 +1929,40 @@ body { font-family: 'Inter', sans-serif; }
                                </tr>`;
         });
     }
+
+// --- NUEVA FUNCIÓN PARA EL PANEL DE DIGITADOR ---
+function populateDigitadorOperatorHistoryTable(historyData) {
+    const tbody = document.getElementById('digitador-operator-history-tbody'); // <-- ID NUEVO
+    if (!tbody) return;
+    tbody.innerHTML = '';
+
+    const colspan = 8; // 8 columnas
+
+    if (!historyData || historyData.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay conteos registrados por el operador.</td></tr>`;
+        return;
+    }
+
+    historyData.forEach(item => {
+        const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
+        const operatorColumn = `<td class="p-3">${item.operator_name}</td>`;
+        const adminDeleteButton = ''; // <-- Sin botón de eliminar
+
+        tbody.innerHTML += `<tr class="border-b">
+                                <td class="p-3 font-mono">${item.invoice_number}</td>
+                                <td class="p-3">${item.client_name}</td>
+                                <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
+                                <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
+                                <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
+                                ${operatorColumn}
+                                <td class="p-3 text-xs whitespace-nowrap">${new Date(item.count_date).toLocaleString('es-CO')}</td>
+                                <td class="p-3 text-xs max-w-xs truncate" title="${item.observations || ''}">${item.observations || 'N/A'}</td>
+                           </tr>`;
+    });
+}
+// --- FIN DE NUEVA FUNCIÓN ---
+
+
     function populateUserHistoryTable(tasks) {
         const tbody = document.getElementById('historial-individual-tbody');
         if (!tbody) return;
@@ -2107,38 +1989,8 @@ body { font-family: 'Inter', sans-serif; }
                                </tr>`;
         });
     }
-    function populateOperatorHistoryForDigitador(history) {
-        const tbody = document.getElementById('operator-history-table-body-digitador');
-        if (!tbody) return;
-        tbody.innerHTML = '';
 
-        const closedCheckInIds = new Set(digitadorClosedHistory.map(dh => parseInt(dh.id))); // Asegurarse que sean enteros
-
-        const pendingReview = history.filter(item => {
-            // Asegurarse de comparar enteros
-            return !closedCheckInIds.has(parseInt(item.check_in_id));
-        });
-
-        if (!pendingReview || pendingReview.length === 0) {
-            tbody.innerHTML = `<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay conteos pendientes de supervisión.</td></tr>`;
-            return;
-        }
-
-        pendingReview.forEach(item => {
-            const discrepancyClass = item.discrepancy != 0 ? 'text-red-600 font-bold' : 'text-green-600';
-            const itemInfo = JSON.stringify(item).replace(/"/g, '&quot;');
-            tbody.innerHTML += `<tr class="border-b hover:bg-gray-50">
-                                    <td class="p-3 text-center"><input type="checkbox" class="review-checkbox h-5 w-5 rounded-md" data-info="${itemInfo}" onchange="flagForReview(this)"></td>
-                                    <td class="p-3 font-mono">${item.invoice_number}</td>
-                                    <td class="p-3">${item.client_name}</td>
-                                    <td class="p-3 text-right">${formatCurrency(item.declared_value)}</td>
-                                    <td class="p-3 text-right">${formatCurrency(item.total_counted)}</td>
-                                    <td class="p-3 text-right ${discrepancyClass}">${formatCurrency(item.discrepancy)}</td>
-                                    <td class="p-3">${item.operator_name}</td>
-                                    <td class="p-3 text-xs">${new Date(item.count_date).toLocaleString('es-CO')}</td>
-                                </tr>`;
-        });
-    }
+    
     function populateDigitadorClosedHistory(history) {
         const tbody = document.getElementById('digitador-closed-history-body');
         if (!tbody) return;
@@ -2192,7 +2044,7 @@ body { font-family: 'Inter', sans-serif; }
             panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
         } else { panel.classList.add('hidden'); }
     }
-    function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }
+    /*function closeReviewPanel() { document.getElementById('operator-panel-digitador').classList.add('hidden'); document.querySelectorAll('.review-checkbox').forEach(cb => cb.checked = false); }*/
     <?php if ($_SESSION['user_role'] === 'Admin'): ?>
     function populateTrazabilidadTable(tasks) {
         const tbody = document.getElementById('trazabilidad-tbody');
@@ -2293,45 +2145,7 @@ body { font-family: 'Inter', sans-serif; }
         document.getElementById('consultation-form').dispatchEvent(new Event('submit'));
         window.scrollTo(0, 0);
     }
-    async function editCheckIn(checkinData) {
-        document.getElementById('invoice_number').value = checkinData.invoice_number;
-        document.getElementById('seal_number').value = checkinData.seal_number;
-        document.getElementById('declared_value').value = checkinData.declared_value;
-        document.getElementById('check_in_id_field').value = checkinData.id;
-
-        const clientSelect = document.getElementById('client_id');
-        clientSelect.value = checkinData.client_id;
-
-        await new Promise(resolve => {
-            clientSelect.dispatchEvent(new Event('change'));
-            setTimeout(resolve, 300);
-        });
-
-        document.getElementById('fund_id').value = checkinData.fund_id;
-        document.getElementById('route_id').value = checkinData.route_id;
-
-        document.getElementById('checkin-form-title').textContent = 'Corregir Check-in';
-        const buttonsContainer = document.getElementById('checkin-form-buttons');
-        buttonsContainer.innerHTML = `
-            <button type="submit" id="checkin-submit-button" class="w-full bg-orange-500 text-white font-bold py-3 rounded-md hover:bg-orange-600">Guardar Corrección</button>
-            <button type="button" onclick="cancelEdit()" class="w-full bg-gray-300 text-gray-800 font-bold py-3 rounded-md hover:bg-gray-400">Cancelar</button>
-        `;
-
-        document.getElementById('checkin-form-title').scrollIntoView({ behavior: 'smooth' });
-    }
-    function cancelEdit() {
-        document.getElementById('checkin-form').reset();
-        document.getElementById('check_in_id_field').value = '';
-        document.getElementById('checkin-form-title').textContent = 'Registrar Nuevo Check-in';
-        const buttonsContainer = document.getElementById('checkin-form-buttons');
-        buttonsContainer.innerHTML = `
-            <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
-        `;
-        const fundSelect = document.getElementById('fund_id');
-        fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
-        fundSelect.disabled = true;
-        fundSelect.classList.add('bg-gray-200');
-    }
+   
     function updateQty(button, amount) {
         const input = button.parentElement.querySelector('input');
         let currentValue = parseInt(input.value) || 0;
@@ -2361,6 +2175,52 @@ body { font-family: 'Inter', sans-serif; }
     }
 
     // --- Alert Pop-up & Polling ---
+    // --- Toast Notification Function ---
+function showToastNotification(alertData) {
+    const container = document.getElementById('toast-container');
+    if (!container) return;
+
+    const toastId = `toast-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const toast = document.createElement('div');
+    toast.id = toastId;
+    toast.className = 'toast'; // Clase base
+
+    // Añadir clase de prioridad
+    const priorityClass = `toast-${(alertData.priority || 'media').toLowerCase()}`;
+    toast.classList.add(priorityClass);
+
+    toast.innerHTML = `
+        <div class="toast-content">
+            <div class="toast-title">${alertData.priority || 'Alerta'}: ${alertData.title || 'Nueva Tarea'}</div>
+            <div class="toast-body">${alertData.description || alertData.instruction || 'Revisa tus tareas.'}</div>
+        </div>
+        <button class="toast-close" onclick="closeToast('${toastId}')">&times;</button>
+    `;
+
+    container.appendChild(toast);
+
+    // Trigger the animation
+    setTimeout(() => {
+        toast.classList.add('show');
+    }, 50); // Pequeño retraso para asegurar que la transición ocurra
+
+    // Auto-close after some time (e.g., 7 seconds)
+    setTimeout(() => {
+        closeToast(toastId);
+    }, 7000); // 7 segundos
+}
+
+function closeToast(toastId) {
+    const toast = document.getElementById(toastId);
+    if (toast) {
+        toast.classList.remove('show');
+        // Espera a que termine la animación antes de eliminar
+        setTimeout(() => {
+            toast.remove();
+        }, 500); // Coincide con la duración de la transición CSS
+    }
+}
+// --- End Toast Notification Function ---
     function showAlertPopup(alertData) {
         if (!alertPopupOverlay || !alertPopup || !alertPopupTitle || !alertPopupDescription || !alertPopupHeader) return;
         alertPopupTitle.textContent = `¡${alertData.priority}! ${alertData.title || 'Nueva Alerta'}`;
@@ -2381,69 +2241,274 @@ body { font-family: 'Inter', sans-serif; }
         }, 50);
     }
 
-    async function checkForNewAlerts() {
-        try {
-            const response = await fetch(`api/realtime_alerts_api.php?since=${lastCheckedAlertTime}`);
-            if (!response.ok && response.status !== 304) { console.error("Error checking alerts:", response.statusText); return; }
-            if (response.status === 304) return; // Not Modified
-
-            const result = await response.json();
-            if (result.success && result.alerts && result.alerts.length > 0) {
-                showAlertPopup(result.alerts[0]);
-            }
-            lastCheckedAlertTime = result.timestamp || Math.floor(Date.now() / 1000);
-        } catch (error) { console.error("Network error checking alerts:", error); }
-    }
-
-    function startAlertPolling(intervalSeconds = 20) {
-        if (alertPollingInterval) clearInterval(alertPollingInterval);
-        checkForNewAlerts();
-        alertPollingInterval = setInterval(checkForNewAlerts, intervalSeconds * 1000);
-        console.log(`Alert polling started every ${intervalSeconds} seconds.`);
-    }
-
-    function stopAlertPolling() {
-        if (alertPollingInterval) { clearInterval(alertPollingInterval); alertPollingInterval = null; console.log("Alert polling stopped."); }
-    }
-
-     // --- Check-in Polling Functions ---
-     async function fetchAndUpdateCheckins() {
-         try {
-             const response = await fetch('api/realtime_checkins_api.php');
-             if (!response.ok) {
-                 if (response.status === 401) { console.warn("Polling detenido: No autenticado."); stopCheckinPolling(); }
-                 return;
-             }
-             const result = await response.json();
-             if (result.success && result.checkins) {
-                 if (JSON.stringify(result.checkins) !== JSON.stringify(currentCheckinData)) {
-                     console.log("Checkin data changed, updating table.");
-                     currentCheckinData = result.checkins;
-
-                     if (!document.getElementById('content-checkinero').classList.contains('hidden')) {
-                         populateCheckinsTable(currentCheckinData);
-                     }
-                     if (currentUserRole === 'Admin' && document.getElementById('operator-checkins-table-body')) {
-                         populateOperatorCheckinsTable(currentCheckinData);
-                     }
-                 }
-             } else if (!result.success) { console.error("API error fetching checkins:", result.error); }
-         } catch (error) { console.error("Network error fetching checkins:", error); }
-     }
-     function startCheckinPolling(intervalSeconds = 10) {
-         if (checkinPollingInterval) clearInterval(checkinPollingInterval);
-         fetchAndUpdateCheckins();
-         checkinPollingInterval = setInterval(fetchAndUpdateCheckins, intervalSeconds * 1000);
-         console.log(`Checkin polling started every ${intervalSeconds} seconds.`);
-     }
-     function stopCheckinPolling() {
-         if (checkinPollingInterval) { clearInterval(checkinPollingInterval); checkinPollingInterval = null; console.log("Checkin polling stopped."); }
-     }
+    
      window.addEventListener('beforeunload', () => {
+        stopAlertPolling();
          stopAlertPolling();
          stopCheckinPolling();
      });
+//nuevooooo
 
+// --- LÓGICA PARA ACTUALIZACIONES EN TIEMPO REAL (NUEVO/MODIFICADO) ---
+
+    // Función para actualizar la tabla de check-ins (Checkinero) - Modificada para usar Set
+    function updateCheckinsTable(newCheckins) {
+        const tbody = document.getElementById('checkins-table-body');
+        if (!tbody) return;
+        const noRecordsRow = tbody.querySelector('td[colspan]');
+        if (noRecordsRow && newCheckins.length > 0) tbody.innerHTML = '';
+        let newRowsHtml = '';
+        let updated = false;
+        newCheckins.forEach(ci => {
+            const checkinId = parseInt(ci.id);
+            if (!activeCheckinsIds.has(checkinId)) {
+                let statusBadge = '';
+                switch(ci.status) {
+                    case 'Rechazado': statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`; break;
+                    case 'Procesado': statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`; break;
+                    case 'Discrepancia': statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`; break;
+                    default: statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`; break;
+                }
+                const adminDeleteButton = currentUserRole === 'Admin' ? `<td class="p-2"><button onclick="deleteCheckIn(${ci.id})" class="text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button></td>` : '';
+                const declaredValueFormatted = formatCurrency(ci.declared_value);
+                const createdAtFormatted = new Date(ci.created_at).toLocaleString('es-CO');
+                newRowsHtml += `<tr class="border-b hover:bg-gray-50 new-checkin-row" id="checkin-row-${checkinId}"><td class="p-2">${statusBadge}</td><td class="p-2 font-mono">${ci.invoice_number || ''}</td><td class="p-2 font-mono">${ci.seal_number || ''}</td><td class="p-2 text-right">${declaredValueFormatted}</td><td class="p-2">${ci.route_name || ''}</td><td class="p-2 text-xs whitespace-nowrap">${createdAtFormatted}</td><td class="p-2">${ci.checkinero_name || ''}</td><td class="p-2">${ci.client_name || ''}</td><td class="p-2">${ci.fund_name || 'N/A'}</td>${adminDeleteButton}</tr>`;
+                activeCheckinsIds.add(checkinId); updated = true;
+            }
+        });
+        if (updated) {
+            tbody.insertAdjacentHTML('afterbegin', newRowsHtml);
+            document.querySelectorAll('.new-checkin-row').forEach(row => { row.style.backgroundColor = '#e0f2fe'; setTimeout(() => { row.style.backgroundColor = ''; row.classList.remove('new-checkin-row'); }, 3000); });
+        }
+        if (tbody.children.length === 0) { const colspan = currentUserRole === 'Admin' ? 10 : 9; tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">No hay registros pendientes o rechazados.</td></tr>`; }
+    }
+
+// Función para actualizar tabla Operador Pendientes
+    function updateOperatorPendingTable(newCheckins) {
+        const tbody = document.getElementById('operator-checkins-table-body'); if (!tbody) return;
+        const pendingCheckins = newCheckins.filter(ci => ci.status === 'Pendiente');
+        const noRecordsRow = tbody.querySelector('td[colspan="8"]');
+        if (noRecordsRow && pendingCheckins.length > 0) tbody.innerHTML = '';
+        let newRowsHtml = ''; let updated = false;
+        pendingCheckins.forEach(ci => {
+            const checkinId = parseInt(ci.id);
+            if (!operatorPendingIds.has(checkinId)) {
+                const declaredValueFormatted = formatCurrency(ci.declared_value);
+                const createdAtFormatted = new Date(ci.created_at).toLocaleString('es-CO');
+                const escapedInvoiceNumber = (ci.invoice_number || '').replace(/'/g, "\\'");
+                newRowsHtml += `<tr class="border-b new-operator-row" id="operator-pending-row-${checkinId}"><td class="p-3 font-mono">${ci.invoice_number || ''}</td><td class="p-3 font-mono">${ci.seal_number || ''}</td><td class="p-3 text-right">${declaredValueFormatted}</td><td class="p-3">${ci.client_name || ''}</td><td class="p-3">${ci.checkinero_name || ''}</td><td class="p-3 text-xs whitespace-nowrap">${createdAtFormatted}</td><td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span></td><td class="p-3"><button onclick="selectPlanilla('${escapedInvoiceNumber}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button></td></tr>`;
+                operatorPendingIds.add(checkinId); updated = true;
+            }
+        });
+        if (updated) {
+            tbody.insertAdjacentHTML('afterbegin', newRowsHtml);
+            document.querySelectorAll('.new-operator-row').forEach(row => { row.style.backgroundColor = '#dbeafe'; setTimeout(() => { row.style.backgroundColor = ''; row.classList.remove('new-operator-row'); }, 3000); });
+        }
+        if (tbody.children.length === 0) { tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes.</td></tr>'; }
+    }
+
+
+// Función para actualizar tabla Digitador Pendientes (AHORA ELIMINADA)
+    /* function updateDigitadorPendingTable(newCheckins) { ... } // Comentada o eliminada */
+
+    // Función para Notificaciones
+    function showSimpleNotification(title, body) {
+        if (!("Notification" in window)) { console.log("No soporta notificaciones"); }
+        else if (Notification.permission === "granted") { new Notification(title, { body: body }); }
+        else if (Notification.permission !== "denied") { Notification.requestPermission().then(function (permission) { if (permission === "granted") new Notification(title, { body: body }); }); }
+    }
+
+// Función para actualizar Paneles/Badges de Alertas
+function updateAlertsDisplay(newAlerts) {
+    console.log('updateAlertsDisplay recibió:', newAlerts);
+    const highPriorityList = document.getElementById('task-notifications-list');
+    const mediumPriorityList = document.getElementById('medium-priority-list');
+    const highPriorityBadge = document.getElementById('task-notification-badge');
+    const mediumPriorityBadge = document.getElementById('medium-priority-badge');
+
+    if (!highPriorityList || !mediumPriorityList || !highPriorityBadge || !mediumPriorityBadge) return;
+
+    let highCount = parseInt(highPriorityBadge.textContent || '0');
+    let mediumCount = parseInt(mediumPriorityBadge.textContent || '0');
+    let highUpdated = false;
+    let mediumUpdated = false;
+    // let newHighPriorityAlerts = []; // Ya no necesitamos esto para el popup modal
+
+    newAlerts.forEach(alert => {
+        const isHighPriority = alert.priority === 'Critica' || alert.priority === 'Alta';
+        const list = isHighPriority ? highPriorityList : mediumPriorityList;
+        const colorClass = isHighPriority ? (alert.priority === 'Critica' ? 'red' : 'orange') : 'yellow';
+        const alertId = alert.id; // Usamos el ID de la tarea como identificador único
+
+        // Evitar duplicados visuales en el panel
+        if (list.querySelector(`[data-alert-id="${alertId}"]`)) return;
+
+        const alertHtml = `
+            <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
+                <p class="font-semibold text-${colorClass}-800">${alert.title || ''}</p>
+                <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
+                </div>`;
+        list.insertAdjacentHTML('afterbegin', alertHtml);
+
+        if (isHighPriority) {
+            highCount++;
+            highUpdated = true;
+
+            // --- CORRECCIÓN: Mostrar SIEMPRE un Toast para nuevas alertas críticas/altas ---
+            // Solo empezar a repetir si no lo está haciendo ya para esta alerta
+            if (!repeatingToasts.has(alertId)) {
+                console.log(`Mostrando toast inicial para ${alertId}`);
+                showToastNotification(alert); // Mostrar inmediatamente
+
+                let repeatCount = 0;
+                const maxRepeats = 4; // Repetir 4 veces (4 * 30s = 2 minutos)
+
+                const intervalId = setInterval(() => {
+                    // Doble chequeo por si se canceló la repetición
+                    if (!repeatingToasts.has(alertId)) {
+                        clearInterval(intervalId);
+                        return;
+                    }
+
+                    repeatCount++;
+                    console.log(`Repitiendo toast para ${alertId}, repetición #${repeatCount}`);
+                    showToastNotification(alert); // Mostrar el toast de nuevo
+
+                    if (repeatCount >= maxRepeats) {
+                        clearInterval(intervalId);
+                        repeatingToasts.delete(alertId);
+                        console.log(`Se detuvo la repetición de toast para ${alertId}`);
+                    } else {
+                        // Actualizar el contador en el mapa (opcional, para seguimiento)
+                        const currentData = repeatingToasts.get(alertId);
+                        if (currentData) currentData.count = repeatCount;
+                    }
+                }, 30 * 1000); // Repetir cada 30 segundos
+
+                // Guardar el ID del intervalo y los datos iniciales
+                repeatingToasts.set(alertId, { intervalId: intervalId, count: 0, alertData: alert });
+                console.log(`Se inició el temporizador de repetición para ${alertId}`);
+
+            } else {
+                console.log(`El toast para ${alertId} ya está en ciclo de repetición.`);
+            }
+            // showSimpleNotification(`Alerta ${alert.priority}`, alert.title); // Opcional: Notif. navegador
+        } else { // Media o Baja
+            mediumCount++;
+            mediumUpdated = true;
+            // Opcional: Mostrar Toast para prioridad Media también
+            // showToastNotification(alert);
+        }
+    });
+
+    // Actualizar badges y mensajes de "No hay alertas"
+    if (highUpdated) {
+        highPriorityBadge.textContent = highCount;
+        highPriorityBadge.classList.remove('hidden');
+        const noAlertsMsg = highPriorityList.querySelector('.text-gray-500');
+        if (noAlertsMsg) noAlertsMsg.remove();
+    }
+    if (mediumUpdated) {
+        mediumPriorityBadge.textContent = mediumCount;
+        mediumPriorityBadge.classList.remove('hidden');
+        const noAlertsMsg = mediumPriorityList.querySelector('.text-gray-500');
+        if (noAlertsMsg) noAlertsMsg.remove();
+    }
+}
+// --- Polling Control ---
+    function startAlertPolling(intervalSeconds = 15) { // Default 15 segundos
+        stopAlertPolling(); // Limpia cualquier intervalo anterior
+        console.log(`Iniciando sondeo de alertas cada ${intervalSeconds}s.`);
+        // Llama una vez de inmediato para verificar si hay alertas pendientes al cargar
+        pollAlerts();
+        // Luego establece el intervalo para buscar nuevas
+        alertPollingInterval = setInterval(pollAlerts, intervalSeconds * 1000);
+    }
+
+    function stopAlertPolling() {
+        if (alertPollingInterval) {
+            console.log("Deteniendo sondeo de alertas.");
+            clearInterval(alertPollingInterval);
+            alertPollingInterval = null;
+        }
+    }
+
+    // --- Asegúrate que también tengas estas si las necesitas ---
+    function startCheckinPolling(intervalSeconds = 15) {
+        stopCheckinPolling();
+        console.log(`Iniciando sondeo de checkins cada ${intervalSeconds}s.`);
+        pollCheckins(); // Llama una vez
+        checkinPollingInterval = setInterval(pollCheckins, intervalSeconds * 1000);
+    }
+    function stopCheckinPolling() {
+        if (checkinPollingInterval) {
+            console.log("Deteniendo sondeo de checkins.");
+            clearInterval(checkinPollingInterval);
+            checkinPollingInterval = null;
+        }
+    }
+    function startTrazabilidadPolling(intervalSeconds = 20) {
+        stopTrazabilidadPolling();
+        console.log(`Iniciando sondeo de trazabilidad cada ${intervalSeconds}s.`);
+        pollTrazabilidad(); // Llama una vez
+        trazabilidadPollingInterval = setInterval(pollTrazabilidad, intervalSeconds * 1000);
+    }
+    function stopTrazabilidadPolling() {
+        if (trazabilidadPollingInterval) {
+            console.log("Deteniendo sondeo de trazabilidad.");
+            clearInterval(trazabilidadPollingInterval);
+            trazabilidadPollingInterval = null;
+        }
+    }
+   
+
+    // ... (El resto de tus funciones JavaScript) ...
+// Función Polling Checkins (Modificada)
+    async function pollCheckins() {
+        try {
+            // --- CAMBIO: Ruta de la API ---
+            const response = await fetch(`${apiRealtimeBase}/realtime_checkins_api.php`);
+            if (!response.ok) { console.error('Error pollCheckins:', response.statusText); return; }
+            const data = await response.json();
+            if (data.success && data.checkins) {
+                 updateCheckinsTable(data.checkins); // Actualiza tabla Checkinero
+                 updateOperatorPendingTable(data.checkins); // Actualiza tabla Operador
+                 // updateDigitadorPendingTable(data.checkins); // Llamada eliminada
+            } else { console.error('API error pollCheckins:', data.error); }
+        } catch (error) { console.error('Network error pollCheckins:', error); }
+    }
+
+
+// Función Polling Alertas
+    async function pollAlerts() {
+        try {
+             // --- CAMBIO: Ruta de la API ---
+            const response = await fetch(`${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`);
+            if (!response.ok) { console.error('Error pollAlerts:', response.statusText); return; }
+            const data = await response.json();
+            console.log('Respuesta de realtime_alerts_api:', data);
+            if (data.success && data.alerts && data.alerts.length > 0) { updateAlertsDisplay(data.alerts); }
+            if (data.timestamp) { lastCheckedAlertTime = data.timestamp; } else { console.warn('No timestamp from realtime_alerts_api.'); }
+        } catch (error) { console.error('Network error pollAlerts:', error); }
+    }
+
+     // Función Polling Trazabilidad
+    async function pollTrazabilidad() {
+        const trazabilidadContent = document.getElementById('content-trazabilidad');
+        if (currentUserRole !== 'Admin' || !trazabilidadContent || trazabilidadContent.classList.contains('hidden')) return;
+        try {
+             // --- CAMBIO: Ruta de la API ---
+            const response = await fetch(`${apiRealtimeBase}/realtime_trazabilidad_api.php?since_id=${lastTrazabilidadTaskId}`);
+            if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+            const data = await response.json();
+            if (data.success && data.tasks && data.tasks.length > 0) { updateTrazabilidadTable(data.tasks); }
+            if (data.last_id && data.last_id > lastTrazabilidadTaskId) { lastTrazabilidadTaskId = data.last_id; }
+        } catch (error) { console.error('Error pollTrazabilidad:', error); }
+    }
+
+
+
+//fin nuevo
     // --- Tab Switching & Dynamic Content Loading ---
     async function switchTab(tabName) {
         sessionStorage.setItem('activeTab', tabName);
@@ -2502,6 +2567,7 @@ body { font-family: 'Inter', sans-serif; }
 
     // --- Initialization ---
     document.addEventListener('DOMContentLoaded', () => {
+        startAlertPolling(10);
         const savedTab = sessionStorage.getItem('activeTab') || 'operaciones';
 
         if (document.getElementById('user-table-body') && currentUserRole === 'Admin') populateUserTable(adminUsersData);
@@ -2532,91 +2598,101 @@ body { font-family: 'Inter', sans-serif; }
             document.getElementById('denomination-form')?.addEventListener('submit', handleDenominationSave);
         }
         if (document.getElementById('content-digitador')) {
-            const btnSupervision = document.getElementById('btn-supervision');
+        // --- CAMBIO: Se elimina botón y panel de supervisión ---
+            // const btnSupervision = document.getElementById('btn-supervision');
             const btnCierre = document.getElementById('btn-cierre');
             const btnHistorialCierre = document.getElementById('btn-historial-cierre');
             const btnInformes = document.getElementById('btn-informes');
-            const panelSupervision = document.getElementById('panel-supervision');
+            // --- VARIABLES AÑADIDAS ---
+    const btnSupervisionOperador = document.getElementById('btn-supervision-operador');
+    const panelSupervisionOperador = document.getElementById('panel-supervision-operador');
+    // --- FIN VARIABLES AÑADIDAS ---
+            // const panelSupervision = document.getElementById('panel-supervision');
             const panelCierre = document.getElementById('panel-cierre');
             const panelHistorialCierre = document.getElementById('panel-historial-cierre');
             const panelInformes = document.getElementById('panel-informes');
-            const digitadorSubPanels = [panelSupervision, panelCierre, panelHistorialCierre, panelInformes];
-            const digitadorSubButtons = [btnSupervision, btnCierre, btnHistorialCierre, btnInformes];
+           // --- AÑADIR AL ARRAY ---
+    const digitadorSubPanels = [panelCierre, panelHistorialCierre, panelInformes, panelSupervisionOperador];
+    const digitadorSubButtons = [btnCierre, btnHistorialCierre, btnInformes, btnSupervisionOperador];
+    // --- FIN AÑADIR AL ARRAY ---
+           const setActiveDigitadorButton = (activeBtn) => { digitadorSubButtons.forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } }); if(activeBtn) { activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700'); } };
+            const showDigitadorPanel = (activePanel) => { digitadorSubPanels.forEach(panel => { if(panel) panel.classList.add('hidden'); }); if (activePanel) activePanel.classList.remove('hidden'); };
 
-            const setActiveDigitadorButton = (activeBtn) => {
-                digitadorSubButtons.forEach(btn => { if(btn) { btn.classList.remove('bg-blue-600', 'text-white'); btn.classList.add('bg-gray-200', 'text-gray-700'); } });
-                if(activeBtn) { activeBtn.classList.add('bg-blue-600', 'text-white'); activeBtn.classList.remove('bg-gray-200', 'text-gray-700'); }
-            };
-            const showDigitadorPanel = (activePanel) => {
-                digitadorSubPanels.forEach(panel => { if(panel) panel.classList.add('hidden'); });
-                if (activePanel) activePanel.classList.remove('hidden');
-            };
-
-            btnSupervision.addEventListener('click', () => { setActiveDigitadorButton(btnSupervision); showDigitadorPanel(panelSupervision); sessionStorage.setItem('activeDigitadorSubTab', 'supervision'); });
-            btnCierre.addEventListener('click', () => { setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre); sessionStorage.setItem('activeDigitadorSubTab', 'cierre'); loadFundsForCierre(); });
-            btnHistorialCierre.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); });
-            btnInformes.addEventListener('click', () => { setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes); sessionStorage.setItem('activeDigitadorSubTab', 'informes'); loadInformes(); });
-
+           // btnSupervision?.addEventListener('click', ...); // Event listener eliminado
+            btnCierre?.addEventListener('click', () => { setActiveDigitadorButton(btnCierre); showDigitadorPanel(panelCierre); sessionStorage.setItem('activeDigitadorSubTab', 'cierre'); loadFundsForCierre(); });
+            btnHistorialCierre?.addEventListener('click', () => { setActiveDigitadorButton(btnHistorialCierre); showDigitadorPanel(panelHistorialCierre); sessionStorage.setItem('activeDigitadorSubTab', 'historial'); });
+            btnInformes?.addEventListener('click', () => { setActiveDigitadorButton(btnInformes); showDigitadorPanel(panelInformes); sessionStorage.setItem('activeDigitadorSubTab', 'informes'); loadInformes(); });
+// --- LISTENER AÑADIDO ---
+            btnSupervisionOperador?.addEventListener('click', () => { 
+                setActiveDigitadorButton(btnSupervisionOperador); 
+                showDigitadorPanel(panelSupervisionOperador); 
+                sessionStorage.setItem('activeDigitadorSubTab', 'supervision_operador'); 
+            });
+            // --- FIN LISTENER AÑADIDO ---
+         // --- LÓGICA DE PESTAÑA POR DEFECTO MODIFICADA ---
             const savedSubTab = sessionStorage.getItem('activeDigitadorSubTab');
-            if (savedSubTab === 'supervision' && btnSupervision) { btnSupervision.click(); }
-            else if (savedSubTab === 'historial' && btnHistorialCierre) { btnHistorialCierre.click(); }
+            if (savedSubTab === 'historial' && btnHistorialCierre) { btnHistorialCierre.click(); }
             else if (savedSubTab === 'informes' && btnInformes) { btnInformes.click(); }
-            else if (btnCierre) { btnCierre.click(); } // Default to Cierre
-            else if (btnSupervision) { btnSupervision.click(); } // Fallback
-
-            populateOperatorHistoryForDigitador(operatorHistoryData);
+            else if (savedSubTab === 'cierre' && btnCierre) { btnCierre.click(); }
+            else if (savedSubTab === 'supervision_operador' && btnSupervisionOperador) { btnSupervisionOperador.click(); }
+            // --- Hacer que la nueva pestaña sea la default si no hay nada guardado ---
+            else if (btnSupervisionOperador) { btnSupervisionOperador.click(); }
+            else if (btnCierre) { btnCierre.click(); } // Fallback
+            // --- FIN LÓGICA MODIFICADA ---
+            // --- CAMBIO: Llamada eliminada ---
+            populateDigitadorOperatorHistoryTable(operatorHistoryData);
+            // populateOperatorHistoryForDigitador(operatorHistoryData);
             populateDigitadorClosedHistory(digitadorClosedHistory);
         }
 
         switchTab(savedTab); // Activa la pestaña inicial (y el polling si corresponde)
 
-        updateReminderCount();
-        startAlertPolling(20); // Start checking for new alerts (Global)
+         updateReminderCount();
+      // Reemplaza TODO el setInterval existente por este (mismo lugar)
+setInterval(() => {
+  document.querySelectorAll('.countdown-timer').forEach(timerEl => {
+    let raw = timerEl.dataset.endTime || '';
+    // Normaliza "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DDTHH:MM:SS"
+    const iso = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
+    const endTime = new Date(iso).getTime();
+    if (isNaN(endTime)) return;
 
-        setInterval(() => {
-            document.querySelectorAll('.countdown-timer').forEach(timerEl => {
-                const endTimeStr = timerEl.dataset.endTime;
-                 if (!endTimeStr) return;
-                try {
-                     const endTime = new Date(endTimeStr.replace(' ', 'T')).getTime();
-                     if (isNaN(endTime)) {
-                          timerEl.textContent = 'Fecha inválida';
-                          return;
-                     }
-                     const now = new Date().getTime();
-                     const distance = endTime - now;
+    const now = Date.now();
+    const distance = endTime - now;
 
-                     if (distance < 0) {
-                          const elapsed = now - endTime;
-                          const days = Math.floor(elapsed / 864e5);
-                          const hours = Math.floor((elapsed % 864e5) / 36e5);
-                          const minutes = Math.floor((elapsed % 36e5) / 6e4);
-                          const seconds = Math.floor((elapsed % 6e4) / 1e3);
-                          let elapsedTime = '';
-                          if (days > 0) elapsedTime += `${days}d `;
-                          if (hours > 0 || days > 0) elapsedTime += `${hours}h `;
-                          elapsedTime += `${minutes}m ${seconds}s`;
-                          timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`;
-                     } else {
-                          const days = Math.floor(distance / 864e5);
-                          const hours = Math.floor((distance % 864e5) / 36e5);
-                          const minutes = Math.floor((distance % 36e5) / 6e4);
-                          const seconds = Math.floor((distance % 6e4) / 1e3);
-                          let timeLeft = '';
-                          if (days > 0) timeLeft += `${days}d `;
-                          if (hours > 0 || days > 0) timeLeft += `${hours}h `;
-                          timeLeft += `${minutes}m ${seconds}s`;
-                          let textColor = 'text-green-600';
-                          if (days === 0 && hours < 1) textColor = 'text-red-600';
-                          else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
-                          timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
-                     }
-                } catch (e) {
-                     console.error("Error parsing date for countdown:", endTimeStr, e);
-                     timerEl.textContent = 'Error fecha';
-                }
-            });
-        }, 1000);
+    if (distance < 0) {
+      // Ya venció -> mostrar retraso
+      const elapsed = now - endTime;
+      const days = Math.floor(elapsed / 86400000);
+      const hours = Math.floor((elapsed % 86400000) / 3600000);
+      const minutes = Math.floor((elapsed % 3600000) / 60000);
+      const seconds = Math.floor((elapsed % 60000) / 1000);
+      let elapsedTime = '';
+      if (days > 0) elapsedTime += `${days}d `;
+      if (hours > 0 || days > 0) elapsedTime += `${hours}h `;
+      elapsedTime += `${minutes}m ${seconds}s`;
+      timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`;
+    } else {
+      // Aún falta -> mostrar cuenta regresiva
+      const days = Math.floor(distance / 86400000);
+      const hours = Math.floor((distance % 86400000) / 3600000);
+      const minutes = Math.floor((distance % 3600000) / 60000);
+      const seconds = Math.floor((distance % 60000) / 1000);
+      let timeLeft = '';
+      if (days > 0) timeLeft += `${days}d `;
+      if (hours > 0 || days > 0) timeLeft += `${hours}h `;
+      timeLeft += `${minutes}m ${seconds}s`;
+
+      // Colores según urgencia (igual a tu lógica actual)
+      let textColor = 'text-green-600';
+      if (days === 0 && hours < 1) textColor = 'text-red-600';
+      else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
+
+      timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
+    }
+  });
+}, 1000);
+
         const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
         if(startDateInput && endDateInput) {
             const getLocalISOString = (date) => {
@@ -2652,7 +2728,10 @@ body { font-family: 'Inter', sans-serif; }
                   }
              });
         }
+    
     });
     </script>
+    <div id="toast-container" class="fixed bottom-4 right-4 z-[110] space-y-2">
+    </div>
     </body>
 </html>

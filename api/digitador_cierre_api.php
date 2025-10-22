@@ -19,14 +19,16 @@ if ($method === 'GET' && $action === 'list_funds_to_close') {
     // La consulta ahora solo busca fondos que tengan planillas 'Conforme'.
     // Se eliminó la condición que impedía que fondos ya cerrados
     // volvieran a aparecer si tenían nuevas planillas 'Conforme' listas.
-    $query = "
-        SELECT DISTINCT f.id, f.name, c.name as client_name
-        FROM funds f
-        JOIN clients c ON f.client_id = c.id
-        JOIN check_ins ci ON ci.fund_id = f.id
-        WHERE ci.digitador_status = 'Conforme'
-        ORDER BY f.name ASC
-    ";
+   $query = "
+    SELECT DISTINCT f.id, f.name, c.name as client_name
+    FROM funds f
+    JOIN clients c ON f.client_id = c.id
+    JOIN check_ins ci ON ci.fund_id = f.id
+    WHERE ci.status IN ('Procesado', 'Discrepancia')  -- << SIN 'Conforme' del digitador
+      AND (ci.digitador_status IS NULL OR ci.digitador_status <> 'Cerrado')
+    ORDER BY f.name ASC
+";
+
     
     $result = $conn->query($query);
     $funds = [];
@@ -48,7 +50,10 @@ if ($method === 'GET' && $action === 'list_funds_to_close') {
                 GROUP BY check_in_id
             ) b ON a.id = b.max_id
         ) oc ON ci.id = oc.check_in_id
-        WHERE ci.fund_id = ? AND ci.digitador_status = 'Conforme'
+         WHERE ci.fund_id = ?
+  AND ci.status IN ('Procesado','Discrepancia')  -- << listo por Operador
+  AND (ci.digitador_status IS NULL OR ci.digitador_status <> 'Cerrado')
+
         ORDER BY ci.created_at DESC
     ");
     $stmt->bind_param("i", $fund_id);

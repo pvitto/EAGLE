@@ -10,7 +10,7 @@ if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_role'], ['Admin', 
 }
 
 $method = $_SERVER['REQUEST_METHOD'];
-$user_id = $_SESSION['user_id']; // ID del Operador (quien crea la tarea)
+$user_id = $_SESSION['user_id'];
 
 if ($method === 'GET') {
     $planilla = $_GET['planilla'] ?? null;
@@ -54,12 +54,14 @@ if ($method === 'POST') {
         $stmt_insert->execute();
         $stmt_insert->close();
 
+        // Lógica estándar: marca como Procesado o Discrepancia. No auto-aprueba.
         $new_status = ($data['discrepancy'] == 0) ? 'Procesado' : 'Discrepancia';
         $stmt_update = $conn->prepare("UPDATE check_ins SET status = ? WHERE id = ?");
         $stmt_update->bind_param("si", $new_status, $data['check_in_id']);
         $stmt_update->execute();
         $stmt_update->close();
 
+        // Generar alerta solo si hay discrepancia
         if ($data['discrepancy'] != 0) {
             $check_in_id = $data['check_in_id'];
             $res = $conn->query("SELECT invoice_number FROM check_ins WHERE id = $check_in_id");
@@ -71,26 +73,29 @@ if ($method === 'POST') {
             
             $stmt_alert = $conn->prepare("INSERT INTO alerts (title, description, priority, status, suggested_role, check_in_id) VALUES (?, ?, 'Critica', 'Pendiente', 'Digitador', ?)");
             $stmt_alert->bind_param("ssi", $alert_title, $alert_desc, $check_in_id);
+        // --- NUEVO CÓDIGO MEJORADO ---
             $stmt_alert->execute();
             $alert_id = $stmt_alert->insert_id;
             $stmt_alert->close();
 
-            // --- CAMBIO AQUÍ: Asignar Tareas a Grupo 'Digitador' ---
-            $digitadores_res = $conn->query("SELECT id FROM users WHERE role = 'Digitador'");
-            if ($digitadores_res->num_rows > 0 && $alert_id) {
-                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, assigned_to_group, instruction, type, status, created_by_user_id) VALUES (?, ?, ?, ?, 'Asignacion', 'Pendiente', ?)");
-                $instruction = "Realizar seguimiento a la discrepancia, contactar a los responsables y documentar la resolución.";
-                $digitador_group_name = 'Digitador';
+            // Asignar UNA tarea al GRUPO 'Digitador'
+            if ($alert_id) {
+                $instruction = "Realizar seguimiento a la discrepancia (" . $invoice_number . "), contactar a los responsables y documentar la resolución.";
                 
-                while($row = $digitadores_res->fetch_assoc()) {
-                    $digitador_id = $row['id'];
-                    // Asigna al usuario Y al grupo, y registra QUIÉN (el operador) la creó
-                    $stmt_task->bind_param("iissi", $alert_id, $digitador_id, $digitador_group_name, $instruction, $user_id);
-                    $stmt_task->execute();
-                }
+                // Preparamos la inserción de la tarea asignada al grupo
+                $stmt_task = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_group, instruction, type, status, priority, created_by_user_id) VALUES (?, 'Digitador', ?, 'Asignacion', 'Pendiente', 'Critica', ?)");
+                
+                // El created_by_user_id es el Operador que generó la discrepancia
+                $operator_user_id = $_SESSION['user_id']; 
+                
+                $stmt_task->bind_param("isi", $alert_id, $instruction, $operator_user_id);
+                $stmt_task->execute();
                 $stmt_task->close();
+                
+                // Actualizamos el estado de la alerta
                 $conn->query("UPDATE alerts SET status = 'Asignada' WHERE id = $alert_id");
             }
+// --- FIN DEL NUEVO CÓDIGO ---
         }
         
         $conn->commit();
