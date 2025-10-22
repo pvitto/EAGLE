@@ -2455,12 +2455,19 @@ function updateAlertsDisplay(newAlerts) {
 
     // ======== TOASTS SOLO PARA DISCREPANCIAS NUEVAS ========
 try {
-  const isDiscrepancy = (a) => {
-    const t = (a?.title || '').toLowerCase();
-    const d = (a?.description || '').toLowerCase();
-    return t.includes('discrep') || d.includes('discrep');
-  };
-  const getId = (a) => a?.id ?? null;
+// Reemplaza el detector por este:
+const isDiscrepancy = (a) => {
+  // Señal fuerte del backend
+  if (String(a?.type || a?.alert_type || a?.code || '').toUpperCase().includes('DISCREP')) return true;
+
+  // Texto (cubre “saldo en rojo”, “saldo negativo”, etc.)
+  const t = `${a?.title || ''} ${a?.description || ''}`.toLowerCase();
+  return /discrep|saldo\s+en\s+rojo|saldo\s+negativo|diferencia\s+de/i.test(t);
+};
+
+// ID tolerante (algunos endpoints devuelven alert_id / task_id)
+const getId = (a) => a?.id ?? a?.alert_id ?? a?.task_id ?? null;
+
 
   const discrepancyAlerts = (newAlerts || []).filter(isDiscrepancy);
   const currentIds = new Set(discrepancyAlerts.map(getId).filter(Boolean));
@@ -2998,7 +3005,7 @@ form?.addEventListener('submit', async (e) => {
     // el toastAsync ya mostró el error
   }
 });
-
+}
 </script>
 
     
