@@ -13,6 +13,43 @@ $method = $_SERVER['REQUEST_METHOD'];
 $user_id = $_SESSION['user_id'];
 
 if ($method === 'GET') {
+    $action = $_GET['action'] ?? null;
+
+    if ($action === 'get_history') {
+        $history = [];
+        $operator_id_filter = ($_SESSION['user_role'] === 'Operador') ? "WHERE op.operator_id = " . intval($_SESSION['user_id']) : "";
+
+        $history_query = "
+            SELECT op.id, op.check_in_id, op.total_counted, op.discrepancy, op.observations, op.created_at as count_date,
+                   ci.invoice_number, ci.declared_value, c.name as client_name, u.name as operator_name
+            FROM operator_counts op
+            INNER JOIN (
+                SELECT check_in_id, MAX(id) as max_id
+                FROM operator_counts
+                GROUP BY check_in_id
+            ) as latest_oc ON op.id = latest_oc.max_id
+            JOIN check_ins ci ON op.check_in_id = ci.id
+            JOIN clients c ON ci.client_id = c.id
+            JOIN users u ON op.operator_id = u.id
+            {$operator_id_filter}
+            ORDER BY op.created_at DESC
+        ";
+
+        $history_result = $conn->query($history_query);
+        if ($history_result) {
+            while($row = $history_result->fetch_assoc()) {
+                $history[] = $row;
+            }
+            echo json_encode(['success' => true, 'history' => $history]);
+        } else {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => 'Error al obtener el historial.']);
+        }
+        $conn->close();
+        exit;
+    }
+
+    // Default GET action: get planilla details
     $planilla = $_GET['planilla'] ?? null;
     if (!$planilla) {
         echo json_encode(['success' => false, 'error' => 'No se proporcionó número de planilla.']);

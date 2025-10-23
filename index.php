@@ -1584,15 +1584,33 @@ async function handleCheckinSubmit(event) {
             const response = await fetch('api/operator_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
             if (result.success) {
-                 showToast(result.message || 'Conteo guardado correctamente.', 'success'); 
-                 pollAlerts();
-                 setTimeout(() => {
-                    location.reload();
-                 }, 1000); // 1000ms = 1 segundo (para que el toast se alcance a leer)
-                }else {showToast(result.error || 'Error al guardar el conteo', 'error'); // ...por esto.
+                showToast(result.message || 'Conteo guardado correctamente.', 'success');
+
+                // Ocultar panel y resetear formulario
+                document.getElementById('operator-panel').classList.add('hidden');
+                document.getElementById('consultation-form').reset();
+
+                // Forzar un sondeo inmediato de alertas para mostrar el toast de discrepancia
+                pollAlerts();
+
+                // Actualizar la tabla del historial dinámicamente
+                try {
+                    const historyResponse = await fetch('api/operator_api.php?action=get_history');
+                    const historyResult = await historyResponse.json();
+                    if (historyResult.success) {
+                        populateOperatorHistoryTable(historyResult.history);
+                    }
+                } catch (historyError) {
+                    console.error('Error actualizando el historial:', historyError);
+                }
+
+            } else {
+                showToast(result.error || 'Error al guardar el conteo', 'error');
+            }
+        } catch (error) {
+            console.error('Error al guardar conteo:', error);
+            showToast('Error de conexión al guardar conteo', 'error');
         }
-        } catch (error) { console.error('Error al guardar conteo:', error);
-             showToast('Error de conexión al guardar conteo', 'error'); }
     }
 
 
@@ -2661,8 +2679,7 @@ async function pollAlerts() {
         console.warn("No timestamp received from API."); // <-- AÑADIDO: Aviso si falta timestamp
     }
 
-    const alerts = Array.isArray(data?.alerts) ? data.alerts : []; // Asegurar que sea un array
-    console.log("Alerts to display:", alerts); // <-- AÑADIDO: Ver alertas a procesar
+    const alerts = Array.isArray(data?.alerts) ? data.alerts : [];
     updateAlertsDisplay(alerts);
 
     // --- AÑADIDO: Limpiar el flag de error si el polling tuvo éxito ---
