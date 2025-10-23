@@ -61,7 +61,7 @@ $all_pending_items = [];
 // --- FILTRO PARA TAREAS MANUALES ---
 $task_filter = '';
 if ($current_user_role !== 'Admin') {
-    $escaped_role = $conn->real_escape_string($current_user_role);
+    $escaped_role = $current_user_role; // <-- Simplemente usa la variable de sesión
     // Filtro solo para tareas: asignadas a mí O a mi grupo
     $task_filter = " AND (
         t.assigned_to_user_id = {$current_user_id} 
@@ -72,8 +72,7 @@ if ($current_user_role !== 'Admin') {
 // --- FILTRO PARA ALERTAS (COMBINA LÓGICA NUEVA Y ESTABLE) ---
 $alert_filter = $task_filter; // Empezamos con el filtro de tareas
 if ($current_user_role === 'Digitador') {
-    $escaped_role = $conn->real_escape_string($current_user_role);
-    // Lógica especial de la versión estable:
+$escaped_role = $current_user_role; // <-- Simplemente usa la variable de sesión    // Lógica especial de la versión estable:
     // Muestra si la TAREA es para mí/mi grupo O si la ALERTA es para mi rol
     $alert_filter = " AND (
         (t.assigned_to_user_id = {$current_user_id} OR (t.assigned_to_group = '{$escaped_role}' AND t.assigned_to_user_id IS NULL))
@@ -240,7 +239,40 @@ if($reminders_result) {
 
 // Datos para el Dashboard (Panel General)
 $today_collections = []; $total_recaudado_hoy = 0;
-$today_collections_result = $conn->query(" SELECT oc.id, oc.total_counted, c.name as client_name, u_op.name as operator_name, oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins, oc.created_at, ci.invoice_number, f.name as fund_name, u_dig.name as digitador_name, CASE WHEN ci.digitador_status = 'Cerrado' THEN 'Cerrado' WHEN ci.digitador_status = 'Conforme' THEN 'Conforme' WHEN ci.status = 'Rechazado' THEN 'Rechazado' WHEN ci.status = 'Discrepancia' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Procesado' THEN 'En Revisión (Digitador)' WHEN ci.status = 'Pendiente' THEN 'Pendiente (Operador)' ELSE ci.status END AS final_status FROM operator_counts oc INNER JOIN ( SELECT check_in_id, MAX(id) as max_oc_id FROM operator_counts WHERE DATE(created_at) = CURDATE() GROUP BY check_in_id ) latest_oc ON oc.id = latest_oc.max_oc_id JOIN check_ins ci ON oc.check_in_id = ci.id JOIN clients c ON ci.client_id = c.id JOIN users u_op ON oc.operator_id = u_op.id LEFT JOIN funds f ON ci.fund_id = f.id LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id ORDER BY oc.created_at DESC ");
+$today_collections_result = $conn->query("
+SELECT
+    oc.id,
+    oc.total_counted,
+    c.name AS client_name,
+    u_op.name AS operator_name,
+    oc.bills_100k, oc.bills_50k, oc.bills_20k, oc.bills_10k, oc.bills_5k, oc.bills_2k, oc.coins,
+    oc.created_at,
+    ci.invoice_number,
+    f.name AS fund_name,
+    u_dig.name AS digitador_name,
+    CASE
+        WHEN ci.digitador_status = 'Cerrado' THEN 'Cerrado'
+        -- WHEN ci.digitador_status = 'Conforme' THEN 'Conforme' -- Comentado si ya no usas 'Conforme'
+        WHEN ci.status = 'Rechazado' THEN 'Rechazado'
+        WHEN ci.status = 'Discrepancia' THEN 'Discrepancia' -- <-- MODIFICADO
+        WHEN ci.status = 'Procesado' THEN 'Procesado'    -- <-- MODIFICADO
+        WHEN ci.status = 'Pendiente' THEN 'Pendiente (Operador)'
+        ELSE ci.status
+    END AS final_status
+FROM operator_counts oc
+INNER JOIN (
+    SELECT check_in_id, MAX(id) AS max_oc_id
+    FROM operator_counts
+    WHERE DATE(created_at) = CURDATE()
+    GROUP BY check_in_id
+) latest_oc ON oc.id = latest_oc.max_oc_id
+JOIN check_ins ci ON oc.check_in_id = ci.id
+JOIN clients c ON ci.client_id = c.id
+JOIN users u_op ON oc.operator_id = u_op.id
+LEFT JOIN funds f ON ci.fund_id = f.id
+LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id
+ORDER BY oc.created_at DESC
+");
 if ($today_collections_result) { while ($row = $today_collections_result->fetch_assoc()) { $today_collections[] = $row; $total_recaudado_hoy += $row['total_counted']; } }
 else { error_log("Error Today collections: " . $conn->error); }
 
@@ -1834,135 +1866,157 @@ async function handleCheckinSubmit(event) {
                     </td>
                 </tr>`;
         });
+     }
+
+      // Función para dibujar la tabla de Check-ins (incluyendo inicialización de IDs vistos)
+function populateCheckinsTable(checkins) {
+    const tbody = document.getElementById('checkins-table-body');
+    if (!tbody) {
+        console.error("Elemento tbody 'checkins-table-body' no encontrado.");
+        return; // Salir si no se encuentra la tabla
     }
 
-  function populateCheckinsTable(checkins) {
-  const tbody = document.getElementById('checkins-table-body');
-  if (!tbody) return;
+    // --- AÑADIDO: Limpiar el set al redibujar la tabla completa ---
+    activeCheckinsIds.clear(); // Asegura empezar limpio
 
-  const thead = tbody.previousElementSibling; // el <thead>
-  // Admin tiene una columna adicional ("Admin")
-  const hasAdmin = (window.currentUserRole === 'Admin');
+    const thead = tbody.previousElementSibling; // el <thead>
+    const hasAdmin = (window.currentUserRole === 'Admin'); // Usar la variable global
 
-  // Encabezado
-  thead.innerHTML = `
-    <tr>
-      <th class="p-2 w-28">Estado</th>
-      <th class="p-2">Planilla</th>
-      <th class="p-2">Sello</th>
-      <th class="p-2">Declarado</th>
-      <th class="p-2">Ruta</th>
-      <th class="p-2">Fecha de Registro</th>
-      <th class="p-2">Checkinero</th>
-      <th class="p-2">Cliente</th>
-      <th class="p-2">Fondo</th>
-      ${hasAdmin ? '<th class="p-2 w-20">Admin</th>' : ''}
-    </tr>
-  `;
+    // Encabezado (ya estaba corregido para quitar Corrección/Acciones)
+    thead.innerHTML = `
+      <tr>
+        <th class="p-2 w-28">Estado</th>
+        <th class="p-2">Planilla</th>
+        <th class="p-2">Sello</th>
+        <th class="p-2">Declarado</th>
+        <th class="p-2">Ruta</th>
+        <th class="p-2">Fecha de Registro</th>
+        <th class="p-2">Checkinero</th>
+        <th class="p-2">Cliente</th>
+        <th class="p-2">Fondo</th>
+        ${hasAdmin ? '<th class="p-2 w-20">Admin</th>' : ''}
+      </tr>
+    `;
 
-  tbody.innerHTML = '';
+    tbody.innerHTML = ''; // Limpiar el cuerpo de la tabla antes de redibujar
 
-  if (!checkins || checkins.length === 0) {
-    const colspan = hasAdmin ? 10 : 9; // Ajusta según si tienes la columna Admin
-tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">
-  No hay registros de check-in.
-</td></tr>`;
-    return;
-  }
-
-  checkins.forEach(ci => {
-    // Badge de corrección
-
-
-    // Badge de estado
-    let statusBadge = '';
-    switch (ci.status) {
-      case 'Rechazado':
-        statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`;
-        break;
-      case 'Procesado':
-        statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`;
-        break;
-      case 'Discrepancia':
-        statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`;
-        break;
-      default:
-        statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
+    if (!checkins || checkins.length === 0) {
+        const colspan = hasAdmin ? 10 : 9; // Colspan ajustado
+        tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">
+          No hay registros de check-in.
+        </td></tr>`;
+        return; // Salir si no hay datos
     }
 
-    // Acción (solo para Rechazado: permitir editar)
-    /*let actionButton = '';
-    if (ci.status === 'Rechazado') {
-      const checkinData = JSON.stringify(ci).replace(/"/g, '&quot;');
-      actionButton = `
-        <button onclick='editCheckIn(${checkinData})'
-                class="bg-blue-500 text-white px-3 py-1 rounded-md text-xs font-semibold hover:bg-blue-600">
-          Editar
-        </button>`;
-    }*/
+    checkins.forEach(ci => {
+        // --- AÑADIDO: Registrar el ID en el set ---
+        const checkinId = parseInt(ci.id);
+        if (!isNaN(checkinId)) { // Asegurar que sea un número válido
+            activeCheckinsIds.add(checkinId);
+        }
+        // --- FIN AÑADIDO ---
 
-    const adminDeleteButton = hasAdmin
-      ? `<td class="p-2"><button data-id="${ci.id}"
-           class="text-red-600 hover:text-red-800 text-xs font-semibold"
-           onclick="deleteCheckinById(${ci.id})">Eliminar</button></td>`
-      : '';
-
-    const row = `
-  <tr class="border-b hover:bg-gray-50">
-    <td class="p-2">${statusBadge}</td>
-    <td class="p-2 font-mono">${ci.invoice_number || ''}</td>
-    <td class="p-2 font-mono">${ci.seal_number || ''}</td>
-    <td class="p-2 text-right">${formatCurrency(ci.declared_value)}</td>
-    <td class="p-2">${ci.route_name || ''}</td>
-    <td class="p-2 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-    <td class="p-2">${ci.checkinero_name || ''}</td>
-    <td class="p-2">${ci.client_name || ''}</td>
-    <td class="p-2">${ci.fund_name || 'N/A'}</td>
-    ${adminDeleteButton}
-  </tr>`;
-    tbody.insertAdjacentHTML('beforeend', row);
-  });
-}
-
-    function populateOperatorCheckinsTable(checkins) {
-        const tbody = document.getElementById('operator-checkins-table-body');
-        if (!tbody) return;
-
-        tbody.innerHTML = '';
-        const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente'); // Solo pendientes para el operador
-
-        if (pendingCheckins.length === 0) {
-            tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
-            return;
+        // Badge de estado (lógica sin cambios)
+        let statusBadge = '';
+        switch (ci.status) {
+            case 'Rechazado':
+                statusBadge = `<span class="bg-orange-100 text-orange-800 text-xs font-medium px-2.5 py-1 rounded-full">Rechazado</span>`;
+                break;
+            case 'Procesado':
+                statusBadge = `<span class="bg-blue-100 text-blue-800 text-xs font-medium px-2.5 py-1 rounded-full">Procesado</span>`;
+                break;
+            case 'Discrepancia':
+                statusBadge = `<span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">Discrepancia</span>`;
+                break;
+            default: // Pendiente
+                statusBadge = `<span class="bg-gray-100 text-gray-800 text-xs font-medium px-2.5 py-1 rounded-full">Pendiente</span>`;
         }
 
-        const thead = tbody.previousElementSibling;
-        thead.innerHTML = `
-            <tr>
-                <th class="p-3">Planilla</th><th class="p-3">Sello</th><th class="p-3">Declarado</th>
-                <th class="p-3">Cliente</th><th class="p-3">Checkinero</th><th class="p-3">Fecha de Registro</th>
-                <th class="p-3">Estado</th><th class="p-3">Acción</th>
-            </tr>
-        `;
+        // Botón de eliminar para Admin (lógica sin cambios)
+        const adminDeleteButton = hasAdmin
+            ? `<td class="p-2"><button data-id="${ci.id}"
+                 class="text-red-600 hover:text-red-800 text-xs font-semibold delete-checkin-btn">
+                 Eliminar
+               </button></td>` // Usamos una clase para el listener
+            : '';
 
-        pendingCheckins.forEach(ci => {
-            const row = `
-                <tr class="border-b">
-                    <td class="p-3 font-mono">${ci.invoice_number}</td>
-                    <td class="p-3 font-mono">${ci.seal_number}</td>
-                    <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
-                    <td class="p-3">${ci.client_name}</td>
-                    <td class="p-3">${ci.checkinero_name}</td>
-                    <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
-                    <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
-                    <td class="p-3">
-                        <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
-                    </td>
-                </tr>
-            `;
-            tbody.innerHTML += row;
+        // Construcción de la fila (ya estaba corregida para quitar Corrección/Acciones)
+        const row = `
+          <tr class="border-b hover:bg-gray-50" id="checkin-row-${checkinId}">
+            <td class="p-2">${statusBadge}</td>
+            <td class="p-2 font-mono">${ci.invoice_number || ''}</td>
+            <td class="p-2 font-mono">${ci.seal_number || ''}</td>
+            <td class="p-2 text-right">${formatCurrency(ci.declared_value)}</td>
+            <td class="p-2">${ci.route_name || ''}</td>
+            <td class="p-2 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+            <td class="p-2">${ci.checkinero_name || ''}</td>
+            <td class="p-2">${ci.client_name || ''}</td>
+            <td class="p-2">${ci.fund_name || 'N/A'}</td>
+            ${adminDeleteButton}
+          </tr>`;
+        tbody.insertAdjacentHTML('beforeend', row);
+    });
+
+    // --- AÑADIDO: Añadir listeners para los botones de eliminar del Admin ---
+    if (hasAdmin) {
+        tbody.querySelectorAll('.delete-checkin-btn').forEach(button => {
+            const id = button.getAttribute('data-id');
+            // Usar addEventListener para evitar problemas si se redibuja
+            button.addEventListener('click', () => deleteCheckIn(id)); // Llama a la función deleteCheckIn que ya existe
         });
     }
+}
+
+function populateOperatorCheckinsTable(checkins) {
+    const tbody = document.getElementById('operator-checkins-table-body');
+    if (!tbody) return;
+
+    // --- AÑADIDO: Limpiar el set al redibujar ---
+    operatorPendingIds.clear();
+
+    tbody.innerHTML = '';
+    const pendingCheckins = checkins.filter(ci => ci.status === 'Pendiente'); // Solo pendientes
+
+    if (pendingCheckins.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="8" class="p-4 text-center text-gray-500">No hay planillas pendientes por detallar.</td></tr>';
+        return;
+    }
+
+    const thead = tbody.previousElementSibling;
+    thead.innerHTML = `
+        <tr>
+            <th class="p-3">Planilla</th><th class="p-3">Sello</th><th class="p-3">Declarado</th>
+            <th class="p-3">Cliente</th><th class="p-3">Checkinero</th><th class="p-3">Fecha de Registro</th>
+            <th class="p-3">Estado</th><th class="p-3">Acción</th>
+        </tr>
+    `;
+
+    pendingCheckins.forEach(ci => {
+        // --- AÑADIDO: Registrar el ID en el set ---
+        const checkinId = parseInt(ci.id);
+        if (!isNaN(checkinId)) {
+            operatorPendingIds.add(checkinId);
+        }
+        // --- FIN AÑADIDO ---
+
+        const row = `
+            <tr class="border-b">
+                <td class="p-3 font-mono">${ci.invoice_number}</td>
+                <td class="p-3 font-mono">${ci.seal_number}</td>
+                <td class="p-3 text-right">${formatCurrency(ci.declared_value)}</td>
+                <td class="p-3">${ci.client_name}</td>
+                <td class="p-3">${ci.checkinero_name}</td>
+                <td class="p-3 text-xs whitespace-nowrap">${new Date(ci.created_at).toLocaleString('es-CO')}</td>
+                <td class="p-3"><span class="bg-yellow-100 text-yellow-800 text-xs font-medium px-2.5 py-1 rounded-full">${ci.status}</span></td>
+                <td class="p-3">
+                    <button onclick="selectPlanilla('${ci.invoice_number}')" class="bg-blue-500 text-white px-3 py-1 text-xs font-semibold rounded-md hover:bg-blue-600">Seleccionar</button>
+                </td>
+            </tr>
+        `;
+        tbody.innerHTML += row;
+    });
+}
+
     function populateOperatorHistoryTable(historyData) {
         const tbody = document.getElementById('operator-history-table-body');
         if (!tbody) return;
@@ -2347,19 +2401,13 @@ function closeToast(toastId) {
     }
 
 
-// Función para actualizar tabla Digitador Pendientes (AHORA ELIMINADA)
+    // Función para actualizar tabla Digitador Pendientes (AHORA ELIMINADA)
     /* function updateDigitadorPendingTable(newCheckins) { ... } // Comentada o eliminada */
 
     // Función para Notificaciones
-    function showSimpleNotification(title, body) {
-        if (!("Notification" in window)) { console.log("No soporta notificaciones"); }
-        else if (Notification.permission === "granted") { new Notification(title, { body: body }); }
-        else if (Notification.permission !== "denied") { Notification.requestPermission().then(function (permission) { if (permission === "granted") new Notification(title, { body: body }); }); }
-    }
-
-// Función para actualizar Paneles/Badges de Alertas
+  // Función para actualizar Paneles/Badges de Alertas
 function updateAlertsDisplay(newAlerts) {
-    console.log('updateAlertsDisplay recibió:', newAlerts);
+    console.log('updateAlertsDisplay recibió:', JSON.stringify(newAlerts)); // <-- MODIFICADO: Ver todo el array
     const highPriorityList = document.getElementById('task-notifications-list');
     const mediumPriorityList = document.getElementById('medium-priority-list');
     const highPriorityBadge = document.getElementById('task-notification-badge');
@@ -2371,76 +2419,80 @@ function updateAlertsDisplay(newAlerts) {
     let mediumCount = parseInt(mediumPriorityBadge.textContent || '0');
     let highUpdated = false;
     let mediumUpdated = false;
-    // let newHighPriorityAlerts = []; // Ya no necesitamos esto para el popup modal
+    let newHighPriorityAlertsFound = false; // Para saber si tocar el sonido
+
+    // Cargar IDs ya vistos desde LocalStorage al inicio de la función
+    const seenData = loadSeenDiscrepFromLS(); // Reutilizamos esta función
+    let seenIds = new Set(seenData.ids);
+    console.log("IDs ya vistos al inicio:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs previos
+
+    newHighPriorityAlertsFound = false; // Resetear bandera
 
     newAlerts.forEach(alert => {
         const isHighPriority = alert.priority === 'Critica' || alert.priority === 'Alta';
         const list = isHighPriority ? highPriorityList : mediumPriorityList;
         const colorClass = isHighPriority ? (alert.priority === 'Critica' ? 'red' : 'orange') : 'yellow';
-        const alertId = alert.id; // Usamos el ID de la tarea como identificador único
+        const alertId = alert.id; // Usamos el ID de la tarea
 
-        // Evitar duplicados visuales en el panel
-        if (list.querySelector(`[data-alert-id="${alertId}"]`)) return;
-
-        const alertHtml = `
-            <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
-                <p class="font-semibold text-${colorClass}-800">${alert.title || ''}</p>
-                <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
-                </div>`;
-        list.insertAdjacentHTML('afterbegin', alertHtml);
-
-        if (isHighPriority) {
-            highCount++;
-            highUpdated = true;
-
-            // --- CORRECCIÓN: Mostrar SIEMPRE un Toast para nuevas alertas críticas/altas ---
-            // Solo empezar a repetir si no lo está haciendo ya para esta alerta
-            if (!repeatingToasts.has(alertId)) {
-                console.log(`Mostrando toast inicial para ${alertId}`);
-                showToastNotification(alert); // Mostrar inmediatamente
-
-                let repeatCount = 0;
-                const maxRepeats = 4; // Repetir 4 veces (4 * 30s = 2 minutos)
-
-                const intervalId = setInterval(() => {
-                    // Doble chequeo por si se canceló la repetición
-                    if (!repeatingToasts.has(alertId)) {
-                        clearInterval(intervalId);
-                        return;
-                    }
-
-                    repeatCount++;
-                    console.log(`Repitiendo toast para ${alertId}, repetición #${repeatCount}`);
-                    showToastNotification(alert); // Mostrar el toast de nuevo
-
-                    if (repeatCount >= maxRepeats) {
-                        clearInterval(intervalId);
-                        repeatingToasts.delete(alertId);
-                        console.log(`Se detuvo la repetición de toast para ${alertId}`);
-                    } else {
-                        // Actualizar el contador en el mapa (opcional, para seguimiento)
-                        const currentData = repeatingToasts.get(alertId);
-                        if (currentData) currentData.count = repeatCount;
-                    }
-                }, 30 * 1000); // Repetir cada 30 segundos
-
-                // Guardar el ID del intervalo y los datos iniciales
-                repeatingToasts.set(alertId, { intervalId: intervalId, count: 0, alertData: alert });
-                console.log(`Se inició el temporizador de repetición para ${alertId}`);
-
-            } else {
-                console.log(`El toast para ${alertId} ya está en ciclo de repetición.`);
-            }
-            // showSimpleNotification(`Alerta ${alert.priority}`, alert.title); // Opcional: Notif. navegador
-        } else { // Media o Baja
-            mediumCount++;
-            mediumUpdated = true;
-            // Opcional: Mostrar Toast para prioridad Media también
-            // showToastNotification(alert);
+        // Solo procesar si tenemos un ID válido
+        if (!alertId) {
+            console.warn("Alerta recibida sin ID:", alert); // <-- AÑADIDO: Aviso si falta ID
+            return;
         }
-    });
 
-    // Actualizar badges y mensajes de "No hay alertas"
+        // --- Lógica de Mostrar en Paneles Superiores (sin cambios) ---
+        if (!list.querySelector(`[data-alert-id="${alertId}"]`)) {
+             const alertHtml = `
+                <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
+                    <p class="font-semibold text-${colorClass}-800">${alert.title || ''}</p>
+                    <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
+                </div>`;
+            list.insertAdjacentHTML('afterbegin', alertHtml);
+
+            if (isHighPriority) {
+                highCount++;
+                highUpdated = true;
+            } else {
+                mediumCount++;
+                mediumUpdated = true;
+            }
+        }
+        // --- Fin Lógica Paneles ---
+
+
+        // --- Lógica Unificada para Toasts de Alta Prioridad ---
+        if (isHighPriority) {
+            // Verificar si ya hemos visto/notificado esta alerta específica
+            if (!seenIds.has(alertId)) {
+                console.log(`Alerta ${alertId} es nueva.`); // <-- AÑADIDO
+                const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
+                console.log(`Rol permite notificar: ${canNotify}, Pestaña visible: ${!document.hidden}`); // <-- AÑADIDO
+                if (canNotify && !document.hidden) { // Solo mostrar si la pestaña está visible y el rol es correcto
+                    const toastType = (alert.priority === 'Critica') ? 'error' : 'warning';
+                    console.log(`Llamando showToast para ${alertId} con tipo ${toastType}`); // <-- AÑADIDO
+                    showToast(`${alert.title || 'Alerta Importante'}`, toastType, 6000); // Usar showToast directamente
+                    newHighPriorityAlertsFound = true; // Marcar para tocar sonido una vez
+                } else {
+                    console.log(`Notificación omitida para ${alertId} (rol o visibilidad)`); // <-- AÑADIDO
+                }
+                seenIds.add(alertId); // Marcar como vista/notificada
+            } else {
+                console.log(`Alerta ${alertId} ya vista/notificada.`); // <-- AÑADIDO
+            }
+        }
+        // --- Fin Lógica Toasts ---
+    }); // Fin del forEach
+
+    // Tocar sonido UNA VEZ si se encontraron nuevas alertas de alta prioridad
+    if (newHighPriorityAlertsFound && typeof beepOnce === 'function') {
+        beepOnce();
+    }
+
+    // Guardar los IDs actualizados en LocalStorage
+    console.log("IDs vistos al final:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs finales
+    saveSeenDiscrepToLS(seenIds);
+
+    // Actualizar badges y mensajes de "No hay alertas" (sin cambios)
     if (highUpdated) {
         highPriorityBadge.textContent = highCount;
         highPriorityBadge.classList.remove('hidden');
@@ -2453,67 +2505,7 @@ function updateAlertsDisplay(newAlerts) {
         const noAlertsMsg = mediumPriorityList.querySelector('.text-gray-500');
         if (noAlertsMsg) noAlertsMsg.remove();
     }
-
-    // ======== TOASTS SOLO PARA DISCREPANCIAS NUEVAS ========
-try {
-// Reemplaza el detector por este:
-const isDiscrepancy = (a) => {
-  // Señal fuerte del backend
-  if (String(a?.type || a?.alert_type || a?.code || '').toUpperCase().includes('DISCREP')) return true;
-
-  // Texto (cubre “saldo en rojo”, “saldo negativo”, etc.)
-  const t = `${a?.title || ''} ${a?.description || ''}`.toLowerCase();
-  return /discrep|saldo\s+en\s+rojo|saldo\s+negativo|diferencia\s+de/i.test(t);
-};
-
-// ID tolerante (algunos endpoints devuelven alert_id / task_id)
-const getId = (a) => a?.id ?? a?.alert_id ?? a?.task_id ?? null;
-
-
-  const discrepancyAlerts = (newAlerts || []).filter(isDiscrepancy);
-  const currentIds = new Set(discrepancyAlerts.map(getId).filter(Boolean));
-
-  // Primera carga: tomar “foto” y NO notificar
-  if (!discrepancySnapshotReady) {
-    lastDiscrepancyIds = currentIds;
-    lastDiscrepancyCount = currentIds.size || discrepancyAlerts.length;
-    discrepancySnapshotReady = true;
-    // sincroniza memoria con LS
-    saveSeenDiscrepToLS(lastDiscrepancyIds);
-    return;
-  }
-
-  // cálculo de nuevos por ID
-  let fresh = 0;
-  if (currentIds.size > 0) {
-    for (const id of currentIds) if (!lastDiscrepancyIds.has(id)) fresh++;
-  } else {
-    // Fallback por conteo si no hay IDs
-    const delta = discrepancyAlerts.length - lastDiscrepancyCount;
-    fresh = delta > 0 ? delta : 0;
-  }
-
-  // Aplica reglas de visibilidad y permisos
-  const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
-  if (fresh > 0 && canNotify && !document.hidden) {
-    showToast(fresh === 1 ? 'Hay 1 discrepancia nueva.' : `Hay ${fresh} discrepancias nuevas.`, 'warning', 6000);
-    beepOnce(); // sonido corto una sola vez por lote
-  }
-
-  // Actualiza memorias en RAM y en localStorage
-  if (currentIds.size > 0) {
-    lastDiscrepancyIds = currentIds;
-    lastDiscrepancyCount = currentIds.size;
-  } else {
-    lastDiscrepancyCount = discrepancyAlerts.length;
-  }
-  saveSeenDiscrepToLS(lastDiscrepancyIds);
-} catch (e) {
-  console.debug('Toast discrepancias: no se pudo evaluar', e);
-}
-
-
-}
+} // <-- Esta es la llave de cierre que faltaba
 // --- Polling Control ---
 
 function startAlertPolling(intervalSeconds = 15) {
@@ -2585,18 +2577,47 @@ startAlertPolling(15);
 // Función Polling Alertas
 async function pollAlerts() {
   try {
-    const r = await fetch(`${apiRealtimeBase}/realtime_alerts_api.php`, { headers: { 'Accept': 'application/json' } });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
-    const data = await r.json();
-      
-    const alerts = Array.isArray(data?.alerts) ? data.alerts : (Array.isArray(data) ? data : []);
-    updateAlertsDisplay(alerts); // <- NECESARIO
-  } catch (err) {
-    if (!window._pollToastShown) {
-      showToast('Fallo el polling de alertas. Verifica tu conexión.', 'error', 7000);
-      window._pollToastShown = true;
+    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`; // Construir URL
+    console.log("Polling URL:", urlToFetch); // <-- AÑADIDO: Ver URL
+
+    const r = await fetch(urlToFetch, { headers: { 'Accept': 'application/json' } });
+
+    // --- AÑADIDO: Ver respuesta cruda ---
+    const rawResponseText = await r.text(); // Obtener texto crudo
+    console.log("Raw Response:", rawResponseText);
+    // --- FIN AÑADIDO ---
+
+    if (!r.ok) {
+        console.error("HTTP Error Status:", r.status, r.statusText); // <-- AÑADIDO: Log de error HTTP
+        throw new Error('HTTP ' + r.status);
     }
-    console.error('pollAlerts error:', err);
+
+    // Intentar parsear el texto crudo
+    const data = JSON.parse(rawResponseText);
+    console.log("Parsed Data:", data); // <-- AÑADIDO: Ver datos parseados
+
+    if (data && data.timestamp) {
+        lastCheckedAlertTime = data.timestamp;
+    } else {
+        console.warn("No timestamp received from API."); // <-- AÑADIDO: Aviso si falta timestamp
+    }
+
+    const alerts = Array.isArray(data?.alerts) ? data.alerts : []; // Asegurar que sea un array
+    console.log("Alerts to display:", alerts); // <-- AÑADIDO: Ver alertas a procesar
+    updateAlertsDisplay(alerts);
+
+    // --- AÑADIDO: Limpiar el flag de error si el polling tuvo éxito ---
+    window._pollToastShown = false;
+    // --- FIN AÑADIDO ---
+
+  } catch (err) {
+    // --- MODIFICADO: Mostrar error solo una vez y loguear detalles ---
+    if (!window._pollToastShown) {
+        showToast('Fallo el polling de alertas. Verifica tu conexión y la consola (F12).', 'error', 7000);
+        window._pollToastShown = true; // Evitar spam de errores de polling
+    }
+    console.error('pollAlerts error:', err); // Mostrar el error específico en consola
+    // --- FIN MODIFICADO ---
   }
 }
 
@@ -2996,7 +3017,7 @@ form?.addEventListener('submit', async (e) => {
     // el toastAsync ya mostró el error
   }
 });
-}
+
 </script>
 
     

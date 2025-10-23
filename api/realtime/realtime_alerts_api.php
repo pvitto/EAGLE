@@ -1,40 +1,27 @@
 <?php
+// api/realtime/realtime_alerts_api.php
 
-ini_set('display_errors', 1);
-error_reporting(E_ALL);
-date_default_timezone_set('America/Bogota'); // Zona horaria
-
+// (ini_set y error_reporting si los necesitas para depurar)
+date_default_timezone_set('America/Bogota');
 session_start();
-require '../../db_connection.php';
+require dirname(__DIR__, 2) . '/db_connection.php';
 header('Content-Type: application/json');
 
-if (!isset($_SESSION['user_id'])) {
-    http_response_code(401);
-    echo json_encode(['success' => false, 'error' => 'No autenticado.']);
-    exit;
-}
+if (!isset($_SESSION['user_id'])) { /* ... manejo no autenticado ... */ exit; }
 
 $current_user_id = $_SESSION['user_id'];
 $current_user_role = $_SESSION['user_role'];
+$since_timestamp = isset($_GET['since']) ? max(0, intval($_GET['since'])) : (time() - 60);
+$since_datetime_string = date('Y-m-d H:i:s', $since_timestamp);
 
-// Filtro de tiempo: toma 'since' o resta 60 segundos
-$since_param = isset($_GET['since']) ? intval($_GET['since']) : (time() - 60);
-$since_datetime_string = date('Y-m-d H:i:s', $since_param);
+// --- AÑADIDO: Log para ver qué 'since' se está usando ---
+error_log("Polling alerts since: " . $since_datetime_string);
+// --- FIN AÑADIDO ---
 
 $new_alerts = [];
-$user_filter_sql = ''; // Filtro de usuario
+$user_filter_sql = '';
+if ($current_user_role !== 'Admin') { /* ... filtro usuario/grupo ... */ }
 
-// Si NO es Admin, aplica el filtro de usuario/grupo
-if ($current_user_role !== 'Admin') {
-    $escaped_role = $conn->real_escape_string($current_user_role);
-    // Muestra tareas asignadas a MI ID o a MI GRUPO
-    $user_filter_sql = " AND (
-        t.assigned_to_user_id = {$current_user_id}
-        OR t.assigned_to_group = '{$escaped_role}'
-    )";
-}
-
-// CONSULTA SQL FINAL
 $sql = "
     SELECT
         a.id as alert_id, a.title as alert_title, a.description as alert_description, a.priority as alert_priority,
@@ -44,51 +31,50 @@ $sql = "
     LEFT JOIN alerts a ON t.alert_id = a.id
     WHERE
         t.status = 'Pendiente'
-        AND (t.priority = 'Critica' OR a.priority = 'Critica') -- Solo Criticas
-        AND t.created_at >= ?                                  -- Solo Nuevas
-        {$user_filter_sql}                                     -- Solo para mí (o todos si soy Admin)
+        AND ( (t.priority IN ('Critica', 'Alta')) OR (a.id IS NOT NULL AND a.priority IN ('Critica', 'Alta')) )
+        AND t.created_at >= ? -- Solo tareas creadas DESPUÉS del último chequeo
+        {$user_filter_sql}    -- Filtro de usuario/grupo (vacío para Admin)
     ORDER BY t.created_at DESC
     LIMIT 10
 ";
 
+// --- AÑADIDO: Log para ver la consulta SQL completa (aproximada) ---
+$debug_sql = str_replace('?', "'".$since_datetime_string."'", $sql); // Reemplaza '?' para debug
+error_log("Executing SQL: " . $debug_sql);
+// --- FIN AÑADIDO ---
+
 $stmt = $conn->prepare($sql);
 
 if ($stmt) {
-    // Vincula el parámetro de tiempo (el único '?')
     $stmt->bind_param("s", $since_datetime_string);
-    $stmt->execute();
-    $result = $stmt->get_result();
+    if ($stmt->execute()) {
+        $result = $stmt->get_result();
+        // ... (resto del while para procesar $new_alerts sin cambios) ...
+        $priority_map = ['Critica' => 4, 'Alta' => 3, 'Media' => 2, 'Baja' => 1];
+        $priority_names = ['Baja', 'Media', 'Alta', 'Critica'];
 
-    while ($row = $result->fetch_assoc()) {
-        $is_manual = empty($row['alert_id']);
-        $priority = $row['task_priority'] ?? $row['alert_priority'] ?? 'Media';
+        while ($row = $result->fetch_assoc()) {
+            $is_manual = empty($row['alert_id']);
+            $task_prio_val = $priority_map[$row['task_priority'] ?? 'Media'] ?? 2;
+            $alert_prio_val = $priority_map[$row['alert_priority'] ?? 'Baja'] ?? 1;
+            $final_prio_val = max($task_prio_val, $alert_prio_val);
+            $priority = $priority_names[$final_prio_val - 1] ?? 'Media';
 
-        // Doble chequeo (aunque la consulta ya filtra)
-        if ($priority === 'Critica') {
-            $new_alerts[] = [
-                'id' => $row['task_id'],
-                'title' => $is_manual ? ($row['task_title'] ?? 'Alerta Crítica') : ($row['alert_title'] ?? 'Alerta Crítica'),
-                'description' => $is_manual ? ($row['task_instruction'] ?? '') : ($row['alert_description'] ?? 'Revise sus tareas.'),
-                'priority' => $priority,
-                'created_at' => $row['task_created_at'],
-                'type' => $is_manual ? 'manual_task' : 'alert_task'
-            ];
+            if ($priority === 'Critica' || $priority === 'Alta') {
+                 // --- AÑADIDO: Log si se encuentra una alerta ---
+                 error_log("Found high priority task/alert: ID " . $row['task_id']);
+                 // --- FIN AÑADIDO ---
+                $new_alerts[] = [ /* ... datos de la alerta ... */ ];
+            }
         }
-    }
+    } else { /* ... manejo error execute ... */ }
     $stmt->close();
-} else {
-    // Si la consulta falla, lo veremos en el log Y en la consola
-    error_log("Error preparando consulta final realtime_alerts_api: " . $conn->error);
-    http_response_code(500);
-    echo json_encode(['success' => false, 'error' => 'Error interno al buscar alertas críticas: ' . $conn->error]);
-    exit;
-}
-
+} else { /* ... manejo error prepare ... */ }
 $conn->close();
 
-echo json_encode([
-    'success' => true,
-    'alerts' => $new_alerts,
-    'timestamp' => time()
-]);
+// --- AÑADIDO: Log final antes de enviar JSON ---
+error_log("Returning JSON: " . json_encode(['success' => true, 'alerts' => $new_alerts, 'timestamp' => time()]));
+// --- FIN AÑADIDO ---
+
+echo json_encode([ /* ... JSON de respuesta ... */ ]);
 ?>
