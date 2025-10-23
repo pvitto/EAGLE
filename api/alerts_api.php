@@ -269,7 +269,7 @@ if ($method === 'POST') {
 
         // *** CORRECCIÓN Error 1: Verificar $stmt antes de bind_param ***
         if ($stmt) {
-             $stmt->bind_param("issii", $target_user_id, $message, $alert_id_or_null, $task_id_or_null, $creator_id);
+             $stmt->bind_param("isiii", $target_user_id, $message, $alert_id_or_null, $task_id_or_null, $creator_id);
         } else {
              http_response_code(500);
              error_log("Error preparando INSERT de recordatorio: " . $conn->error);
