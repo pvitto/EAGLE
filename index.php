@@ -2485,7 +2485,6 @@ function closeToast(toastId) {
     // Función para Notificaciones
   // Función para actualizar Paneles/Badges de Alertas
 function updateAlertsDisplay(newAlerts) {
-    console.log('updateAlertsDisplay recibió:', JSON.stringify(newAlerts)); // <-- MODIFICADO: Ver todo el array
     const highPriorityList = document.getElementById('task-notifications-list');
     const mediumPriorityList = document.getElementById('medium-priority-list');
     const highPriorityBadge = document.getElementById('task-notification-badge');
@@ -2502,7 +2501,6 @@ function updateAlertsDisplay(newAlerts) {
     // Cargar IDs ya vistos desde LocalStorage al inicio de la función
     const seenData = loadSeenDiscrepFromLS(); // Reutilizamos esta función
     let seenIds = new Set(seenData.ids);
-    console.log("IDs ya vistos al inicio:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs previos
 
     newHighPriorityAlertsFound = false; // Resetear bandera
 
@@ -2514,7 +2512,6 @@ function updateAlertsDisplay(newAlerts) {
 
         // Solo procesar si tenemos un ID válido
         if (!alertId) {
-            console.warn("Alerta recibida sin ID:", alert); // <-- AÑADIDO: Aviso si falta ID
             return;
         }
 
@@ -2538,24 +2535,20 @@ function updateAlertsDisplay(newAlerts) {
         // --- Fin Lógica Paneles ---
 
 
-        // --- Lógica Unificada para Toasts de Alta Prioridad ---
-        if (isHighPriority) {
-            // Verificar si ya hemos visto/notificado esta alerta específica
+        // --- Lógica para Toasts de Discrepancia ---
+        const isDiscrepancy = isHighPriority && alert.title && alert.title.startsWith('Discrepancia en Planilla:');
+
+        if (isDiscrepancy) {
+            // Usamos el mismo sistema anti-spam (seenIds) para las discrepancias
             if (!seenIds.has(alertId)) {
-                console.log(`Alerta ${alertId} es nueva.`); // <-- AÑADIDO
                 const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
-                console.log(`Rol permite notificar: ${canNotify}, Pestaña visible: ${!document.hidden}`); // <-- AÑADIDO
-                if (canNotify && !document.hidden) { // Solo mostrar si la pestaña está visible y el rol es correcto
-                    const toastType = (alert.priority === 'Critica') ? 'error' : 'warning';
-                    console.log(`Llamando showToast para ${alertId} con tipo ${toastType}`); // <-- AÑADIDO
-                    showToast(`${alert.title || 'Alerta Importante'}`, toastType, 6000); // Usar showToast directamente
-                    newHighPriorityAlertsFound = true; // Marcar para tocar sonido una vez
-                } else {
-                    console.log(`Notificación omitida para ${alertId} (rol o visibilidad)`); // <-- AÑADIDO
+
+                if (canNotify && !document.hidden) {
+                    const toastType = 'critica'; // Siempre rojas
+                    showToast(alert.title, toastType, 8000); // Duración un poco más larga
+                    newHighPriorityAlertsFound = true; // Para que suene el beep
                 }
-                seenIds.add(alertId); // Marcar como vista/notificada
-            } else {
-                console.log(`Alerta ${alertId} ya vista/notificada.`); // <-- AÑADIDO
+                seenIds.add(alertId); // Marcar como notificada
             }
         }
         // --- Fin Lógica Toasts ---
@@ -2567,7 +2560,6 @@ function updateAlertsDisplay(newAlerts) {
     }
 
     // Guardar los IDs actualizados en LocalStorage
-    console.log("IDs vistos al final:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs finales
     saveSeenDiscrepToLS(seenIds);
 
     // Actualizar badges y mensajes de "No hay alertas" (sin cambios)
@@ -2655,47 +2647,30 @@ startAlertPolling(15);
 // Función Polling Alertas
 async function pollAlerts() {
   try {
-    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`; // Construir URL
-    console.log("Polling URL:", urlToFetch); // <-- AÑADIDO: Ver URL
-
+    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`;
     const r = await fetch(urlToFetch, { headers: { 'Accept': 'application/json' } });
 
-    // --- AÑADIDO: Ver respuesta cruda ---
-    const rawResponseText = await r.text(); // Obtener texto crudo
-    console.log("Raw Response:", rawResponseText);
-    // --- FIN AÑADIDO ---
-
     if (!r.ok) {
-        console.error("HTTP Error Status:", r.status, r.statusText); // <-- AÑADIDO: Log de error HTTP
         throw new Error('HTTP ' + r.status);
     }
 
-    // Intentar parsear el texto crudo
-    const data = JSON.parse(rawResponseText);
-    console.log("Parsed Data:", data); // <-- AÑADIDO: Ver datos parseados
+    const data = await r.json();
 
     if (data && data.timestamp) {
         lastCheckedAlertTime = data.timestamp;
-    } else {
-        console.warn("No timestamp received from API."); // <-- AÑADIDO: Aviso si falta timestamp
     }
 
-    const alerts = Array.isArray(data?.alerts) ? data.alerts : []; // Asegurar que sea un array
-    console.log("Alerts to display:", alerts); // <-- AÑADIDO: Ver alertas a procesar
+    const alerts = Array.isArray(data?.alerts) ? data.alerts : [];
     updateAlertsDisplay(alerts);
 
-    // --- AÑADIDO: Limpiar el flag de error si el polling tuvo éxito ---
     window._pollToastShown = false;
-    // --- FIN AÑADIDO ---
 
   } catch (err) {
-    // --- MODIFICADO: Mostrar error solo una vez y loguear detalles ---
     if (!window._pollToastShown) {
-        showToast('Fallo el polling de alertas. Verifica tu conexión y la consola (F12).', 'error', 7000);
-        window._pollToastShown = true; // Evitar spam de errores de polling
+        showToast('Fallo el polling de alertas. Revisa la conexión.', 'error', 7000);
+        window._pollToastShown = true;
     }
-    console.error('pollAlerts error:', err); // Mostrar el error específico en consola
-    // --- FIN MODIFICADO ---
+    console.error('pollAlerts error:', err);
   }
 }
 
