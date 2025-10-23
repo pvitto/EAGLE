@@ -263,12 +263,12 @@ if ($method === 'POST') {
         // *** FIN CORRECCIÓN Error 1 ***
 
         $message = "Recordatorio sobre: '" . $conn->real_escape_string($taskTitle) . "'";
-        // Corrección Definitiva: Se eliminan todas las columnas no existentes.
-        $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, created_at) VALUES (?, ?, NOW())");
+        // Añadir la columna created_by_user_id a la consulta
+        $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, created_by_user_id, created_at) VALUES (?, ?, ?, NOW())");
 
         if ($stmt) {
-             // Se ajusta el bind_param a las columnas correctas (user_id, message)
-             $stmt->bind_param("is", $target_user_id, $message);
+             // Ajustar el bind_param para incluir el ID del creador (user_id, message, creator_id)
+             $stmt->bind_param("isi", $target_user_id, $message, $creator_id);
         } else {
              http_response_code(500);
              error_log("Error preparando INSERT de recordatorio: " . $conn->error);
