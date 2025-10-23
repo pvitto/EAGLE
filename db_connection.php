@@ -10,20 +10,26 @@ $conn = new mysqli($servername, $username, $password, $dbname);
 
 // Verificar la conexión
 if ($conn->connect_error) {
-  // Si la conexión falla, muestra un error y detiene el script.
   die("Conexión fallida: " . $conn->connect_error);
 }
 
 // Establecer el charset a UTF-8 para soportar caracteres especiales
+$conn->set_charset("utf8mb4");
 
-// --- AÑADE ESTAS LÍNEAS AQUÍ ---
-// Obtiene la zona horaria actual de PHP (la que pusiste en index.php)
-$php_timezone = date_default_timezone_get();
-// Le dice a MySQL que use ESA misma zona horaria para esta sesión
-// Esto afectará a funciones como NOW() y CURDATE()
-if ($php_timezone) {
-    $conn->query("SET time_zone = '" . $conn->real_escape_string($php_timezone) . "'");
+// --- ¡NUEVO CÓDIGO DE ZONA HORARIA! ---
+
+// 1. Obtiene la zona horaria actual de PHP (definida en config.php, ej: 'Australia/Sydney')
+$php_timezone_name = date_default_timezone_get();
+
+// 2. Crea un objeto DateTime para esa zona horaria
+$datetime = new DateTime("now", new DateTimeZone($php_timezone_name));
+
+// 3. Obtiene el desfase UTC en formato +/-HH:MM (ej: '+11:00')
+$utc_offset = $datetime->format('P');
+
+// 4. Le dice a MySQL que use ESE desfase numérico
+if ($utc_offset) {
+    $conn->query("SET time_zone = '" . $conn->real_escape_string($utc_offset) . "'");
 }
-// --- FIN DE LÍNEAS A AÑADIR ---
+// --- FIN DEL NUEVO CÓDIGO ---
 ?>
-
