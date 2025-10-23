@@ -263,18 +263,16 @@ if ($method === 'POST') {
         // *** FIN CORRECCIÓN Error 1 ***
 
         $message = "Recordatorio sobre: '" . $conn->real_escape_string($taskTitle) . "'";
-        $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, alert_id, task_id, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
-        $alert_id_or_null = $alert_id ?: null; // Usar null si es 0 o null
-        $task_id_or_null = $task_id ?: null; // Usar null si es 0 o null
+        // Corrección Definitiva: Se eliminan todas las columnas no existentes.
+        $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, created_at) VALUES (?, ?, NOW())");
 
-        // *** CORRECCIÓN Error 1: Verificar $stmt antes de bind_param ***
         if ($stmt) {
-             $stmt->bind_param("issii", $target_user_id, $message, $alert_id_or_null, $task_id_or_null, $creator_id);
+             // Se ajusta el bind_param a las columnas correctas (user_id, message)
+             $stmt->bind_param("is", $target_user_id, $message);
         } else {
              http_response_code(500);
-             $db_error = $conn->error;
-             error_log("Error preparando INSERT de recordatorio: " . $db_error);
-             echo json_encode(['success' => false, 'error' => 'Error al preparar la consulta: ' . $db_error]);
+             error_log("Error preparando INSERT de recordatorio: " . $conn->error);
+             echo json_encode(['success' => false, 'error' => 'Error interno al preparar la consulta del recordatorio.']);
              $conn->close();
              exit;
         }
