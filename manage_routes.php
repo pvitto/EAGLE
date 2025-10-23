@@ -3,16 +3,20 @@ $isContentOnly = isset($_GET['content_only']) && $_GET['content_only'] == '1';
 $conn = null; // Initialize connection variable
 
 try {
+    // --- Carga el config PRIMERO, antes del if ---
+    require 'config.php'; // <-- AÑADE ESTO AQUÍ
+
     if (!$isContentOnly) {
         // --- Full Page Load ---
-        if (session_status() === PHP_SESSION_NONE) session_start();
+        // (session_start() ya se llamó en config.php)
         require 'check_session.php';
         if ($_SESSION['user_role'] !== 'Admin') {
             header('Location: index.php');
             exit;
         }
         // *** Correct: Use the existing connection file ***
-        require 'db_connection.php';
+        require 'db_connection.php'; // <-- Esto ahora usará la zona horaria
+// ...
 ?>
 <!DOCTYPE html>
 <html lang="es">
@@ -30,16 +34,17 @@ try {
 </head>
 <body class="bg-gray-100 p-8">
 <?php
-    } else {
+} else {
         // --- AJAX Content Load ---
-        if (session_status() === PHP_SESSION_NONE) session_start();
+        // (config.php ya se llamó arriba)
         if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'Admin') {
             echo '<p class="text-red-500 p-4">Acceso no autorizado.</p>';
             exit;
         }
         // *** Correct: Use the existing connection file ***
-        require 'db_connection.php';
+        require 'db_connection.php'; // <-- Esto ahora usará la zona horaria
     }
+// ...
 ?>
     <div class="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-lg">
         <div class="flex justify-between items-center mb-6">

@@ -1,5 +1,5 @@
 <?php
-session_start();
+require '../config.php';
 // La ruta correcta para acceder a la conexión desde la carpeta /api/
 require '../db_connection.php'; // Asegúrate que esta ruta sea correcta
 

@@ -1,6 +1,6 @@
 <?php
 // api/checkin_api.php
-session_start();
+require '../config.php';
 require '../db_connection.php';
 header('Content-Type: application/json');
 

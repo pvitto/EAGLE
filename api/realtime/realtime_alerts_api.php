@@ -2,8 +2,8 @@
 // api/realtime/realtime_alerts_api.php
 
 // (ini_set y error_reporting si los necesitas para depurar)
-date_default_timezone_set('America/Bogota');
-session_start();
+require dirname(__DIR__, 2) . '/config.php';
+
 require dirname(__DIR__, 2) . '/db_connection.php';
 header('Content-Type: application/json');
 

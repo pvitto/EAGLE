@@ -1,8 +1,6 @@
 <?php
 // api/realtime/realtime_trazabilidad_api.php
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require dirname(__DIR__, 2) . '/config.php';
 // --- CORREGIDO: Ruta para subir dos niveles ---
 require dirname(__DIR__, 2) . '/db_connection.php';
 header('Content-Type: application/json');

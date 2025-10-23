@@ -1,9 +1,6 @@
 <?php
 // Inicia la sesión de forma segura
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
-
+require '../config.php';
 header('Content-Type: application/json');
 
 // 1. Verificación de permisos de Administrador

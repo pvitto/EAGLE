@@ -1,5 +1,5 @@
 <?php
-session_start();
+require 'config.php';
 // Si el usuario ya está logueado, redirigir al panel principal
 if (isset($_SESSION['user_id'])) {
     header('Location: index.php');

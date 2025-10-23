@@ -5,6 +5,7 @@ $conn = null; // Initialize connection variable
 
 try {
     // --- Connect DB and Fetch Clients (Needed in both modes) ---
+    require 'config.php'; //
     require 'db_connection.php'; // This script should define $conn
     if (!$conn || $conn->connect_error) {
          throw new Exception("DB Connection Error in manage_funds.php: " . ($conn->connect_error ?? 'Unknown error'));
@@ -22,7 +23,6 @@ try {
 
     if (!$isContentOnly) {
         // --- Full Page Load ---
-        if (session_status() === PHP_SESSION_NONE) session_start();
         require 'check_session.php'; // Assumes db_connection.php doesn't handle session/auth
         if ($_SESSION['user_role'] !== 'Admin') {
             header('Location: index.php');
@@ -49,7 +49,7 @@ try {
 <?php
     } else {
         // --- AJAX Content Load ---
-        if (session_status() === PHP_SESSION_NONE) session_start();
+        // (config.php ya se llamó al inicio del 'try')
         if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'Admin') {
             echo '<p class="text-red-500 p-4">Acceso no autorizado.</p>';
             if (isset($conn) && $conn->thread_id) $conn->close(); // Close before exit
@@ -57,6 +57,7 @@ try {
         }
         // $conn is already established
     }
+// ...
 ?>
     <div class="max-w-4xl mx-auto bg-white p-6 rounded-xl shadow-lg">
         <div class="flex justify-between items-center mb-6">

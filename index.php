@@ -1,10 +1,9 @@
 <?php
-session_start();
+require 'config.php';
 require 'check_session.php';
 require 'db_connection.php'; // This should define $conn and connection details
 
-// Establecer la zona horaria correcta para Colombia
-date_default_timezone_set('America/Bogota');
+
 
 // --- Cargar datos iniciales ---
 $all_users = [];
@@ -450,12 +449,14 @@ $conn->close();
     color: #374151; /* text-gray-700 */
 }
 
+
 /* Priority Colors */
 .toast.toast-critica { border-left-color: #ef4444; /* red-500 */ }
 .toast.toast-alta { border-left-color: #f97316; /* orange-500 */ }
 .toast.toast-media { border-left-color: #eab308; /* yellow-500 */ }
 .toast.toast-baja { border-left-color: #6b7280; /* gray-500 */ }
-    
+.toast.toast-success { border-left-color: #22c55e; } /* green-500 */
+.toast.toast-error { border-left-color: #ef4444; } /* red-500 */
     
     </style>
 </head>
@@ -578,6 +579,9 @@ $conn->close();
                    <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?><button id="tab-digitador" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button><?php endif; ?>
                </div>
                <?php endif; ?>
+               <div class="mt-2 text-sm font-mono text-blue-700 font-semibold p-2 bg-blue-100 border border-blue-300 rounded-md">
+    Hora del Servidor (Prueba): <?php echo date('Y-m-d H:i:s T'); ?>
+</div>
                </div>
        </header>
 
@@ -987,73 +991,6 @@ try {
   }
 } catch {}
 
-/* loadSeenDiscrepFromLS(), saveSeenDiscrepToLS(), beepOnce() */
-// =======================================================
-// Hook de arranque para el panel de Check-in (DOM listo)
-// =======================================================
-document.addEventListener('DOMContentLoaded', () => {
-    startAlertPolling(10);
-  // Solo si estás en el panel de Check-in
-  if (document.getElementById('content-checkinero')) {
-    // Pintamos la tabla con lo que vino de PHP
-    populateCheckinsTable(window.initialCheckins || []);
-
-    // Enganchamos el submit del form
-    const form = document.getElementById('checkin-form');
-    if (form) form.addEventListener('submit', handleCheckinSubmit);
-
-    // Cliente -> Fondos
-    const clientSelect = document.getElementById('client_id');
-  const fundDisplay = document.getElementById('fund_display'); // <-- REFERENCIA AL NUEVO SPAN
-  const fundIdHidden = document.getElementById('fund_id_hidden'); // <-- REFERENCIA AL INPUT OCULTO (Opcional)
-
-  if (clientSelect && fundDisplay) {
-      clientSelect.addEventListener('change', async () => {
-          const clientId = clientSelect.value;
-          fundDisplay.textContent = 'Cargando...'; // Mensaje de carga en el span
-          fundDisplay.classList.add('italic');
-          if (fundIdHidden) fundIdHidden.value = ''; // Limpiar ID oculto (Opcional)
-
-          if (!clientId) {
-              fundDisplay.textContent = 'Seleccione un cliente...';
-              return;
-          }
-
-          try {
-              const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
-              if (!response.ok) throw new Error(`Error HTTP ${response.status}`);
-              const funds = await response.json();
-
-              // Limpiar contenido y estilos
-              fundDisplay.textContent = '';
-              fundDisplay.classList.remove('italic', 'text-red-500');
-
-              if (Array.isArray(funds) && funds.length > 0) {
-                  const firstFund = funds[0];
-                  fundDisplay.textContent = firstFund.name; // <-- MOSTRAR NOMBRE EN EL SPAN
-                  if (fundIdHidden) fundIdHidden.value = firstFund.id; // <-- GUARDAR ID EN OCULTO (Opcional)
-
-                  if (funds.length > 1) {
-                      console.warn(`Advertencia: El cliente ${clientId} tiene ${funds.length} fondos. Se muestra automáticamente el primero: ${firstFund.name}.`);
-                  }
-              } else {
-                  fundDisplay.textContent = 'Cliente sin fondo asignado';
-                  fundDisplay.classList.add('italic', 'text-red-500'); // Estilo de "error" o aviso
-              }
-          } catch (e) {
-              console.error('Error cargando fondos:', e);
-              fundDisplay.textContent = 'Error al cargar fondos';
-              fundDisplay.classList.add('italic', 'text-red-500'); // Estilo de error
-          }
-      });
-  } else {
-        // Agrega un mensaje si los elementos no se encuentran, ayuda a depurar
-        if (!clientSelect) console.error("Elemento 'client_id' no encontrado.");
-        if (!fundDisplay) console.error("Elemento 'fund_display' no encontrado.");
-  }
-  }
-});
-
 
     let selectedFundForClosure = null;
     let alertPollingInterval = null;
@@ -1069,7 +1006,119 @@ document.addEventListener('DOMContentLoaded', () => {
     let operatorPendingIds = new Set(); // Para tabla Operador (Pendientes)
     let digitadorPendingIds = new Set(); // Para tabla Digitador (Pendientes)
     let lastTrazabilidadTaskId = 0; // Para tabla Trazabilidad (Admin)
+// --- Toast Notification Function ---
+    function showToast(message, type = 'info', duration = 4000) {
+        const container = document.getElementById('toast-container');
+        if (!container) {
+            console.error('Toast container not found');
+            return;
+        }
 
+        const toastId = 'toast-' + Date.now();
+        const toast = document.createElement('div');
+        toast.id = toastId;
+        
+        // Asignamos clases basadas en el tipo
+        let borderColorClass = 'toast-info'; // default
+        if (type === 'success') borderColorClass = 'toast-success';
+        if (type === 'error') borderColorClass = 'toast-error'; // 'error' para duplicados
+        if (type === 'warning') borderColorClass = 'toast-alta'; // 'alta' o 'warning'
+        if (type === 'critica') borderColorClass = 'toast-critica';
+
+        toast.className = `toast ${borderColorClass}`; // Usamos las clases del CSS
+
+        const content = document.createElement('div');
+        content.className = 'toast-content';
+
+        const title = document.createElement('div');
+        title.className = 'toast-title';
+        // Capitalizar el tipo para el título
+        title.textContent = type.charAt(0).toUpperCase() + type.slice(1);
+
+        const body = document.createElement('div');
+        body.className = 'toast-body';
+        body.textContent = message;
+
+        content.appendChild(title);
+        content.appendChild(body);
+
+        const closeButton = document.createElement('button');
+        closeButton.className = 'toast-close';
+        closeButton.innerHTML = '&times;';
+        closeButton.onclick = () => closeToast(toastId);
+
+        toast.appendChild(content);
+        toast.appendChild(closeButton);
+
+        container.appendChild(toast);
+
+        // Trigger the animation
+        setTimeout(() => {
+            toast.classList.add('show');
+        }, 10); // Small delay
+
+        // Auto-close
+        if (duration) {
+            setTimeout(() => {
+                closeToast(toastId);
+            }, duration);
+        }
+    }
+    // (La función closeToast ya la tienes, así que no la duplicamos)
+
+    // === SUBMIT DEL FORM DE CHECK-IN (GUARDA EN LA BD) ===
+    async function handleCheckinSubmit(event) {
+        event.preventDefault();
+        const form = event.target;
+        const payload = {
+            invoice_number: document.getElementById('invoice_number').value,
+            seal_number: document.getElementById('seal_number').value,
+            client_id: document.getElementById('client_id').value,
+            route_id: document.getElementById('route_id').value,
+            fund_id: document.getElementById('fund_id_hidden') ? document.getElementById('fund_id_hidden').value : null,
+            declared_value: document.getElementById('declared_value').value
+        };
+
+        // Validar que el fondo no esté vacío si el cliente está seleccionado
+        if (payload.client_id && !payload.fund_id) {
+            showToast('El fondo se está cargando o el cliente no tiene fondo. Intente de nuevo.', 'error');
+            return; 
+        }
+        
+        // Validación básica para campos vacíos
+        if (!payload.invoice_number || !payload.seal_number || !payload.client_id || !payload.route_id || !payload.declared_value) {
+            showToast('Todos los campos son obligatorios.', 'error');
+            return;
+        }
+
+        try {
+            const response = await fetch(`${apiUrlBase}/checkin_api.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            
+            const result = await response.json();
+            
+            if (result.success) {
+                // ¡AQUÍ ESTÁ LA NOTIFICACIÓN DE ÉXITO!
+                showToast(result.message || 'Check-in guardado con éxito', 'success');
+                form.reset(); // Limpia el formulario
+                // Resetea el display del fondo
+                document.getElementById('fund_display').textContent = 'Seleccione un cliente...';
+                document.getElementById('fund_display').classList.add('italic');
+                if (document.getElementById('fund_id_hidden')) document.getElementById('fund_id_hidden').value = '';
+                
+                pollCheckins(); // Actualiza la tabla
+            } else {
+                // ¡AQUÍ ESTÁ LA NOTIFICACIÓN DE ERROR/DUPLICADO!
+                showToast(result.error || 'Error al guardar', 'error');
+            }
+        } catch (error) {
+            console.error('Error saving check-in:', error);
+            showToast('Error de conexión al guardar check-in', 'error');
+        }
+    }
     // --- UI Element References ---
     const remindersPanel = document.getElementById('reminders-panel');
     const taskNotificationsPanel = document.getElementById('task-notifications-panel');
@@ -1371,6 +1420,51 @@ async function completeTask(taskId, formIdPrefix) {
 
 // === SUBMIT DEL FORM DE CHECK-IN (GUARDA EN LA BD) ===
 
+async function handleCheckinSubmit(event) {
+        event.preventDefault();
+        const form = event.target;
+        const payload = {
+            invoice_number: document.getElementById('invoice_number').value,
+            seal_number: document.getElementById('seal_number').value,
+            client_id: document.getElementById('client_id').value,
+            route_id: document.getElementById('route_id').value,
+            // Corregido para leer el input oculto
+            fund_id: document.getElementById('fund_id_hidden') ? document.getElementById('fund_id_hidden').value : null,
+            declared_value: document.getElementById('declared_value').value
+        };
+
+        // Validar que el fondo no esté vacío si el cliente está seleccionado
+        if (payload.client_id && !payload.fund_id) {
+            showToast('El fondo se está cargando o el cliente no tiene fondo. Intente de nuevo.', 'error');
+            return; 
+        }
+
+        try {
+            const response = await fetch(`${apiUrlBase}/checkin_api.php`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(payload)
+            });
+            const result = await response.json();
+            if (result.success) {
+                showToast(result.message || 'Check-in guardado', 'success');
+                form.reset(); // Limpia el formulario
+                // Resetea el display del fondo
+                document.getElementById('fund_display').textContent = 'Seleccione un cliente...';
+                document.getElementById('fund_display').classList.add('italic');
+                if (document.getElementById('fund_id_hidden')) document.getElementById('fund_id_hidden').value = '';
+                
+                pollCheckins(); // Actualiza la tabla
+            } else {
+                showToast(result.error || 'Error al guardar', 'error');
+            }
+        } catch (error) {
+            console.error('Error saving check-in:', error);
+            showToast('Error de conexión al guardar check-in', 'error');
+        }
+    }
+
+
 
     document.getElementById('manual-task-form')?.addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -1492,6 +1586,9 @@ async function completeTask(taskId, formIdPrefix) {
             if (result.success) {
                  showToast(result.message || 'Conteo guardado correctamente.', 'success'); 
                  pollAlerts();
+                 setTimeout(() => {
+                    location.reload();
+                 }, 1000); // 1000ms = 1 segundo (para que el toast se alcance a leer)
                 }else {showToast(result.error || 'Error al guardar el conteo', 'error'); // ...por esto.
         }
         } catch (error) { console.error('Error al guardar conteo:', error);
@@ -1636,7 +1733,7 @@ async function completeTask(taskId, formIdPrefix) {
             container.innerHTML = '<p class="text-center text-red-500 text-sm">Error al cargar servicios.</p>';
         }
     }
-    async function loadInformes() {
+   async function loadInformes() {
         const tbody = document.getElementById('informes-table-body');
         if (!tbody) return;
         tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-sm text-gray-500">Cargando informes...</td></tr>';
@@ -1650,12 +1747,18 @@ async function completeTask(taskId, formIdPrefix) {
                 return;
             }
             funds.forEach(fund => {
+                // fund.close_date vendrá como 'YYYY-MM-DD'
+                // Sumamos un día a la fecha (zona horaria) para que new Date() la interprete correctamente como fecha local
+                const dateParts = fund.close_date.split('-');
+                const closeDateObj = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
+                const closeDateFormatted = closeDateObj.toLocaleDateString('es-CO', { year: 'numeric', month: 'long', day: 'numeric', timeZone: 'America/Bogota' });
+
                 tbody.innerHTML += `<tr class="border-b">
                                         <td class="p-3 font-semibold">${fund.fund_name}</td>
                                         <td class="p-3">${fund.client_name}</td>
-                                        <td class="p-3 text-xs">${new Date(fund.last_close_date).toLocaleString('es-CO')}</td>
+                                        <td class="p-3 text-xs font-medium">${closeDateFormatted}</td>
                                         <td class="p-3 text-center">
-                                            <button onclick="generatePDF(${fund.id}, '${fund.fund_name.replace(/'/g, "\\'")}', '${fund.client_name.replace(/'/g, "\\'")}')" class="bg-green-600 text-white font-bold py-1 px-3 rounded-md hover:bg-green-700 text-xs">
+                                            <button onclick="generatePDF(${fund.id}, '${fund.fund_name.replace(/'/g, "\\'")}', '${fund.client_name.replace(/'/g, "\\'")}', '${fund.close_date}')" class="bg-green-600 text-white font-bold py-1 px-3 rounded-md hover:bg-green-700 text-xs">
                                                 Generar PDF
                                             </button>
                                         </td>
@@ -1666,97 +1769,109 @@ async function completeTask(taskId, formIdPrefix) {
             tbody.innerHTML = '<tr><td colspan="4" class="p-4 text-center text-red-500 text-sm">Error al cargar informes.</td></tr>';
         }
     }
-    async function generatePDF(fundId, fundName, clientName) {
-        if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
-            alert('Error: La librería jsPDF no se cargó.');
-            return;
-        }
-        const { jsPDF } = window.jspdf;
-        const doc = new jsPDF();
+  async function generatePDF(fundId, fundName, clientName, closeDate) { // <-- 1. AÑADIMOS closeDate
+    if (typeof window.jspdf === 'undefined' || typeof window.jspdf.jsPDF === 'undefined') {
+        alert('Error: La librería jsPDF no se cargó.');
+        return;
+    }
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF();
 
-        if (typeof doc.autoTable === 'undefined') {
-            alert('Error: La extensión autoTable para PDF no se cargó.');
-            return;
-        }
-
-        try {
-            const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=get_report_details&fund_id=${fundId}`);
-            const planillas = await response.json();
-
-            if (planillas.length === 0) {
-                alert('No se encontraron datos para este informe.');
-                return;
-            }
-
-            const head = [['Planilla', 'V. Contado', 'Discrepancia', 'Operador', 'Desglose de Billetes/Monedas']];
-            const body = [];
-            let totalContado = 0;
-            let totalDiscrepancia = 0;
-
-            planillas.forEach(p => {
-                let desgloseText = [
-                    `$100.000: ${p.bills_100k || 0}`,
-                    `$50.000: ${p.bills_50k || 0}`,
-                    `$20.000: ${p.bills_20k || 0}`,
-                    `$10.000: ${p.bills_10k || 0}`,
-                    `$5.000: ${p.bills_5k || 0}`,
-                    `$2.000: ${p.bills_2k || 0}`,
-                    `Monedas: ${formatCurrency(p.coins)}`
-                ].join('\n');
-
-                body.push([
-                    p.planilla,
-                    formatCurrency(p.total),
-                    formatCurrency(p.discrepancy),
-                    p.operador,
-                    desgloseText
-                ]);
-                totalContado += parseFloat(p.total);
-                totalDiscrepancia += parseFloat(p.discrepancy);
-            });
-
-            body.push([
-                { content: 'TOTALES', styles: { fontStyle: 'bold', halign: 'right' } },
-                { content: formatCurrency(totalContado), styles: { fontStyle: 'bold' } },
-                { content: formatCurrency(totalDiscrepancia), styles: { fontStyle: 'bold', textColor: totalDiscrepancia != 0 ? [220, 38, 38] : [22, 163, 74] } },
-                { content: '', colSpan: 2 }
-            ]);
-
-            doc.setFontSize(18);
-            doc.text(`Informe de Cierre de Fondo: ${fundName}`, 14, 22);
-            doc.setFontSize(11);
-            doc.text(`Cliente: ${clientName}`, 14, 30);
-            doc.text(`Fecha de Generación: ${new Date().toLocaleDateString('es-CO')}`, 14, 36);
-
-            doc.autoTable({
-                head: head,
-                body: body,
-                startY: 42,
-                headStyles: { fillColor: [29, 78, 216] },
-                columnStyles: {
-                    0: { cellWidth: 20 },
-                    1: { cellWidth: 30, halign: 'right' },
-                    2: { cellWidth: 30, halign: 'right' },
-                    3: { cellWidth: 30 },
-                    4: { fontSize: 8, cellWidth: 'auto' }
-                }
-            });
-
-            const pageCount = doc.internal.getNumberOfPages();
-            for(let i = 1; i <= pageCount; i++) {
-                doc.setPage(i);
-                doc.setFontSize(9);
-                doc.text(`Generado por EAGLE 3.0 - Página ${i} de ${pageCount}`, 14, doc.internal.pageSize.height - 10);
-            }
-
-            doc.save(`Informe_Fondo_${fundName.replace(/ /g, '_')}.pdf`);
-
-        } catch (error) {
-            console.error('Error generando PDF:', error);
-            alert('No se pudo generar el informe en PDF.');
-        }
+    if (typeof doc.autoTable === 'undefined') {
+        alert('Error: La extensión autoTable para PDF no se cargó.');
+        return;
     }
 
+    try {
+        // 2. AÑADIMOS close_date AL FETCH
+        const response = await fetch(`${apiUrlBase}/digitador_informes_api.php?action=get_report_details&fund_id=${fundId}&close_date=${closeDate}`);
+        const planillas = await response.json();
+
+        if (planillas.length === 0) {
+            alert('No se encontraron datos para este informe.');
+            return;
+        }
+
+        const head = [['Planilla', 'V. Contado', 'Discrepancia', 'Operador', 'Desglose de Billetes/Monedas']];
+        const body = [];
+        let totalContado = 0;
+        let totalDiscrepancia = 0;
+
+        planillas.forEach(p => {
+            let desgloseText = [
+                `$100.000: ${p.bills_100k || 0}`,
+                `$50.000: ${p.bills_50k || 0}`,
+                `$20.000: ${p.bills_20k || 0}`,
+                `$10.000: ${p.bills_10k || 0}`,
+                `$5.000: ${p.bills_5k || 0}`,
+                `$2.000: ${p.bills_2k || 0}`,
+                `Monedas: ${formatCurrency(p.coins)}`
+            ].join('\n');
+
+            body.push([
+                p.planilla,
+                formatCurrency(p.total),
+                formatCurrency(p.discrepancy),
+                p.operador,
+                desgloseText
+            ]);
+            totalContado += parseFloat(p.total);
+            totalDiscrepancia += parseFloat(p.discrepancy);
+        });
+
+        body.push([
+            { content: 'TOTALES', styles: { fontStyle: 'bold', halign: 'right' } },
+            { content: formatCurrency(totalContado), styles: { fontStyle: 'bold' } },
+            { content: formatCurrency(totalDiscrepancia), styles: { fontStyle: 'bold', textColor: totalDiscrepancia != 0 ? [220, 38, 38] : [22, 163, 74] } },
+            { content: '', colSpan: 2 }
+        ]);
+
+        // 3. MOSTRAMOS LA FECHA DE CIERRE EN EL PDF
+        const dateParts = closeDate.split('-');
+        // Se suma 1 al mes porque new Date() los toma de 0-11
+        const closeDateObj = new Date(dateParts[0], dateParts[1] - 1, dateParts[2]);
+        const reportDateFormatted = closeDateObj.toLocaleDateString('es-CO', { 
+            year: 'numeric', 
+            month: 'long', 
+            day: 'numeric', 
+            timeZone: 'America/Bogota' // Asegura la zona horaria correcta
+        });
+
+        doc.setFontSize(18);
+        doc.text(`Informe de Cierre: ${fundName}`, 14, 22);
+        doc.setFontSize(11);
+        doc.text(`Cliente: ${clientName}`, 14, 30);
+        doc.text(`Fecha de Cierre (Día): ${reportDateFormatted}`, 14, 36); // <-- Fecha del reporte
+
+        doc.autoTable({
+            head: head,
+            body: body,
+            startY: 42,
+            headStyles: { fillColor: [29, 78, 216] },
+            columnStyles: {
+                0: { cellWidth: 20 },
+                1: { cellWidth: 30, halign: 'right' },
+                2: { cellWidth: 30, halign: 'right' },
+                3: { cellWidth: 30 },
+                4: { fontSize: 8, cellWidth: 'auto' }
+            }
+        });
+
+        const pageCount = doc.internal.getNumberOfPages();
+        for(let i = 1; i <= pageCount; i++) {
+            doc.setPage(i);
+            doc.setFontSize(9);
+            doc.text(`Generado por EAGLE 3.0 - Página ${i} de ${pageCount}`, 14, doc.internal.pageSize.height - 10);
+        }
+
+        // 4. AÑADIMOS LA FECHA AL NOMBRE DEL ARCHIVO
+        doc.save(`Informe_${fundName.replace(/ /g, '_')}_${closeDate}.pdf`);
+
+    } catch (error) {
+        console.error('Error generando PDF:', error);
+        alert('No se pudo generar el informe en PDF.');
+    }
+}
 
     // --- Table Population & UI Update Functions ---
     function updateReminderCount() {
@@ -2626,7 +2741,61 @@ async function pollAlerts() {
             if (tabName === 'checkinero' || (tabName === 'operador' && currentUserRole === 'Admin')) {
                  startCheckinPolling(10);
             }
+// ***** PEGA ESTE BLOQUE NUEVO AQUÍ *****
+            if (tabName === 'checkinero') {
+                const clientSelect = document.getElementById('client_id');
+                const fundDisplay = document.getElementById('fund_display');
+                const fundIdHidden = document.getElementById('fund_id_hidden');
 
+                if (clientSelect && fundDisplay) {
+                     // --- Evitar añadir el listener múltiples veces ---
+                     if (!clientSelect.hasAttribute('data-listener-added')) {
+                        clientSelect.addEventListener('change', async () => {
+                            const clientId = clientSelect.value;
+                            fundDisplay.textContent = 'Cargando...';
+                            fundDisplay.classList.add('italic');
+                            if (fundIdHidden) fundIdHidden.value = '';
+
+                            if (!clientId) {
+                                fundDisplay.textContent = 'Seleccione un cliente...';
+                                return;
+                            }
+
+                            try {
+                                const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
+                                if (!response.ok) throw new Error(`Error HTTP ${response.status}`);
+                                const funds = await response.json();
+
+                                fundDisplay.textContent = '';
+                                fundDisplay.classList.remove('italic', 'text-red-500');
+
+                                if (Array.isArray(funds) && funds.length > 0) {
+                                    const firstFund = funds[0];
+                                    fundDisplay.textContent = firstFund.name;
+                                    if (fundIdHidden) fundIdHidden.value = firstFund.id;
+
+                                    if (funds.length > 1) {
+                                        console.warn(`Advertencia: Cliente ${clientId} tiene ${funds.length} fondos. Mostrando el primero.`);
+                                    }
+                                } else {
+                                    fundDisplay.textContent = 'Cliente sin fondo asignado';
+                                    fundDisplay.classList.add('italic', 'text-red-500');
+                                }
+                            } catch (e) {
+                                console.error('Error cargando fondos:', e);
+                                fundDisplay.textContent = 'Error al cargar fondos';
+                                fundDisplay.classList.add('italic', 'text-red-500');
+                            }
+                        });
+                        clientSelect.setAttribute('data-listener-added', 'true'); // Marcar que ya tiene listener
+                     } // --- Fin del if !hasAttribute ---
+                } else {
+                    if (!clientSelect) console.error("Error: No se encontró 'client_id' al cambiar a la pestaña checkinero.");
+                    if (!fundDisplay) console.error("Error: No se encontró 'fund_display' al cambiar a la pestaña checkinero.");
+                }
+            }
+            // ***** FIN DEL BLOQUE NUEVO *****
+        // ***** FIN CÓDIGO PEGADO *****
 
             if (dynamicContentPanels.includes(tabName) && !loadedContent[tabName]) {
                 activeContent.innerHTML = '<div class="loader"></div><p class="text-center text-gray-500">Cargando...</p>';
@@ -2670,20 +2839,9 @@ async function pollAlerts() {
             currentFilteredTrazabilidadData = [...completedTasksData];
             populateTrazabilidadTable(currentFilteredTrazabilidadData);
         }
-        if (document.getElementById('content-checkinero')) {
+     if (document.getElementById('content-checkinero')) {
              populateCheckinsTable(initialCheckins);
              document.getElementById('checkin-form')?.addEventListener('submit', handleCheckinSubmit);
-             const clientSelect = document.getElementById('client_id');
-             const fundSelect = document.getElementById('fund_id');
-             clientSelect?.addEventListener('change', async () => {
-                const clientId = clientSelect.value; fundSelect.innerHTML = '<option value="">Cargando...</option>'; fundSelect.disabled = true; fundSelect.classList.add('bg-gray-200');
-                if (!clientId) { fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>'; return; }
-                try {
-                    const response = await fetch(`api/funds_api.php?client_id=${clientId}`); const funds = await response.json(); fundSelect.innerHTML = '<option value="">Seleccione fondo...</option>';
-                    if (funds.length > 0) { funds.forEach(fund => { fundSelect.add(new Option(fund.name, fund.id)); }); fundSelect.disabled = false; fundSelect.classList.remove('bg-gray-200'); }
-                    else { fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>'; }
-                } catch (error) { console.error('Error fetching funds:', error); fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>'; }
-            });
         }
         if (document.getElementById('content-operador')) {
             if (currentUserRole === 'Admin') populateOperatorCheckinsTable(initialCheckins);

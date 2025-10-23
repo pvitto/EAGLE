@@ -1,5 +1,5 @@
 <?php
-session_start();
+require '../config.php';
 require '../db_connection.php'; // Ajusta la ruta si es necesario
 header('Content-Type: application/json');
 

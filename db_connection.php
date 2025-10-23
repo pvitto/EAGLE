@@ -15,6 +15,15 @@ if ($conn->connect_error) {
 }
 
 // Establecer el charset a UTF-8 para soportar caracteres especiales
-$conn->set_charset("utf8mb4");
+
+// --- AÑADE ESTAS LÍNEAS AQUÍ ---
+// Obtiene la zona horaria actual de PHP (la que pusiste en index.php)
+$php_timezone = date_default_timezone_get();
+// Le dice a MySQL que use ESA misma zona horaria para esta sesión
+// Esto afectará a funciones como NOW() y CURDATE()
+if ($php_timezone) {
+    $conn->query("SET time_zone = '" . $conn->real_escape_string($php_timezone) . "'");
+}
+// --- FIN DE LÍNEAS A AÑADIR ---
 ?>
 

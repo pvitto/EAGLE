@@ -1,5 +1,5 @@
 <?php
-session_start();
+require '../config.php';
 require '../db_connection.php';
 header('Content-Type: application/json');
 
@@ -12,16 +12,19 @@ if (!isset($_SESSION['user_id']) || !in_array($_SESSION['user_role'], ['Digitado
 $action = $_GET['action'] ?? 'list_closed_funds';
 
 if ($action === 'list_closed_funds') {
-    // Lista los fondos que tienen al menos una planilla 'Cerrado'
+    // MODIFICADO: Agrupar por Fondo Y por DÍA de cierre
     $query = "
-        SELECT DISTINCT f.id, f.name as fund_name, c.name as client_name,
-                       MAX(ci.closed_by_digitador_at) as last_close_date
+        SELECT 
+            f.id, 
+            f.name as fund_name, 
+            c.name as client_name,
+            DATE(ci.closed_by_digitador_at) as close_date
         FROM check_ins ci
         JOIN funds f ON ci.fund_id = f.id
         JOIN clients c ON f.client_id = c.id
         WHERE ci.digitador_status = 'Cerrado'
-        GROUP BY f.id, f.name, c.name
-        ORDER BY last_close_date DESC
+        GROUP BY f.id, f.name, c.name, DATE(ci.closed_by_digitador_at)
+        ORDER BY close_date DESC, f.name ASC
     ";
     $result = $conn->query($query);
     $funds = [];
@@ -32,10 +35,18 @@ if ($action === 'list_closed_funds') {
     }
     echo json_encode($funds);
     
-} elseif ($action === 'get_report_details' && isset($_GET['fund_id'])) {
+} elseif ($action === 'get_report_details' && isset($_GET['fund_id']) && isset($_GET['close_date'])) {
+    // MODIFICADO: Aceptar y validar fund_id Y close_date
     $fund_id = intval($_GET['fund_id']);
-    
-    // --- CAMBIO AQUÍ: Se seleccionan todas las columnas de desglose ---
+    $close_date = $_GET['close_date'];
+
+    // Validar formato de fecha YYYY-MM-DD
+    if (!preg_match('/^\d{4}-\d{2}-\d{2}$/', $close_date)) {
+         http_response_code(400);
+         echo json_encode(['success' => false, 'error' => 'Formato de fecha inválido. Use YYYY-MM-DD.']);
+         exit;
+    }
+
     $query = "
         SELECT 
             ci.invoice_number as planilla, 
@@ -60,12 +71,15 @@ if ($action === 'list_closed_funds') {
         LEFT JOIN clients c ON ci.client_id = c.id
         LEFT JOIN users u_op ON oc.operator_id = u_op.id
         LEFT JOIN users u_dig ON ci.closed_by_digitador_id = u_dig.id
-        WHERE ci.fund_id = ? AND ci.digitador_status = 'Cerrado'
+        WHERE ci.fund_id = ? 
+          AND ci.digitador_status = 'Cerrado'
+          AND DATE(ci.closed_by_digitador_at) = ? -- <-- LA LÍNEA CLAVE
         ORDER BY ci.invoice_number ASC
     ";
     
     $stmt = $conn->prepare($query);
-    $stmt->bind_param("i", $fund_id);
+    // MODIFICADO: bind_param con "is" (integer, string)
+    $stmt->bind_param("is", $fund_id, $close_date);
     $stmt->execute();
     $result = $stmt->get_result();
     $planillas = [];
@@ -76,6 +90,10 @@ if ($action === 'list_closed_funds') {
     }
     echo json_encode($planillas);
     $stmt->close();
+} else {
+    // Error si faltan parámetros
+    http_response_code(400);
+    echo json_encode(['success' => false, 'error' => 'Acción no válida o faltan parámetros (fund_id, close_date).']);
 }
 
 $conn->close();

@@ -7,13 +7,14 @@ $all_clients_local = []; // Still needed if the form below uses it, which it doe
 
 if (!$isContentOnly) {
     // --- Full Page Load ---
-    session_start();
+    require 'config.php'; // <-- AÑADE ESTO (ya incluye session_start)
     require 'check_session.php';
     if ($_SESSION['user_role'] !== 'Admin') {
         header('Location: index.php');
         exit;
     }
-    require 'db_connection.php';
+    require 'db_connection.php'; // <-- Esto ahora usará la zona horaria
+    // ...
     // No need to fetch clients here, JS will do it
 ?>
 <!DOCTYPE html>
@@ -77,12 +78,13 @@ if (!$isContentOnly) {
     if (isset($conn)) $conn->close();
 } else {
     // --- AJAX Content Load ---
-    if (session_status() === PHP_SESSION_NONE) session_start();
+    require 'config.php'; // <-- AÑADE ESTO
     if (!isset($_SESSION['user_id']) || $_SESSION['user_role'] !== 'Admin') {
         echo '<p class="text-red-500 p-4">Acceso no autorizado.</p>';
         exit;
     }
-    require 'db_connection.php';
+    require 'db_connection.php'; // <-- Esto ahora usará la zona horaria
+    // ...
     // *** No HTML head/body needed here ***
 ?>
     <div class="max-w-6xl mx-auto bg-white p-6 rounded-xl shadow-lg">

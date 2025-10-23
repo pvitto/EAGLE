@@ -1,6 +1,6 @@
 <?php
 // api/delete_checkin_api.php
-session_start();
+require '../config.php';
 header('Content-Type: application/json');
 require '../db_connection.php';
 

@@ -1,8 +1,6 @@
 <?php
 // api/realtime_checkins_api.php
-if (session_status() === PHP_SESSION_NONE) {
-    session_start();
-}
+require '../config.php';
 require '../db_connection.php'; // Ajusta la ruta si es necesario
 header('Content-Type: application/json');
 
