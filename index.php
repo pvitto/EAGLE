@@ -1447,6 +1447,7 @@ async function handleCheckinSubmit(event) {
         try {
             const response = await fetch('api/checkin_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
+            await pollAlerts();
             if (result.success) { alert(result.message); location.reload(); }
             else { alert('Error: ' + result.error); }
         } catch (error) { console.error('Error:', error); alert('Error de conexión.'); }
@@ -2587,6 +2588,7 @@ async function pollAlerts() {
     const r = await fetch(`${apiRealtimeBase}/realtime_alerts_api.php`, { headers: { 'Accept': 'application/json' } });
     if (!r.ok) throw new Error('HTTP ' + r.status);
     const data = await r.json();
+      
     const alerts = Array.isArray(data?.alerts) ? data.alerts : (Array.isArray(data) ? data : []);
     updateAlertsDisplay(alerts); // <- NECESARIO
   } catch (err) {
@@ -2979,17 +2981,6 @@ async function toastAsync(promise, messages) {
 showToast('Cambios guardados correctamente.', 'success');
 
 
-
-async function guardarFormulario(data) {
-await toastAsync(
-  fetch(`${apiUrlBase}/checkin_api.php`, {/*...*/})
-    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }),
-  {
-    loading: 'Guardando…',
-    success: 'Check-in registrado con éxito.',
-    error:   'No se pudo guardar el check-in.',
-  }
-);
 
 
 const form = document.getElementById('checkin-form');

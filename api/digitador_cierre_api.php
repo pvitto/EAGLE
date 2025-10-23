@@ -74,8 +74,7 @@ if ($method === 'GET' && $action === 'list_funds_to_close') {
             SET digitador_status = 'Cerrado', 
                 closed_by_digitador_at = NOW(), 
                 closed_by_digitador_id = ? 
-            WHERE fund_id = ? AND digitador_status = 'Conforme'
-        ");
+WHERE fund_id = ? AND status IN ('Procesado', 'Discrepancia') AND (digitador_status IS NULL OR digitador_status <> 'Cerrado')        ");
         $stmt->bind_param("ii", $user_id, $fund_id);
         if ($stmt->execute()) {
             if ($stmt->affected_rows > 0) {
