@@ -2485,7 +2485,6 @@ function closeToast(toastId) {
     // Función para Notificaciones
   // Función para actualizar Paneles/Badges de Alertas
 function updateAlertsDisplay(newAlerts) {
-    console.log('updateAlertsDisplay recibió:', JSON.stringify(newAlerts)); // <-- MODIFICADO: Ver todo el array
     const highPriorityList = document.getElementById('task-notifications-list');
     const mediumPriorityList = document.getElementById('medium-priority-list');
     const highPriorityBadge = document.getElementById('task-notification-badge');
@@ -2497,32 +2496,25 @@ function updateAlertsDisplay(newAlerts) {
     let mediumCount = parseInt(mediumPriorityBadge.textContent || '0');
     let highUpdated = false;
     let mediumUpdated = false;
-    let newHighPriorityAlertsFound = false; // Para saber si tocar el sonido
 
-    // Cargar IDs ya vistos desde LocalStorage al inicio de la función
-    const seenData = loadSeenDiscrepFromLS(); // Reutilizamos esta función
+    // Cargar IDs ya vistos desde LocalStorage para evitar duplicados entre pestañas
+    const seenData = loadSeenDiscrepFromLS();
     let seenIds = new Set(seenData.ids);
-    console.log("IDs ya vistos al inicio:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs previos
-
-    newHighPriorityAlertsFound = false; // Resetear bandera
+    let newDiscrepanciesFound = false;
 
     newAlerts.forEach(alert => {
+        const alertId = alert.id;
+        if (!alertId) return; // Omitir alertas sin ID
+
         const isHighPriority = alert.priority === 'Critica' || alert.priority === 'Alta';
         const list = isHighPriority ? highPriorityList : mediumPriorityList;
         const colorClass = isHighPriority ? (alert.priority === 'Critica' ? 'red' : 'orange') : 'yellow';
-        const alertId = alert.id; // Usamos el ID de la tarea
 
-        // Solo procesar si tenemos un ID válido
-        if (!alertId) {
-            console.warn("Alerta recibida sin ID:", alert); // <-- AÑADIDO: Aviso si falta ID
-            return;
-        }
-
-        // --- Lógica de Mostrar en Paneles Superiores (sin cambios) ---
+        // 1. Lógica para los paneles superiores (sin cambios)
         if (!list.querySelector(`[data-alert-id="${alertId}"]`)) {
-             const alertHtml = `
+            const alertHtml = `
                 <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
-                    <p class="font-semibold text-${colorClass}-800">${alert.title || ''}</p>
+                    <p class="font-semibold text-${colorClass}-800">${alert.title || 'Alerta'}</p>
                     <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
                 </div>`;
             list.insertAdjacentHTML('afterbegin', alertHtml);
@@ -2535,55 +2527,44 @@ function updateAlertsDisplay(newAlerts) {
                 mediumUpdated = true;
             }
         }
-        // --- Fin Lógica Paneles ---
 
+        // 2. Lógica específica para Toasts de Discrepancia
+        const isDiscrepancy = (alert.title || '').startsWith("Discrepancia en Planilla:");
+        if (isDiscrepancy && !seenIds.has(alertId)) {
+            const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
 
-        // --- Lógica Unificada para Toasts de Alta Prioridad ---
-        if (isHighPriority) {
-            // Verificar si ya hemos visto/notificado esta alerta específica
-            if (!seenIds.has(alertId)) {
-                console.log(`Alerta ${alertId} es nueva.`); // <-- AÑADIDO
-                const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
-                console.log(`Rol permite notificar: ${canNotify}, Pestaña visible: ${!document.hidden}`); // <-- AÑADIDO
-                if (canNotify && !document.hidden) { // Solo mostrar si la pestaña está visible y el rol es correcto
-                    const toastType = (alert.priority === 'Critica') ? 'error' : 'warning';
-                    console.log(`Llamando showToast para ${alertId} con tipo ${toastType}`); // <-- AÑADIDO
-                    showToast(`${alert.title || 'Alerta Importante'}`, toastType, 6000); // Usar showToast directamente
-                    newHighPriorityAlertsFound = true; // Marcar para tocar sonido una vez
-                } else {
-                    console.log(`Notificación omitida para ${alertId} (rol o visibilidad)`); // <-- AÑADIDO
-                }
-                seenIds.add(alertId); // Marcar como vista/notificada
-            } else {
-                console.log(`Alerta ${alertId} ya vista/notificada.`); // <-- AÑADIDO
+            // Mostrar toast solo si el rol es correcto y la pestaña está activa
+            if (canNotify && !document.hidden) {
+                showToast(alert.title, 'critica', 8000);
+                newDiscrepanciesFound = true; // Marcar para reproducir sonido
             }
-        }
-        // --- Fin Lógica Toasts ---
-    }); // Fin del forEach
 
-    // Tocar sonido UNA VEZ si se encontraron nuevas alertas de alta prioridad
-    if (newHighPriorityAlertsFound && typeof beepOnce === 'function') {
+            seenIds.add(alertId); // Marcar como vista para no repetirla
+        }
+    });
+
+    // Reproducir sonido una sola vez si se encontraron nuevas discrepancias
+    if (newDiscrepanciesFound && typeof beepOnce === 'function') {
         beepOnce();
     }
 
     // Guardar los IDs actualizados en LocalStorage
-    console.log("IDs vistos al final:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs finales
     saveSeenDiscrepToLS(seenIds);
 
-    // Actualizar badges y mensajes de "No hay alertas" (sin cambios)
+    // Actualizar badges y mensajes "No hay alertas"
     if (highUpdated) {
         highPriorityBadge.textContent = highCount;
         highPriorityBadge.classList.remove('hidden');
         const noAlertsMsg = highPriorityList.querySelector('.text-gray-500');
-        if (noAlertsMsg) noAlertsMsg.remove();
+        if (noAlertsMsg && highCount > 0) noAlertsMsg.remove();
     }
     if (mediumUpdated) {
         mediumPriorityBadge.textContent = mediumCount;
         mediumPriorityBadge.classList.remove('hidden');
         const noAlertsMsg = mediumPriorityList.querySelector('.text-gray-500');
-        if (noAlertsMsg) noAlertsMsg.remove();
+        if (noAlertsMsg && mediumCount > 0) noAlertsMsg.remove();
     }
-} // <-- Esta es la llave de cierre que faltaba
+}
 // --- Polling Control ---
 
 function startAlertPolling(intervalSeconds = 15) {
