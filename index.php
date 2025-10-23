@@ -790,8 +790,27 @@ $can_complete = $user_can_act && $task_is_active;
                              <input type="hidden" id="check_in_id_field">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label for="invoice_number" class="block text-sm font-medium">Nro Planilla</label><input type="text" id="invoice_number" required class="mt-1 w-full p-2 border rounded-md"></div><div><label for="seal_number" class="block text-sm font-medium">Nro Sello</label><input type="text" id="seal_number" required class="mt-1 w-full p-2 border rounded-md"></div></div>
                             <div><label for="client_id" class="block text-sm font-medium">Cliente</label><select id="client_id" required class="mt-1 w-full p-2 border rounded-md"><option value="">Seleccione...</option><?php foreach($all_clients as $client): ?><option value="<?php echo $client['id']; ?>"><?php echo htmlspecialchars($client['name']) . ' (NIT: ' . htmlspecialchars($client['nit'] ?? 'N/A') . ')'; ?></option><?php endforeach; ?></select></div>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label for="route_id" class="block text-sm font-medium">Ruta</label><select id="route_id" required class="mt-1 w-full p-2 border rounded-md"><option value="">Seleccione...</option><?php foreach($all_routes as $route): ?><option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option><?php endforeach; ?></select></div><div><label for="fund_id" class="block text-sm font-medium">Fondo</label><select id="fund_id" required class="mt-1 w-full p-2 border rounded-md bg-gray-200" disabled><option value="">Seleccione cliente...</option></select></div></div>
-                            <div><label for="declared_value" class="block text-sm font-medium">Valor Declarado</label><input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md"></div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div>
+        <label for="route_id" class="block text-sm font-medium">Ruta</label>
+        <select id="route_id" required class="mt-1 w-full p-2 border rounded-md">
+            <option value="">Seleccione...</option>
+            <?php foreach($all_routes as $route): ?>
+                <option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <div>
+        <label class="block text-sm font-medium text-gray-700">Fondo</label>
+        <span id="fund_display" class="mt-1 block w-full p-2 border border-gray-300 rounded-md bg-gray-100 text-gray-600 italic">
+            Seleccione un cliente...
+        </span>
+        <input type="hidden" id="fund_id_hidden" name="fund_id">
+    </div>
+</div>
+
+                                <div><label for="declared_value" class="block text-sm font-medium">Valor Declarado</label><input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md"></div>
                              <div id="checkin-form-buttons" class="flex space-x-4 pt-4">
                                 <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
                             </div>
@@ -985,38 +1004,53 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Cliente -> Fondos
     const clientSelect = document.getElementById('client_id');
-    const fundSelect   = document.getElementById('fund_id');
-    if (clientSelect && fundSelect) {
+  const fundDisplay = document.getElementById('fund_display'); // <-- REFERENCIA AL NUEVO SPAN
+  const fundIdHidden = document.getElementById('fund_id_hidden'); // <-- REFERENCIA AL INPUT OCULTO (Opcional)
+
+  if (clientSelect && fundDisplay) {
       clientSelect.addEventListener('change', async () => {
-        const clientId = clientSelect.value;
-        fundSelect.disabled = true;
-        fundSelect.classList.add('bg-gray-200');
-        if (!clientId) {
-          fundSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
-          return;
-        }
-        try {
-          const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
-          const funds = await response.json();
-          fundSelect.innerHTML = '';
-          if (Array.isArray(funds) && funds.length > 0) {
-            funds.forEach(f => {
-              const opt = document.createElement('option');
-              opt.value = f.id;
-              opt.textContent = f.name;
-              fundSelect.appendChild(opt);
-            });
-            fundSelect.disabled = false;
-            fundSelect.classList.remove('bg-gray-200');
-          } else {
-            fundSelect.innerHTML = '<option value="">Este cliente no tiene fondos</option>';
+          const clientId = clientSelect.value;
+          fundDisplay.textContent = 'Cargando...'; // Mensaje de carga en el span
+          fundDisplay.classList.add('italic');
+          if (fundIdHidden) fundIdHidden.value = ''; // Limpiar ID oculto (Opcional)
+
+          if (!clientId) {
+              fundDisplay.textContent = 'Seleccione un cliente...';
+              return;
           }
-        } catch (e) {
-          console.error('Error cargando fondos:', e);
-          fundSelect.innerHTML = '<option value="">Error al cargar fondos</option>';
-        }
+
+          try {
+              const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
+              if (!response.ok) throw new Error(`Error HTTP ${response.status}`);
+              const funds = await response.json();
+
+              // Limpiar contenido y estilos
+              fundDisplay.textContent = '';
+              fundDisplay.classList.remove('italic', 'text-red-500');
+
+              if (Array.isArray(funds) && funds.length > 0) {
+                  const firstFund = funds[0];
+                  fundDisplay.textContent = firstFund.name; // <-- MOSTRAR NOMBRE EN EL SPAN
+                  if (fundIdHidden) fundIdHidden.value = firstFund.id; // <-- GUARDAR ID EN OCULTO (Opcional)
+
+                  if (funds.length > 1) {
+                      console.warn(`Advertencia: El cliente ${clientId} tiene ${funds.length} fondos. Se muestra automáticamente el primero: ${firstFund.name}.`);
+                  }
+              } else {
+                  fundDisplay.textContent = 'Cliente sin fondo asignado';
+                  fundDisplay.classList.add('italic', 'text-red-500'); // Estilo de "error" o aviso
+              }
+          } catch (e) {
+              console.error('Error cargando fondos:', e);
+              fundDisplay.textContent = 'Error al cargar fondos';
+              fundDisplay.classList.add('italic', 'text-red-500'); // Estilo de error
+          }
       });
-    }
+  } else {
+        // Agrega un mensaje si los elementos no se encuentran, ayuda a depurar
+        if (!clientSelect) console.error("Elemento 'client_id' no encontrado.");
+        if (!fundDisplay) console.error("Elemento 'fund_display' no encontrado.");
+  }
   }
 });
 
@@ -1402,16 +1436,18 @@ async function completeTask(taskId, formIdPrefix) {
             } else {
                  alert('Error al eliminar: ' + result.error);
             }
-        } catch (error) {
+         }catch (error) {
              console.error("Error en deleteUser:", error);
              alert(`Error de conexión al eliminar: ${error.message}`);
-        }
-    }
-  
+            }
+    
+        } 
+    
      
+    
+    
 
-
-    async function handleConsultation(event) {
+        async function handleConsultation(event) {
         event.preventDefault();
         const invoiceInput = document.getElementById('consult-invoice');
         const operatorPanel = document.getElementById('operator-panel');
@@ -1756,8 +1792,8 @@ async function completeTask(taskId, formIdPrefix) {
             passwordHint.textContent = 'La contraseña es requerida.';
         }
         modalOverlay.classList.remove('hidden');
-    }
-    function populateUserTable(users) {
+        }
+        function populateUserTable(users) {handleConsultation
         const tbody = document.getElementById('user-table-body');
         if (!tbody) {
             console.error("Elemento tbody 'user-table-body' no encontrado.");
@@ -1793,24 +1829,24 @@ async function completeTask(taskId, formIdPrefix) {
                     </td>
                 </tr>`;
         });
-     }
+        }
 
       // Función para dibujar la tabla de Check-ins (incluyendo inicialización de IDs vistos)
-function populateCheckinsTable(checkins) {
-    const tbody = document.getElementById('checkins-table-body');
-    if (!tbody) {
+        function populateCheckinsTable(checkins) {
+         const tbody = document.getElementById('checkins-table-body');
+         if (!tbody) {
         console.error("Elemento tbody 'checkins-table-body' no encontrado.");
         return; // Salir si no se encuentra la tabla
-    }
+        }
 
-    // --- AÑADIDO: Limpiar el set al redibujar la tabla completa ---
-    activeCheckinsIds.clear(); // Asegura empezar limpio
+        // --- AÑADIDO: Limpiar el set al redibujar la tabla completa ---
+        activeCheckinsIds.clear(); // Asegura empezar limpio
 
-    const thead = tbody.previousElementSibling; // el <thead>
-    const hasAdmin = (window.currentUserRole === 'Admin'); // Usar la variable global
+        const thead = tbody.previousElementSibling; // el <thead>
+        const hasAdmin = (window.currentUserRole === 'Admin'); // Usar la variable global
 
-    // Encabezado (ya estaba corregido para quitar Corrección/Acciones)
-    thead.innerHTML = `
+        // Encabezado (ya estaba corregido para quitar Corrección/Acciones)
+            thead.innerHTML = `
       <tr>
         <th class="p-2 w-28">Estado</th>
         <th class="p-2">Planilla</th>
@@ -1823,19 +1859,19 @@ function populateCheckinsTable(checkins) {
         <th class="p-2">Fondo</th>
         ${hasAdmin ? '<th class="p-2 w-20">Admin</th>' : ''}
       </tr>
-    `;
+        `;
 
-    tbody.innerHTML = ''; // Limpiar el cuerpo de la tabla antes de redibujar
+        tbody.innerHTML = ''; // Limpiar el cuerpo de la tabla antes de redibujar
 
-    if (!checkins || checkins.length === 0) {
+        if (!checkins || checkins.length === 0) {
         const colspan = hasAdmin ? 10 : 9; // Colspan ajustado
         tbody.innerHTML = `<tr><td colspan="${colspan}" class="p-4 text-center text-gray-500">
           No hay registros de check-in.
         </td></tr>`;
         return; // Salir si no hay datos
-    }
+        }
 
-    checkins.forEach(ci => {
+        checkins.forEach(ci => {
         // --- AÑADIDO: Registrar el ID en el set ---
         const checkinId = parseInt(ci.id);
         if (!isNaN(checkinId)) { // Asegurar que sea un número válido
@@ -2785,13 +2821,13 @@ setInterval(() => {
                        endDateInput.value = startDateInput.value;
                   }
              });
-        }
+        } // Cierre del if(startDateInput && endDateInput)
     
-    });
-    </script>
-  <div id="toast-container" class="fixed bottom-4 right-4 z-[110] space-y-2">
-</div>
-    
-    </body>
-</html>
+    }); // Cierre del addEventListener 'DOMContentLoaded'
+</script>
 
+   <div id="toast-container" class="fixed bottom-4 right-4 z-[110] space-y-2">
+   </div>
+    
+</body>
+</html>
