@@ -263,13 +263,11 @@ if ($method === 'POST') {
         // *** FIN CORRECCIÓN Error 1 ***
 
         $message = "Recordatorio sobre: '" . $conn->real_escape_string($taskTitle) . "'";
-        $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, alert_id, task_id, created_by_user_id, created_at) VALUES (?, ?, ?, ?, ?, NOW())");
-        $alert_id_or_null = $alert_id ?: null; // Usar null si es 0 o null
-        $task_id_or_null = $task_id ?: null; // Usar null si es 0 o null
-
+    
+ $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, created_by_user_id, created_at) VALUES (?, ?, ?, NOW())");
         // *** CORRECCIÓN Error 1: Verificar $stmt antes de bind_param ***
         if ($stmt) {
-             $stmt->bind_param("issii", $target_user_id, $message, $alert_id_or_null, $task_id_or_null, $creator_id);
+              $stmt->bind_param("isi", $target_user_id, $message, $creator_id);
         } else {
              http_response_code(500);
              error_log("Error preparando INSERT de recordatorio: " . $conn->error);
