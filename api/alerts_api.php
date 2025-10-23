@@ -263,7 +263,7 @@ if ($method === 'POST') {
         // *** FIN CORRECCIÓN Error 1 ***
 
         $message = "Recordatorio sobre: '" . $conn->real_escape_string($taskTitle) . "'";
-        // Corrección: Se eliminan las columnas alert_id y task_id que no existen en la tabla reminders.
+        // Corrección: Se eliminan las columnas alert_id y task_id que no existen en la tabla reminders, basado en la consulta SELECT de index.php.
         $stmt = $conn->prepare("INSERT INTO reminders (user_id, message, created_by_user_id, created_at) VALUES (?, ?, ?, NOW())");
 
         if ($stmt) {
