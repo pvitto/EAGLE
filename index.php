@@ -1336,65 +1336,7 @@ async function completeTask(taskId, formIdPrefix) {
     }
 
 // === SUBMIT DEL FORM DE CHECK-IN (GUARDA EN LA BD) ===
-async function handleCheckinSubmit(event) {
-  event.preventDefault();
 
-  const checkInIdField = document.getElementById('check_in_id_field');
-
-  const invoice_number = document.getElementById('invoice_number')?.value.trim();
-  const seal_number    = document.getElementById('seal_number')?.value.trim();
-  const client_id      = document.getElementById('client_id')?.value;
-  const route_id       = document.getElementById('route_id')?.value;
-  const fund_id_raw    = document.getElementById('fund_id')?.value; // puede venir vacío si el select está deshabilitado
-  const declared_value = document.getElementById('declared_value')?.value;
-
-  // Validación mínima en front
-  if (!invoice_number || !seal_number || !client_id || !route_id || !declared_value) {
-    alert('Completa Planilla, Sello, Cliente, Ruta y Valor declarado.');
-    return;
-  }
-
-  // Si fund_id está vacío, mandamos null (compatible con tu API)
-  const fund_id = (fund_id_raw && fund_id_raw !== '0') ? Number(fund_id_raw) : null;
-
-  const payload = {
-    invoice_number,
-    seal_number,
-    client_id: Number(client_id),
-    route_id: Number(route_id),
-    fund_id,
-    declared_value: Number(declared_value)
-  };
-
-  // Si estás corrigiendo un check-in rechazado:
-  if (checkInIdField && checkInIdField.value) {
-    payload.check_in_id = Number(checkInIdField.value);
-  }
-
-  try {
-    const resp = await fetch(`${apiUrlBase}/checkin_api.php`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const json = await resp.json();
-
-    if (!resp.ok || !json.success) {
-      throw new Error(json?.error || `Error HTTP ${resp.status}`);
-    }
-
-    alert(json.message || 'Check-in registrado.');
-    // Refresca para ver el nuevo check-in en la tabla
-    location.reload();
-
-    // (Si prefieres sin recargar, llama a tu realtime y repinta la tabla)
-    // await refreshCheckinsRealtime();
-    // populateCheckinsTable(currentCheckinData);
-  } catch (err) {
-    console.error('checkin submit error:', err);
-    alert(`No se pudo guardar el check-in: ${err.message}`);
-  }
-}
 
     document.getElementById('manual-task-form')?.addEventListener('submit', async function(e) {
         e.preventDefault();
@@ -1417,7 +1359,6 @@ async function handleCheckinSubmit(event) {
 
         await sendTaskRequest(payload); // Reutilizar la función sendTaskRequest
     });
-    document.getElementById('checkin-form')?.addEventListener('submit', handleCheckinSubmit);
 
 
     userForm.addEventListener('submit', async function(event) {
@@ -1431,12 +1372,14 @@ async function handleCheckinSubmit(event) {
              }
 
             if (result.success) {
-                 closeModal();
-                 setTimeout(() => location.reload(), 100);
-            } else {
-                 alert('Error al guardar: ' + result.error);
-            }
+                // showToast(result.message || 'Conteo guardado correctamente.', 'success'); // <-- Esto estaba mal
+                closeModal(); // <-- Esto es lo que estaba antes
+                setTimeout(() => location.reload(), 100); // <-- Recargar
+            } else { // <--- AÑADIR 'else'
+                alert('Error al guardar: ' + result.error);
+            } // <--- AÑADIR LLAVE DE CIERRE
         } catch (error) {
+        // ... (resto sin cambios) ...
              console.error("Error en submit de formulario de usuario:", error);
              alert(`Error de conexión o del servidor: ${error.message}`);
         }
@@ -1464,28 +1407,8 @@ async function handleCheckinSubmit(event) {
              alert(`Error de conexión al eliminar: ${error.message}`);
         }
     }
-    // --- CAMBIO: handleCheckinSubmit simplificado (sin edición) ---
-    async function handleCheckinSubmit(event) {
-        event.preventDefault();
-        const payload = {
-            invoice_number: document.getElementById('invoice_number').value,
-            seal_number: document.getElementById('seal_number').value,
-            client_id: document.getElementById('client_id').value,
-            route_id: document.getElementById('route_id').value,
-            fund_id: document.getElementById('fund_id').value,
-            declared_value: document.getElementById('declared_value').value,
-        };
-        // Ya no se necesita check_in_id_field ni la lógica de edición
-        try {
-            const response = await fetch('api/checkin_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
-            const result = await response.json();
-            await pollAlerts();
-            if (result.success) { alert(result.message); location.reload(); }
-            else { alert('Error: ' + result.error); }
-        } catch (error) { console.error('Error:', error); alert('Error de conexión.'); }
-    }
-
-
+  
+     
 
 
     async function handleConsultation(event) {
@@ -1530,9 +1453,13 @@ async function handleCheckinSubmit(event) {
         try {
             const response = await fetch('api/operator_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
-            if (result.success) { alert(result.message); location.reload(); }
-            else { alert('Error al guardar: ' + result.error); }
-        } catch (error) { console.error('Error al guardar conteo:', error); alert('Error de conexión.'); }
+            if (result.success) {
+                 showToast(result.message || 'Conteo guardado correctamente.', 'success'); 
+                 pollAlerts();
+                }else {showToast(result.error || 'Error al guardar el conteo', 'error'); // ...por esto.
+        }
+        } catch (error) { console.error('Error al guardar conteo:', error);
+             showToast('Error de conexión al guardar conteo', 'error'); }
     }
 
 
@@ -2862,164 +2789,9 @@ setInterval(() => {
     
     });
     </script>
-    <div id="toast-container" class="fixed bottom-4 right-4 z-[110] space-y-2"></div>
-        <script>
-// ======= Toasts minimalistas con Tailwind =======
-const TOAST_ICONS = {
-  success: '✓',
-  error: '⨯',
-  info: 'ℹ',
-  warning: '⚠'
-};
-
-/**
- * Muestra un toast.
- * @param {string} message  Texto a mostrar (puede incluir HTML sencillo)
- * @param {'success'|'error'|'info'|'warning'} type
- * @param {number} duration  Milisegundos visibles antes de auto-cerrar (0 = no autocierra)
- */
-function showToast(message, type = 'info', duration = 3500) {
-  const container = document.getElementById('toast-container') || createToastContainer();
-
-  // paletas por tipo
-  const palette = {
-    success: 'bg-green-600 text-white ring-1 ring-green-500/40',
-    error:   'bg-red-600 text-white ring-1 ring-red-500/40',
-    info:    'bg-slate-800 text-white ring-1 ring-slate-700/60',
-    warning: 'bg-amber-500 text-black ring-1 ring-amber-400/60',
-  }[type] || 'bg-slate-800 text-white';
-
-  // limitar a 5 toasts simultáneos (borra el más antiguo)
-  while (container.children.length >= 5) container.firstElementChild?.remove();
-
-  const toast = document.createElement('div');
-  toast.setAttribute('role', 'status');         // accesibilidad
-  toast.setAttribute('aria-live', 'polite');
-  toast.className = `
-    pointer-events-auto flex items-start gap-3 ${palette}
-    px-4 py-3 rounded-xl shadow-lg max-w-[360px] w-full
-    transition-all duration-300 translate-y-3 opacity-0
-  `;
-
-  toast.innerHTML = `
-    <div class="text-xl leading-none pt-0.5">${TOAST_ICONS[type] || ''}</div>
-    <div class="flex-1 text-sm">${message}</div>
-    <button type="button" aria-label="Cerrar"
-      class="shrink-0 rounded-md/50 px-2 py-1 hover:bg-black/10 focus:outline-none">
-      ✕
-    </button>
-  `;
-
-  // cerrar en click
-  const closeBtn = toast.querySelector('button');
-  closeBtn.addEventListener('click', () => hideToast(toast));
-
-  // añadir y animar entrada
-  container.appendChild(toast);
-  requestAnimationFrame(() => { // dispara la transición
-    toast.classList.remove('translate-y-3', 'opacity-0');
-    toast.classList.add('translate-y-0', 'opacity-100');
-  });
-
-  // autocerrar
-  if (duration > 0) {
-    const t = setTimeout(() => hideToast(toast), duration);
-    // pausar temporizador si el mouse está encima
-    toast.addEventListener('mouseenter', () => clearTimeout(t), { once:true });
-  }
-}
-
-function hideToast(toast) {
-  toast.classList.add('translate-y-3', 'opacity-0');
-  toast.classList.remove('translate-y-0', 'opacity-100');
-  toast.addEventListener('transitionend', () => toast.remove(), { once:true });
-}
-
-function createToastContainer() {
-  const c = document.createElement('div');
-  c.id = 'toast-container';
-  c.className = 'fixed bottom-4 right-4 z-[110] space-y-2 pointer-events-none';
-  document.body.appendChild(c);
-  return c;
-}
-// --- Refrescar alertas inmediatamente después de crear una discrepancia ---
-(function patchFetchForDiscrepancies() {
-  const _fetch = window.fetch;
-
-  // Endpoints reales de tu proyecto que pueden generar discrepancias
-  const DISCREPANCY_ENDPOINT_PATTERNS = [
-    /\/api\/checkin_api\.php/i,          // checkin
-    /\/api\/digitador_cierre_api\.php/i, // cierre / consolidación
-    /\/api\/discrepancy_api\.php/i,      // creación explícita de discrepancias
-    /\/api\/.*denomin/i,                 // si manejas denominaciones por otro endpoint
-    /\/api\/.*cierre/i,                  // resguardo genérico
-    /\/api\/.*discrep/i                  // cualquier otro con "discrep"
-  ];
-
-  window.fetch = async function(input, init = {}) {
-    const method = ((init && init.method) || (input && input.method) || 'GET').toUpperCase();
-    const url = typeof input === 'string' ? input : (input?.url || '');
-
-    const resp = await _fetch(input, init);
-
-    try {
-      const looksLikeDiscrepancyPOST =
-        method === 'POST' &&
-        DISCREPANCY_ENDPOINT_PATTERNS.some(rx => rx.test(url));
-
-      if (looksLikeDiscrepancyPOST && resp.ok && typeof pollAlerts === 'function') {
-        pollAlerts().catch(() => {}); // 🔔 refresca al instante (sin romper si falla)
-      }
-    } catch (_) {}
-
-    return resp;
-  };
-})();
-
-// ======= Azúcar para promesas (éxito / error automáticos) =======
-/**
- * Muestra un toast mientras se resuelve una promesa.
- * @param {Promise} promise
- * @param {object} messages {loading, success, error}
- */
-async function toastAsync(promise, messages) {
-  const loadingId = Symbol('loading');
-  showToast(messages.loading ?? 'Procesando…', 'info', 0);
-  try {
-    const result = await promise;
-    showToast(messages.success ?? 'Completado', 'success');
-    return result;
-  } catch (err) {
-    showToast(messages.error ?? 'Ocurrió un error', 'error', 6000);
-    throw err;
-  } finally {
-    // opcional: podrías llevar un mapa para cerrar el “loading”; aquí omitimos para mantener simple
-  }
-}
-
-
-// PRUEBAS (puedes borrar luego)
-showToast('Cambios guardados correctamente.', 'success');
-
-
-
-
-const form = document.getElementById('checkin-form');
-form?.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const formData = new FormData(form);
-  const data = Object.fromEntries(formData.entries()); // -> objeto plano
-  try {
-    await guardarFormulario(data);
-    // si quieres, algo más:
-    // showToast('Se actualizó la vista.', 'info');
-  } catch (_) {
-    // el toastAsync ya mostró el error
-  }
-});
-
-</script>
-
+  <div id="toast-container" class="fixed bottom-4 right-4 z-[110] space-y-2">
+</div>
     
     </body>
 </html>
+
