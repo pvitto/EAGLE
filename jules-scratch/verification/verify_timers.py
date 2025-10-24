@@ -1,22 +1,19 @@
-from playwright.sync_api import sync_playwright
 
-def run(playwright):
-    browser = playwright.chromium.launch()
-    page = browser.new_page()
-    # Assuming the app is served at the root of a web server on port 8080 (or your configured port)
-    # Adjust the URL if your local server setup is different.
-    page.goto("http://localhost:8080/index.php")
+import asyncio
+from playwright.async_api import async_playwright
 
-    # Wait for the main content area to be visible to ensure the page has loaded
-    page.wait_for_selector("#content-operaciones")
+async def main():
+    async with async_playwright() as p:
+        browser = await p.chromium.launch()
+        page = await browser.new_page()
+        await page.goto("http://localhost:8000")
 
-    # Give timers a moment to initialize and render
-    page.wait_for_timeout(2000)
+        # Esperar un tiempo fijo para que la página se cargue completamente
+        await page.wait_for_timeout(5000)
 
-    # Take a screenshot of the main content area
-    page.locator("#content-operaciones").screenshot(path="jules-scratch/verification/verification.png")
+        # Tomar una captura de pantalla para diagnóstico
+        await page.screenshot(path="jules-scratch/verification/diagnostic_screenshot.png")
+        await browser.close()
 
-    browser.close()
-
-with sync_playwright() as playwright:
-    run(playwright)
+if __name__ == "__main__":
+    asyncio.run(main())
