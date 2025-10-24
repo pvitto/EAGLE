@@ -631,7 +631,7 @@ $conn->close();
                                 $assigned_names = $item['assigned_names'] ?? null;
                                 $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                 $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
-                                $task_id_for_reminder = $task_id_to_use;
+                                $task_id_for_reminder = $is_manual ? $task_id_to_use : ($item['task_id'] ?? 'null');
                                 $form_id_prefix = $task_id_to_use;
                                 // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
                                 // --- INICIO: Lógica Corregida para $can_complete ---
@@ -724,7 +724,7 @@ $can_complete = $user_can_act && $task_is_active;
                                         $assigned_names = $item['assigned_names'] ?? null;
                                         $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                         $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
-                                        $task_id_for_reminder = $task_id_to_use;
+                                        $task_id_for_reminder = $is_manual ? $task_id_to_use : ($item['task_id'] ?? 'null');
                                         $form_id_prefix = "np-" . $task_id_to_use;
                                         // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
 // --- INICIO: Lógica Corregida para $can_complete (v2) ---
