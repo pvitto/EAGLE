@@ -132,9 +132,25 @@ if ($method === 'POST') {
         case 'Asignacion':
             $is_update = false;
             if ($task_id) {
-                // CORRECCIÓN: Se elimina la actualización de created_at para evitar que la tarea "desaparezca" o cambie de orden.
+                // REASIGNACIÓN: Preservar la prioridad original si no se envía una nueva.
+                $final_priority = $priority; // Usar prioridad de la solicitud o default 'Media' como base.
+                if (!isset($data['priority'])) {
+                    // Si no se envió una prioridad, buscar la original en la BD.
+                    $stmt_get_prio = $conn->prepare("SELECT priority FROM tasks WHERE id = ?");
+                    if ($stmt_get_prio) {
+                        $stmt_get_prio->bind_param("i", $task_id);
+                        if ($stmt_get_prio->execute()) {
+                            $result = $stmt_get_prio->get_result();
+                            if ($row = $result->fetch_assoc()) {
+                                $final_priority = $row['priority']; // Sobrescribir con la prioridad original.
+                            }
+                        }
+                        $stmt_get_prio->close();
+                    }
+                }
+
                 $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL, status = 'Pendiente', priority = ?, start_datetime = ?, end_datetime = ? WHERE id = ?");
-                if ($stmt) $stmt->bind_param("issssi", $user_id, $instruction, $priority, $start_datetime, $end_datetime, $task_id);
+                if ($stmt) $stmt->bind_param("issssi", $user_id, $instruction, $final_priority, $start_datetime, $end_datetime, $task_id);
                 $is_update = true;
             } elseif ($alert_id) {
                 $prio_res = $conn->query("SELECT priority FROM alerts WHERE id = " . intval($alert_id)); $original_priority = $prio_res ? ($prio_res->fetch_assoc()['priority'] ?? 'Media') : 'Media';
