@@ -130,27 +130,30 @@ if ($method === 'POST') {
             break;
 
         case 'Asignacion':
-            $is_update = false;
-            if ($task_id) {
-                // REASIGNACIÓN: Forzar siempre el uso de la prioridad original.
-                $original_priority = 'Media'; // Valor por defecto.
+            // Esta lógica ahora maneja la creación de tareas desde alertas Y la reasignación de CUALQUIER tarea.
+            $is_update = !empty($task_id);
+
+            if ($is_update) {
+                // --- REASIGNACIÓN ---
+                // 1. Obtener la prioridad original para mantenerla.
+                $original_priority = 'Media'; // Default
                 $stmt_get_prio = $conn->prepare("SELECT priority FROM tasks WHERE id = ?");
                 if ($stmt_get_prio) {
                     $stmt_get_prio->bind_param("i", $task_id);
                     if ($stmt_get_prio->execute()) {
                         $result = $stmt_get_prio->get_result();
-                        if ($row = $result->fetch_assoc()) {
-                            $original_priority = $row['priority'];
-                        }
+                        if ($row = $result->fetch_assoc()) { $original_priority = $row['priority']; }
                     }
                     $stmt_get_prio->close();
                 }
-                $final_priority = $original_priority;
 
-                $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL, status = 'Pendiente', priority = ?, start_datetime = ?, end_datetime = ? WHERE id = ?");
-                if ($stmt) $stmt->bind_param("issssi", $user_id, $instruction, $final_priority, $start_datetime, $end_datetime, $task_id);
-                $is_update = true;
-            } elseif ($alert_id) {
+                // 2. Preparar la actualización. No se toca 'created_at'.
+                $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL, status = 'Pendiente', priority = ? WHERE id = ?");
+                if ($stmt) {
+                    $stmt->bind_param("issii", $user_id, $instruction, $original_priority, $task_id);
+                }
+            } else if ($alert_id) {
+                // --- CREACIÓN DESDE ALERTA (sin cambios) ---
                 $prio_res = $conn->query("SELECT priority FROM alerts WHERE id = " . intval($alert_id)); $original_priority = $prio_res ? ($prio_res->fetch_assoc()['priority'] ?? 'Media') : 'Media';
                 $stmt = $conn->prepare("INSERT INTO tasks (alert_id, assigned_to_user_id, instruction, type, status, priority, created_by_user_id) VALUES (?, ?, ?, 'Asignacion', 'Pendiente', ?, ?)");
                 if ($stmt) $stmt->bind_param("iissis", $alert_id, $user_id, $instruction, ($priority ?: $original_priority), $creator_id);
