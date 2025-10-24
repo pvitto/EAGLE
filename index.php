@@ -2932,18 +2932,17 @@ setInterval(() => {
             if (distance < 0) {
                 showElapsedTime();
             } else {
-                // Si no ha vencido, no mostrar nada.
+                // Si no ha vencido, no mostrar nada para prioridades altas.
                 timerEl.innerHTML = '';
             }
         } else if (priority === 'Media') {
-            // Para medias, solo mostrar "Vence en" si aún no ha pasado el tiempo.
+            // Para medias, mostrar "Vence en" o "Retraso" según corresponda.
             if (distance > 0) {
                 showTimeLeft();
             } else {
-                // Si ya venció, mostrar el retraso.
                 showElapsedTime();
             }
-        } else { // Para 'Baja' y otras no definidas
+        } else { // Para 'Baja' y otras no definidas, comportamiento default
              if (distance < 0) {
                 showElapsedTime();
             } else {
