@@ -349,7 +349,7 @@ $conn->close();
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (Estilos CSS idénticos al original) ... */
+        
         html { font-size: 12px; }
         body { font-family: 'Inter', sans-serif; }
         .nav-tab { cursor: pointer; padding: 0.25rem 1rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
@@ -400,20 +400,64 @@ $conn->close();
         .notification-list { max-height: 16rem; overflow-y: auto; }
         .badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
         /* Toast Notification Styles */
-        .toast { background-color: white; color: #333; padding: 1rem 1.5rem; border-radius: 0.375rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); display: flex; align-items: center; justify-content: space-between; min-width: 250px; max-width: 400px; opacity: 0; transform: translateX(100%); transition: all 0.5s ease-in-out; border-left: 4px solid; }
-        .toast.show { opacity: 1; transform: translateX(0); }
-        .toast .toast-content { margin-right: 1rem; }
-        .toast .toast-title { font-weight: 600; margin-bottom: 0.25rem; }
-        .toast .toast-body { font-size: 0.875rem; color: #6b7280; }
-        .toast .toast-close { background: none; border: none; color: #9ca3af; font-size: 1.5rem; line-height: 1; cursor: pointer; padding: 0 0.5rem; }
-        .toast .toast-close:hover { color: #374151; }
-        /* Priority Colors */
-        .toast.toast-critica { border-left-color: #ef4444; }
-        .toast.toast-alta { border-left-color: #f97316; }
-        .toast.toast-media { border-left-color: #eab308; }
-        .toast.toast-baja { border-left-color: #6b7280; }
-        .toast.toast-success { border-left-color: #22c55e; }
-        .toast.toast-error { border-left-color: #ef4444; }
+.toast {
+    background-color: white;
+    color: #333;
+    padding: 1rem 1.5rem;
+    border-radius: 0.375rem; /* rounded-md */
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); /* shadow-md */
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 250px;
+    max-width: 400px;
+    opacity: 0;
+    transform: translateX(100%);
+    transition: all 0.5s ease-in-out;
+    border-left: 4px solid; /* Placeholder for priority color */
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.toast .toast-content {
+    margin-right: 1rem;
+}
+
+.toast .toast-title {
+    font-weight: 600; /* font-semibold */
+    margin-bottom: 0.25rem;
+}
+
+.toast .toast-body {
+    font-size: 0.875rem; /* text-sm */
+    color: #6b7280; /* text-gray-500 */
+}
+
+.toast .toast-close {
+    background: none;
+    border: none;
+    color: #9ca3af; /* text-gray-400 */
+    font-size: 1.5rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.5rem;
+}
+.toast .toast-close:hover {
+    color: #374151; /* text-gray-700 */
+}
+
+
+/* Priority Colors */
+.toast.toast-critica { border-left-color: #ef4444; /* red-500 */ }
+.toast.toast-alta { border-left-color: #f97316; /* orange-500 */ }
+.toast.toast-media { border-left-color: #eab308; /* yellow-500 */ }
+.toast.toast-baja { border-left-color: #6b7280; /* gray-500 */ }
+.toast.toast-success { border-left-color: #22c55e; } /* green-500 */
+.toast.toast-error { border-left-color: #ef4444; } /* red-500 */
+    
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -617,7 +661,7 @@ $can_complete = $user_can_act && $task_is_active;
                                          <?php endif; ?>
                                     </div>
                                     <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                    <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                                    <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-priority="<?php echo htmlspecialchars($priority_to_use); ?>" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                          <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                         <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -706,7 +750,7 @@ $can_complete = $user_can_act && $task_is_active;
                                                  <?php endif; ?>
                                             </div>
                                             <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-priority="<?php echo htmlspecialchars($priority_to_use); ?>" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                                  <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                                 <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -805,35 +849,38 @@ $can_complete = $user_can_act && $task_is_active;
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión de Cierre e Informes</h2>
                 </div>
-                <div class="mb-8 flex space-x-2">
-                    <button id="btn-supervision-operador" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Abrir llegadas de Operador</button>
-                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
-                    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
-                    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
-                </div>
-                <div id="panel-supervision-operador" class="hidden">
-                    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
-                    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
-                        <div class="overflow-auto max-h-[400px]">
-                            <table class="w-full text-sm text-left">
-                                <thead class="bg-gray-50 sticky top-0">
-                                    <tr>
-                                        <th class="p-3">Planilla</th>
-                                        <th class="p-3">Cliente</th>
-                                        <th class="p-3">Valor Declarado</th>
-                                        <th class="p-3">Valor Contado</th>
-                                        <th class="p-3">Discrep.</th>
-                                        <th class="p-3">Operador</th>
-                                        <th class="p-3">Fecha Conteo</th>
-                                        <th class="p-3">Obs. Operador</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="digitador-operator-history-tbody">
-                                    </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
+                            <div class="mb-8 flex space-x-2">
+    <button id="btn-supervision-operador" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Abrir llegadas de Operador</button>
+    
+    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
+    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
+    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
+</div>
+<div id="panel-supervision-operador" class="hidden">
+    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
+    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <div class="overflow-auto max-h-[400px]">
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-50 sticky top-0">
+                    <tr>
+                        <th class="p-3">Planilla</th>
+                        <th class="p-3">Cliente</th>
+                        <th class="p-3">Valor Declarado</th>
+                        <th class="p-3">Valor Contado</th>
+                        <th class="p-3">Discrep.</th>
+                        <th class="p-3">Operador</th>
+                        <th class="p-3">Fecha Conteo</th>
+                        <th class="p-3">Obs. Operador</th>
+                    </tr>
+                </thead>
+                <tbody id="digitador-operator-history-tbody">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+   
+
                 <div id="panel-cierre">
                      <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre por Fondo</h2>
                      <div class="bg-white p-6 rounded-xl shadow-lg"><h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre</h3><p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas ('Conforme') y proceder con el cierre.</p><div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div><h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4><div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto"></div></div><div><h4 class="font-semibold mb-2">2. Planillas a incluir</h4><div id="services-list-container" class="space-y-3"><p class="text-gray-500 text-sm">Seleccione un fondo.</p></div><button id="close-fund-button" onclick="closeFund()" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-teal-600 mt-4 hidden">Cerrar Fondo</button></div></div></div>
@@ -881,33 +928,16 @@ $can_complete = $user_can_act && $task_is_active;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
     const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
-//let repeatingToasts = new Map(); // Guarda { intervalId, count, alertData } para toasts repetitivos
 let lastDiscrepancyIds = new Set();
 let lastDiscrepancyCount = 0;
 let discrepancySnapshotReady = false;
 
 function canSeeDiscrepancyToasts() {
   const role = (window.currentUserRole || '').toLowerCase();
-  return role === 'admin' || role === 'digitador' || role === 'digitadora';
+  return role === 'admin' || role === 'digitador';
 }
-// ===== Discrepancias: control anti-spam / multi-pestaña (PÉGALO AQUÍ) =====
-// ===== Discrepancias: control anti-spam / multi-pestaña =====
-const DISCREP_LS_KEY = 'seen_discrepancy_ids_v1';
-const DISCREP_TTL_MS = 5 * 60 * 1000; // “olvida” IDs después de 5 minutos
-
-function loadSeenDiscrepFromLS() {
-  try {
-    const raw = localStorage.getItem(DISCREP_LS_KEY);
-    if (!raw) return { ids: [], ts: Date.now() };
-    const data = JSON.parse(raw);
-    // TTL: si expiró, resetea
-    if (!data.ts || (Date.now() - data.ts) > DISCREP_TTL_MS) return { ids: [], ts: Date.now() };
-    return data;
-  } catch { return { ids: [], ts: Date.now() }; }
-}
-function saveSeenDiscrepToLS(ids) {
-  try { localStorage.setItem(DISCREP_LS_KEY, JSON.stringify({ ids: Array.from(ids), ts: Date.now() })); } catch {}
-}
+// ===== Discrepancias: control anti-spam (simplificado para sesión actual) =====
+let seenDiscrepancyIdsThisSession = new Set();
 
 // Sonido corto de alerta (WebAudio, no bloquea)
 function beepOnce() {
@@ -928,14 +958,6 @@ function beepOnce() {
 
 
 // (opcional, recomendado) hidratar estado al cargar
-try {
-  const boot = loadSeenDiscrepFromLS();
-  if (boot?.ids?.length) {
-    lastDiscrepancyIds = new Set(boot.ids);
-    lastDiscrepancyCount = boot.ids.length;
-  }
-} catch {}
-// Inicializa memoria desde localStorage al cargar
 try {
   const boot = loadSeenDiscrepFromLS();
   if (boot?.ids?.length) {
@@ -1320,12 +1342,17 @@ async function completeTask(taskId, formIdPrefix) {
              return;
         }
 
+        // --- CORRECCIÓN DEFINITIVA ---
+        // Si no hay alertId (es una tarea manual), se pasa null.
+        // El tipo SIEMPRE debe ser 'Asignacion' para esta función.
         let payload = {
             instruction: instruction,
-            type: alertId ? 'Asignacion' : 'Manual', // Determinar tipo basado en si hay alertId
+            type: 'Asignacion',
             task_id: taskId,
-            alert_id: alertId
+            alert_id: alertId || null // Asegurarse de que se envíe null si no hay alertId
         };
+        // --- FIN CORRECIÓN ---
+
         if (selectedValue.startsWith('group-')) {
              payload.assign_to_group = selectedValue.replace('group-', '');
              delete payload.assign_to; // Asegurar que no se envíe asignación individual
@@ -1537,15 +1564,44 @@ async function handleCheckinSubmit(event) {
             const response = await fetch('api/operator_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
             if (result.success) {
-                 showToast(result.message || 'Conteo guardado correctamente.', 'success');
-                 pollAlerts();
-                 setTimeout(() => {
-                    location.reload();
-                 }, 1000); // 1000ms = 1 segundo (para que el toast se alcance a leer)
-                }else {showToast(result.error || 'Error al guardar el conteo', 'error'); // ...por esto.
+                showToast(result.message || 'Conteo guardado correctamente.', 'success');
+
+                // Ocultar panel y resetear formulario
+                document.getElementById('operator-panel').classList.add('hidden');
+                document.getElementById('consultation-form').reset();
+
+                // Forzar un sondeo inmediato de alertas para mostrar el toast de discrepancia
+                pollAlerts();
+
+                // Actualizar la tabla del historial dinámicamente SIN recargar
+                try {
+                    const historyResponse = await fetch('api/operator_api.php?action=get_history');
+                    const historyResult = await historyResponse.json();
+                    if (historyResult.success && historyResult.history) {
+                        populateOperatorHistoryTable(historyResult.history);
+                        if(document.getElementById('digitador-operator-history-tbody')) {
+                           populateDigitadorOperatorHistoryTable(historyResult.history);
+                        }
+
+                        // --- NUEVO: Eliminar la fila de la tabla de pendientes ---
+                        const checkInId = payload.check_in_id;
+                        const pendingRow = document.getElementById(`operator-pending-row-${checkInId}`);
+                        if (pendingRow) {
+                            pendingRow.remove();
+                        }
+                        // --- FIN NUEVO ---
+                    }
+                } catch (historyError) {
+                    console.error('Error actualizando el historial dinámicamente:', historyError);
+                }
+
+            } else {
+                showToast(result.error || 'Error al guardar el conteo', 'error');
+            }
+        } catch (error) {
+            console.error('Error al guardar conteo:', error);
+            showToast('Error de conexión al guardar conteo', 'error');
         }
-        } catch (error) { console.error('Error al guardar conteo:', error);
-             showToast('Error de conexión al guardar conteo', 'error'); }
     }
 
 
@@ -2438,7 +2494,6 @@ function closeToast(toastId) {
     // Función para Notificaciones
   // Función para actualizar Paneles/Badges de Alertas
 function updateAlertsDisplay(newAlerts) {
-    console.log('updateAlertsDisplay recibió:', JSON.stringify(newAlerts)); // <-- MODIFICADO: Ver todo el array
     const highPriorityList = document.getElementById('task-notifications-list');
     const mediumPriorityList = document.getElementById('medium-priority-list');
     const highPriorityBadge = document.getElementById('task-notification-badge');
@@ -2450,32 +2505,20 @@ function updateAlertsDisplay(newAlerts) {
     let mediumCount = parseInt(mediumPriorityBadge.textContent || '0');
     let highUpdated = false;
     let mediumUpdated = false;
-    let newHighPriorityAlertsFound = false; // Para saber si tocar el sonido
-
-    // Cargar IDs ya vistos desde LocalStorage al inicio de la función
-    const seenData = loadSeenDiscrepFromLS(); // Reutilizamos esta función
-    let seenIds = new Set(seenData.ids);
-    console.log("IDs ya vistos al inicio:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs previos
-
-    newHighPriorityAlertsFound = false; // Resetear bandera
+    let newDiscrepanciesFound = false;
 
     newAlerts.forEach(alert => {
+        if (!alert || !alert.id) return;
+
         const isHighPriority = alert.priority === 'Critica' || alert.priority === 'Alta';
         const list = isHighPriority ? highPriorityList : mediumPriorityList;
         const colorClass = isHighPriority ? (alert.priority === 'Critica' ? 'red' : 'orange') : 'yellow';
-        const alertId = alert.id; // Usamos el ID de la tarea
 
-        // Solo procesar si tenemos un ID válido
-        if (!alertId) {
-            console.warn("Alerta recibida sin ID:", alert); // <-- AÑADIDO: Aviso si falta ID
-            return;
-        }
-
-        // --- Lógica de Mostrar en Paneles Superiores (sin cambios) ---
-        if (!list.querySelector(`[data-alert-id="${alertId}"]`)) {
-             const alertHtml = `
-                <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
-                    <p class="font-semibold text-${colorClass}-800">${alert.title || ''}</p>
+        // 1. Lógica para los paneles superiores (actualiza si no existe)
+        if (!list.querySelector(`[data-alert-id="${alert.id}"]`)) {
+            const alertHtml = `
+                <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alert.id}">
+                    <p class="font-semibold text-${colorClass}-800">${alert.title || 'Alerta'}</p>
                     <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
                 </div>`;
             list.insertAdjacentHTML('afterbegin', alertHtml);
@@ -2488,55 +2531,41 @@ function updateAlertsDisplay(newAlerts) {
                 mediumUpdated = true;
             }
         }
-        // --- Fin Lógica Paneles ---
 
+        // 2. Lógica de Toast para Discrepancias (simplificada y corregida)
+        const isDiscrepancy = (alert.title || '').startsWith("Discrepancia en Planilla:");
+        if (isDiscrepancy && !seenDiscrepancyIdsThisSession.has(alert.id)) {
+            const canNotify = canSeeDiscrepancyToasts();
+            const isTabActive = !document.hidden;
 
-        // --- Lógica Unificada para Toasts de Alta Prioridad ---
-        if (isHighPriority) {
-            // Verificar si ya hemos visto/notificado esta alerta específica
-            if (!seenIds.has(alertId)) {
-                console.log(`Alerta ${alertId} es nueva.`); // <-- AÑADIDO
-                const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
-                console.log(`Rol permite notificar: ${canNotify}, Pestaña visible: ${!document.hidden}`); // <-- AÑADIDO
-                if (canNotify && !document.hidden) { // Solo mostrar si la pestaña está visible y el rol es correcto
-                    const toastType = (alert.priority === 'Critica') ? 'error' : 'warning';
-                    console.log(`Llamando showToast para ${alertId} con tipo ${toastType}`); // <-- AÑADIDO
-                    showToast(`${alert.title || 'Alerta Importante'}`, toastType, 6000); // Usar showToast directamente
-                    newHighPriorityAlertsFound = true; // Marcar para tocar sonido una vez
-                } else {
-                    console.log(`Notificación omitida para ${alertId} (rol o visibilidad)`); // <-- AÑADIDO
-                }
-                seenIds.add(alertId); // Marcar como vista/notificada
-            } else {
-                console.log(`Alerta ${alertId} ya vista/notificada.`); // <-- AÑADIDO
+            if (canNotify && isTabActive) {
+                showToast(alert.title, 'critica', 8000);
+                newDiscrepanciesFound = true;
             }
+            // Marcar como vista para esta sesión, independientemente de si se mostró o no
+            seenDiscrepancyIdsThisSession.add(alert.id);
         }
-        // --- Fin Lógica Toasts ---
-    }); // Fin del forEach
+    });
 
-    // Tocar sonido UNA VEZ si se encontraron nuevas alertas de alta prioridad
-    if (newHighPriorityAlertsFound && typeof beepOnce === 'function') {
+    // Reproducir sonido una sola vez si se encontraron nuevas discrepancias
+    if (newDiscrepanciesFound) {
         beepOnce();
     }
 
-    // Guardar los IDs actualizados en LocalStorage
-    console.log("IDs vistos al final:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs finales
-    saveSeenDiscrepToLS(seenIds);
-
-    // Actualizar badges y mensajes de "No hay alertas" (sin cambios)
+    // Actualizar badges y mensajes "No hay alertas"
     if (highUpdated) {
         highPriorityBadge.textContent = highCount;
         highPriorityBadge.classList.remove('hidden');
         const noAlertsMsg = highPriorityList.querySelector('.text-gray-500');
-        if (noAlertsMsg) noAlertsMsg.remove();
+        if (noAlertsMsg && highCount > 0) noAlertsMsg.remove();
     }
     if (mediumUpdated) {
         mediumPriorityBadge.textContent = mediumCount;
         mediumPriorityBadge.classList.remove('hidden');
         const noAlertsMsg = mediumPriorityList.querySelector('.text-gray-500');
-        if (noAlertsMsg) noAlertsMsg.remove();
+        if (noAlertsMsg && mediumCount > 0) noAlertsMsg.remove();
     }
-} // <-- Esta es la llave de cierre que faltaba
+}
 // --- Polling Control ---
 
 function startAlertPolling(intervalSeconds = 15) {
@@ -2608,47 +2637,46 @@ startAlertPolling(15);
 // Función Polling Alertas
 async function pollAlerts() {
   try {
-    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`; // Construir URL
-    console.log("Polling URL:", urlToFetch); // <-- AÑADIDO: Ver URL
-
+    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`;
     const r = await fetch(urlToFetch, { headers: { 'Accept': 'application/json' } });
-
-    // --- AÑADIDO: Ver respuesta cruda ---
-    const rawResponseText = await r.text(); // Obtener texto crudo
-    console.log("Raw Response:", rawResponseText);
-    // --- FIN AÑADIDO ---
+    const rawResponseText = await r.text();
 
     if (!r.ok) {
-        console.error("HTTP Error Status:", r.status, r.statusText); // <-- AÑADIDO: Log de error HTTP
-        throw new Error('HTTP ' + r.status);
+        console.error("--- ERROR DEL SERVIDOR (pollAlerts) ---");
+        console.error("Status:", r.status, r.statusText);
+        console.error("Respuesta cruda:", rawResponseText);
+        console.error("--- FIN DEL ERROR ---");
+        showToast('Error del servidor al buscar alertas. Revise la consola.', 'error');
+        return; // Detener la ejecución si hay un error HTTP
     }
 
-    // Intentar parsear el texto crudo
-    const data = JSON.parse(rawResponseText);
-    console.log("Parsed Data:", data); // <-- AÑADIDO: Ver datos parseados
+    let data;
+    try {
+        data = JSON.parse(rawResponseText);
+    } catch (e) {
+        console.error("--- ERROR DE PARSEO JSON (pollAlerts) ---");
+        console.error("La respuesta del servidor no es un JSON válido. Esto usualmente indica un error fatal de PHP.");
+        console.error("Respuesta cruda del servidor:", rawResponseText);
+        console.error("--- FIN DEL ERROR ---");
+        showToast('Respuesta inválida del servidor. Revise la consola.', 'error');
+        return; // Detener la ejecución
+    }
 
     if (data && data.timestamp) {
         lastCheckedAlertTime = data.timestamp;
-    } else {
-        console.warn("No timestamp received from API."); // <-- AÑADIDO: Aviso si falta timestamp
     }
 
-    const alerts = Array.isArray(data?.alerts) ? data.alerts : []; // Asegurar que sea un array
-    console.log("Alerts to display:", alerts); // <-- AÑADIDO: Ver alertas a procesar
+    const alerts = Array.isArray(data?.alerts) ? data.alerts : [];
+    if (alerts.length > 0) {
+        console.log("Nuevas alertas recibidas:", alerts);
+    }
     updateAlertsDisplay(alerts);
 
-    // --- AÑADIDO: Limpiar el flag de error si el polling tuvo éxito ---
-    window._pollToastShown = false;
-    // --- FIN AÑADIDO ---
-
   } catch (err) {
-    // --- MODIFICADO: Mostrar error solo una vez y loguear detalles ---
-    if (!window._pollToastShown) {
-        showToast('Fallo el polling de alertas. Verifica tu conexión y la consola (F12).', 'error', 7000);
-        window._pollToastShown = true; // Evitar spam de errores de polling
-    }
-    console.error('pollAlerts error:', err); // Mostrar el error específico en consola
-    // --- FIN MODIFICADO ---
+    console.error("--- ERROR DE RED O CONEXIÓN (pollAlerts) ---");
+    console.error(err);
+    console.error("--- FIN DEL ERROR ---");
+    showToast('Error de red al buscar alertas. Revise la consola.', 'error');
   }
 }
 
@@ -2855,47 +2883,73 @@ async function pollAlerts() {
          updateReminderCount();
       // Reemplaza TODO el setInterval existente por este (mismo lugar)
 setInterval(() => {
-  document.querySelectorAll('.countdown-timer').forEach(timerEl => {
-    let raw = timerEl.dataset.endTime || '';
-    // Normaliza "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DDTHH:MM:SS"
-    const iso = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
-    const endTime = new Date(iso).getTime();
-    if (isNaN(endTime)) return;
+    document.querySelectorAll('.countdown-timer').forEach(timerEl => {
+        const priority = timerEl.dataset.priority;
+        const rawEndTime = timerEl.dataset.endTime || '';
+        const isoEndTime = rawEndTime.includes(' ') ? rawEndTime.replace(' ', 'T') : rawEndTime;
+        const endTime = new Date(isoEndTime).getTime();
 
-    const now = Date.now();
-    const distance = endTime - now;
+        if (isNaN(endTime)) return;
 
-    if (distance < 0) {
-      // Ya venció -> mostrar retraso
-      const elapsed = now - endTime;
-      const days = Math.floor(elapsed / 86400000);
-      const hours = Math.floor((elapsed % 86400000) / 3600000);
-      const minutes = Math.floor((elapsed % 3600000) / 60000);
-      const seconds = Math.floor((elapsed % 60000) / 1000);
-      let elapsedTime = '';
-      if (days > 0) elapsedTime += `${days}d `;
-      if (hours > 0 || days > 0) elapsedTime += `${hours}h `;
-      elapsedTime += `${minutes}m ${seconds}s`;
-      timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`;
-    } else {
-      // Aún falta -> mostrar cuenta regresiva
-      const days = Math.floor(distance / 86400000);
-      const hours = Math.floor((distance % 86400000) / 3600000);
-      const minutes = Math.floor((distance % 3600000) / 60000);
-      const seconds = Math.floor((distance % 60000) / 1000);
-      let timeLeft = '';
-      if (days > 0) timeLeft += `${days}d `;
-      if (hours > 0 || days > 0) timeLeft += `${hours}h `;
-      timeLeft += `${minutes}m ${seconds}s`;
+        const now = Date.now();
+        const distance = endTime - now;
 
-      // Colores según urgencia (igual a tu lógica actual)
-      let textColor = 'text-green-600';
-      if (days === 0 && hours < 1) textColor = 'text-red-600';
-      else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
+        // Lógica para el contador de retraso (hacia adelante)
+        const showElapsedTime = () => {
+            const elapsed = now - endTime;
+            const days = Math.floor(elapsed / 86400000);
+            const hours = Math.floor((elapsed % 86400000) / 3600000);
+            const minutes = Math.floor((elapsed % 3600000) / 60000);
+            const seconds = Math.floor((elapsed % 60000) / 1000);
+            let elapsedTimeStr = '';
+            if (days > 0) elapsedTimeStr += `${days}d `;
+            if (hours > 0 || days > 0) elapsedTimeStr += `${hours}h `;
+            elapsedTimeStr += `${minutes}m ${seconds}s`;
+            timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTimeStr}</span>`;
+        };
 
-      timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
-    }
-  });
+        // Lógica para el cronómetro (hacia atrás)
+        const showTimeLeft = () => {
+            const days = Math.floor(distance / 86400000);
+            const hours = Math.floor((distance % 86400000) / 3600000);
+            const minutes = Math.floor((distance % 3600000) / 60000);
+            const seconds = Math.floor((distance % 60000) / 1000);
+            let timeLeftStr = '';
+            if (days > 0) timeLeftStr += `${days}d `;
+            if (hours > 0 || days > 0) timeLeftStr += `${hours}h `;
+            timeLeftStr += `${minutes}m ${seconds}s`;
+
+            let textColor = 'text-green-600';
+            if (days === 0 && hours < 1) textColor = 'text-red-600';
+            else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
+
+            timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeftStr}</span>`;
+        };
+
+        // --- LÓGICA CONDICIONAL ---
+        if (priority === 'Critica' || priority === 'Alta') {
+            // Para críticas y altas, solo mostrar retraso si ya pasó el tiempo.
+            if (distance < 0) {
+                showElapsedTime();
+            } else {
+                // Si no ha vencido, no mostrar nada para prioridades altas.
+                timerEl.innerHTML = '';
+            }
+        } else if (priority === 'Media') {
+            // Para medias, mostrar "Vence en" o "Retraso" según corresponda.
+            if (distance > 0) {
+                showTimeLeft();
+            } else {
+                showElapsedTime();
+            }
+        } else { // Para 'Baja' y otras no definidas, comportamiento default
+             if (distance < 0) {
+                showElapsedTime();
+            } else {
+                showTimeLeft();
+            }
+        }
+    });
 }, 1000);
 
         const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
