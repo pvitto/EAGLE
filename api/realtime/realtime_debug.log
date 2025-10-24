@@ -1114,3 +1114,66 @@ Params: ["2025-10-23 20:20:37"]
 Alerts Found: 0
 --------------------------------------
 
+Script start @ 2025-10-24 03:21:03
+--- Request @ 2025-10-23 20:21:03 ---
+Timestamp: 1761268847 | DateTime: 2025-10-23 20:20:47
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-23 20:20:47"]
+Alerts Found: 0
+--------------------------------------
+
+Script start @ 2025-10-24 03:21:13
+--- Request @ 2025-10-23 20:21:13 ---
+Timestamp: 1761268858 | DateTime: 2025-10-23 20:20:58
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-23 20:20:58"]
+Alerts Found: 0
+--------------------------------------
+
+Script start @ 2025-10-24 03:21:23
+--- Request @ 2025-10-23 20:21:23 ---
+Timestamp: 1761268868 | DateTime: 2025-10-23 20:21:08
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-23 20:21:08"]
+Alerts Found: 0
+--------------------------------------
+
+Script start @ 2025-10-24 03:21:33
+--- Request @ 2025-10-23 20:21:33 ---
+Timestamp: 1761268878 | DateTime: 2025-10-23 20:21:18
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-23 20:21:18"]
+Alerts Found: 0
+--------------------------------------
+
+Script start @ 2025-10-24 03:21:43
+--- Request @ 2025-10-23 20:21:43 ---
+Timestamp: 1761268888 | DateTime: 2025-10-23 20:21:28
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-23 20:21:28"]
+Alerts Found: 0
+--------------------------------------
+
+Script start @ 2025-10-24 03:21:53
+--- Request @ 2025-10-23 20:21:53 ---
+Timestamp: 1761268898 | DateTime: 2025-10-23 20:21:38
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-23 20:21:38"]
+Alerts Found: 0
+--------------------------------------
+
+Script start @ 2025-10-24 03:22:18
+--- Request @ 2025-10-23 20:22:18 ---
+Timestamp: 1761268908 | DateTime: 2025-10-23 20:21:48
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-23 20:21:48"]
+Alerts Found: 0
+--------------------------------------
+
