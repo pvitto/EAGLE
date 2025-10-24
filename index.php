@@ -928,33 +928,16 @@ $can_complete = $user_can_act && $task_is_active;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
     const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
-//let repeatingToasts = new Map(); // Guarda { intervalId, count, alertData } para toasts repetitivos
 let lastDiscrepancyIds = new Set();
 let lastDiscrepancyCount = 0;
 let discrepancySnapshotReady = false;
 
 function canSeeDiscrepancyToasts() {
   const role = (window.currentUserRole || '').toLowerCase();
-  return role === 'admin' || role === 'digitador' || role === 'digitadora';
+  return role === 'admin' || role === 'digitador';
 }
-// ===== Discrepancias: control anti-spam / multi-pestaña (PÉGALO AQUÍ) =====
-// ===== Discrepancias: control anti-spam / multi-pestaña =====
-const DISCREP_LS_KEY = 'seen_discrepancy_ids_v1';
-const DISCREP_TTL_MS = 5 * 60 * 1000; // “olvida” IDs después de 5 minutos
-
-function loadSeenDiscrepFromLS() {
-  try {
-    const raw = localStorage.getItem(DISCREP_LS_KEY);
-    if (!raw) return { ids: [], ts: Date.now() };
-    const data = JSON.parse(raw);
-    // TTL: si expiró, resetea
-    if (!data.ts || (Date.now() - data.ts) > DISCREP_TTL_MS) return { ids: [], ts: Date.now() };
-    return data;
-  } catch { return { ids: [], ts: Date.now() }; }
-}
-function saveSeenDiscrepToLS(ids) {
-  try { localStorage.setItem(DISCREP_LS_KEY, JSON.stringify({ ids: Array.from(ids), ts: Date.now() })); } catch {}
-}
+// ===== Discrepancias: control anti-spam (simplificado para sesión actual) =====
+let seenDiscrepancyIdsThisSession = new Set();
 
 // Sonido corto de alerta (WebAudio, no bloquea)
 function beepOnce() {
@@ -975,14 +958,6 @@ function beepOnce() {
 
 
 // (opcional, recomendado) hidratar estado al cargar
-try {
-  const boot = loadSeenDiscrepFromLS();
-  if (boot?.ids?.length) {
-    lastDiscrepancyIds = new Set(boot.ids);
-    lastDiscrepancyCount = boot.ids.length;
-  }
-} catch {}
-// Inicializa memoria desde localStorage al cargar
 try {
   const boot = loadSeenDiscrepFromLS();
   if (boot?.ids?.length) {
@@ -1367,12 +1342,17 @@ async function completeTask(taskId, formIdPrefix) {
              return;
         }
 
+        // --- CORRECCIÓN DEFINITIVA ---
+        // Si no hay alertId (es una tarea manual), se pasa null.
+        // El tipo SIEMPRE debe ser 'Asignacion' para esta función.
         let payload = {
             instruction: instruction,
-            type: alertId ? 'Asignacion' : 'Manual', // Determinar tipo basado en si hay alertId
+            type: 'Asignacion',
             task_id: taskId,
-            alert_id: alertId
+            alert_id: alertId || null // Asegurarse de que se envíe null si no hay alertId
         };
+        // --- FIN CORRECIÓN ---
+
         if (selectedValue.startsWith('group-')) {
              payload.assign_to_group = selectedValue.replace('group-', '');
              delete payload.assign_to; // Asegurar que no se envíe asignación individual
@@ -1608,7 +1588,6 @@ async function handleCheckinSubmit(event) {
                         const pendingRow = document.getElementById(`operator-pending-row-${checkInId}`);
                         if (pendingRow) {
                             pendingRow.remove();
-                            console.log(`Fila de pendiente (ID: ${checkInId}) eliminada de la vista.`);
                         }
                         // --- FIN NUEVO ---
                     }
@@ -2526,24 +2505,19 @@ function updateAlertsDisplay(newAlerts) {
     let mediumCount = parseInt(mediumPriorityBadge.textContent || '0');
     let highUpdated = false;
     let mediumUpdated = false;
-
-    // Cargar IDs ya vistos desde LocalStorage para evitar duplicados entre pestañas
-    const seenData = loadSeenDiscrepFromLS();
-    let seenIds = new Set(seenData.ids);
     let newDiscrepanciesFound = false;
 
     newAlerts.forEach(alert => {
-        const alertId = alert.id;
-        if (!alertId) return; // Omitir alertas sin ID
+        if (!alert || !alert.id) return;
 
         const isHighPriority = alert.priority === 'Critica' || alert.priority === 'Alta';
         const list = isHighPriority ? highPriorityList : mediumPriorityList;
         const colorClass = isHighPriority ? (alert.priority === 'Critica' ? 'red' : 'orange') : 'yellow';
 
-        // 1. Lógica para los paneles superiores (sin cambios)
-        if (!list.querySelector(`[data-alert-id="${alertId}"]`)) {
+        // 1. Lógica para los paneles superiores (actualiza si no existe)
+        if (!list.querySelector(`[data-alert-id="${alert.id}"]`)) {
             const alertHtml = `
-                <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
+                <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alert.id}">
                     <p class="font-semibold text-${colorClass}-800">${alert.title || 'Alerta'}</p>
                     <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
                 </div>`;
@@ -2558,44 +2532,25 @@ function updateAlertsDisplay(newAlerts) {
             }
         }
 
-        // 2. Lógica específica para Toasts de Discrepancia
+        // 2. Lógica de Toast para Discrepancias (simplificada y corregida)
         const isDiscrepancy = (alert.title || '').startsWith("Discrepancia en Planilla:");
+        if (isDiscrepancy && !seenDiscrepancyIdsThisSession.has(alert.id)) {
+            const canNotify = canSeeDiscrepancyToasts();
+            const isTabActive = !document.hidden;
 
-        // --- INICIO: NUEVOS LOGS DE DEPURACIÓN ---
-        if (isDiscrepancy) {
-            console.log(`[DEBUG] Discrepancia encontrada (ID: ${alert.id}): ${alert.title}`);
-            const alreadySeen = seenIds.has(alert.id);
-            if (alreadySeen) {
-                console.log(`[DEBUG] ID ${alert.id} ya ha sido visto. Omitiendo toast.`);
-                // No usamos 'continue' porque no estamos en un bucle nativo, sino en forEach
-            } else {
-                const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
-                console.log(`[DEBUG] ¿Puede notificar? (Rol correcto): ${canNotify}`);
-
-                const isTabActive = !document.hidden;
-                console.log(`[DEBUG] ¿Pestaña activa?: ${isTabActive}`);
-
-                if (canNotify && isTabActive) {
-                    console.log(`[DEBUG] ¡MOSTRANDO TOAST PARA ID ${alert.id}!`);
-                    showToast(alert.title, 'critica', 8000);
-                    newDiscrepanciesFound = true;
-                } else {
-                    console.log(`[DEBUG] Condiciones no cumplidas. No se muestra toast para ID ${alert.id}.`);
-                }
-
-                seenIds.add(alert.id);
+            if (canNotify && isTabActive) {
+                showToast(alert.title, 'critica', 8000);
+                newDiscrepanciesFound = true;
             }
+            // Marcar como vista para esta sesión, independientemente de si se mostró o no
+            seenDiscrepancyIdsThisSession.add(alert.id);
         }
-        // --- FIN: NUEVOS LOGS DE DEPURACIÓN ---
     });
 
     // Reproducir sonido una sola vez si se encontraron nuevas discrepancias
-    if (newDiscrepanciesFound && typeof beepOnce === 'function') {
+    if (newDiscrepanciesFound) {
         beepOnce();
     }
-
-    // Guardar los IDs actualizados en LocalStorage
-    saveSeenDiscrepToLS(seenIds);
 
     // Actualizar badges y mensajes "No hay alertas"
     if (highUpdated) {
