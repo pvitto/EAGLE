@@ -295,3 +295,21 @@ Params: ["2025-10-24 09:49:26"]
 Alerts Found: 0
 --------------------------------------
 
+Script start @ 2025-10-24 16:51:31
+--- Request @ 2025-10-24 09:51:31 ---
+Timestamp: 1761317426 | DateTime: 2025-10-24 09:50:26
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-24 09:50:26"]
+Alerts Found: 0
+--------------------------------------
+
+Script start @ 2025-10-24 16:52:31
+--- Request @ 2025-10-24 09:52:31 ---
+Timestamp: 1761317486 | DateTime: 2025-10-24 09:51:26
+Role: Admin
+SQL:  SELECT DISTINCT a.id, a.title, a.description, a.priority, a.created_at FROM alerts a LEFT JOIN tasks t ON t.alert_id = a.id AND t.status = 'Pendiente' WHERE a.created_at >= ? AND a.priority IN ('Critica', 'Alta') ORDER BY a.created_at DESC LIMIT 10 
+Params: ["2025-10-24 09:51:26"]
+Alerts Found: 0
+--------------------------------------
+
