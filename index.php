@@ -661,7 +661,7 @@ $can_complete = $user_can_act && $task_is_active;
                                          <?php endif; ?>
                                     </div>
                                     <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                    <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                                    <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-priority="<?php echo htmlspecialchars($priority_to_use); ?>" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                          <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                         <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -750,7 +750,7 @@ $can_complete = $user_can_act && $task_is_active;
                                                  <?php endif; ?>
                                             </div>
                                             <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-priority="<?php echo htmlspecialchars($priority_to_use); ?>" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                                  <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                                 <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -2883,47 +2883,74 @@ async function pollAlerts() {
          updateReminderCount();
       // Reemplaza TODO el setInterval existente por este (mismo lugar)
 setInterval(() => {
-  document.querySelectorAll('.countdown-timer').forEach(timerEl => {
-    let raw = timerEl.dataset.endTime || '';
-    // Normaliza "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DDTHH:MM:SS"
-    const iso = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
-    const endTime = new Date(iso).getTime();
-    if (isNaN(endTime)) return;
+    document.querySelectorAll('.countdown-timer').forEach(timerEl => {
+        const priority = timerEl.dataset.priority;
+        const rawEndTime = timerEl.dataset.endTime || '';
+        const isoEndTime = rawEndTime.includes(' ') ? rawEndTime.replace(' ', 'T') : rawEndTime;
+        const endTime = new Date(isoEndTime).getTime();
 
-    const now = Date.now();
-    const distance = endTime - now;
+        if (isNaN(endTime)) return;
 
-    if (distance < 0) {
-      // Ya venció -> mostrar retraso
-      const elapsed = now - endTime;
-      const days = Math.floor(elapsed / 86400000);
-      const hours = Math.floor((elapsed % 86400000) / 3600000);
-      const minutes = Math.floor((elapsed % 3600000) / 60000);
-      const seconds = Math.floor((elapsed % 60000) / 1000);
-      let elapsedTime = '';
-      if (days > 0) elapsedTime += `${days}d `;
-      if (hours > 0 || days > 0) elapsedTime += `${hours}h `;
-      elapsedTime += `${minutes}m ${seconds}s`;
-      timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`;
-    } else {
-      // Aún falta -> mostrar cuenta regresiva
-      const days = Math.floor(distance / 86400000);
-      const hours = Math.floor((distance % 86400000) / 3600000);
-      const minutes = Math.floor((distance % 3600000) / 60000);
-      const seconds = Math.floor((distance % 60000) / 1000);
-      let timeLeft = '';
-      if (days > 0) timeLeft += `${days}d `;
-      if (hours > 0 || days > 0) timeLeft += `${hours}h `;
-      timeLeft += `${minutes}m ${seconds}s`;
+        const now = Date.now();
+        const distance = endTime - now;
 
-      // Colores según urgencia (igual a tu lógica actual)
-      let textColor = 'text-green-600';
-      if (days === 0 && hours < 1) textColor = 'text-red-600';
-      else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
+        // Lógica para el contador de retraso (hacia adelante)
+        const showElapsedTime = () => {
+            const elapsed = now - endTime;
+            const days = Math.floor(elapsed / 86400000);
+            const hours = Math.floor((elapsed % 86400000) / 3600000);
+            const minutes = Math.floor((elapsed % 3600000) / 60000);
+            const seconds = Math.floor((elapsed % 60000) / 1000);
+            let elapsedTimeStr = '';
+            if (days > 0) elapsedTimeStr += `${days}d `;
+            if (hours > 0 || days > 0) elapsedTimeStr += `${hours}h `;
+            elapsedTimeStr += `${minutes}m ${seconds}s`;
+            timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTimeStr}</span>`;
+        };
 
-      timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
-    }
-  });
+        // Lógica para el cronómetro (hacia atrás)
+        const showTimeLeft = () => {
+            const days = Math.floor(distance / 86400000);
+            const hours = Math.floor((distance % 86400000) / 3600000);
+            const minutes = Math.floor((distance % 3600000) / 60000);
+            const seconds = Math.floor((distance % 60000) / 1000);
+            let timeLeftStr = '';
+            if (days > 0) timeLeftStr += `${days}d `;
+            if (hours > 0 || days > 0) timeLeftStr += `${hours}h `;
+            timeLeftStr += `${minutes}m ${seconds}s`;
+
+            let textColor = 'text-green-600';
+            if (days === 0 && hours < 1) textColor = 'text-red-600';
+            else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
+
+            timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeftStr}</span>`;
+        };
+
+        // --- LÓGICA CONDICIONAL ---
+        if (priority === 'Critica' || priority === 'Alta') {
+            // Para críticas y altas, solo mostrar retraso si ya pasó el tiempo.
+            if (distance < 0) {
+                showElapsedTime();
+            } else {
+                // Si no ha vencido, no mostrar nada.
+                timerEl.innerHTML = '';
+            }
+        } else if (priority === 'Media') {
+            // Para medias, solo mostrar "Vence en" si aún no ha pasado el tiempo.
+            if (distance > 0) {
+                showTimeLeft();
+            } else {
+                // Si ya venció, mostrar el retraso.
+                showElapsedTime();
+            }
+        } else { // Para 'Baja' y otras no definidas
+             if (distance < 0) {
+                showElapsedTime();
+            } else {
+                showTimeLeft();
+            }
+        }
+    });
 }, 1000);
 
         const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
