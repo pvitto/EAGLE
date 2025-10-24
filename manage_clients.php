@@ -165,10 +165,10 @@ if (!$isContentOnly) {
                     if (!data.success) throw new Error(data.error);
 
                     sitesListDiv.innerHTML = '';
-                    if (data.sites.length === 0) {
+                    if (data.data.length === 0) {
                         sitesListDiv.innerHTML = '<p class="text-center text-gray-500">Este cliente no tiene sedes registradas.</p>';
                     } else {
-                        data.sites.forEach(site => {
+                        data.data.forEach(site => {
                             const siteEl = document.createElement('div');
                             siteEl.className = 'p-3 border rounded-md flex justify-between items-center';
                             siteEl.innerHTML = `
