@@ -16,8 +16,8 @@ if ($conn->connect_error) {
 // Establecer el charset a UTF-8 para soportar caracteres especiales
 $conn->set_charset("utf8mb4");
 
-// --- ¡NUEVO CÓDIGO DE ZONA HORARIA! ---
-
+// --- CÓDIGO DE ZONA HORARIA TEMPORALMENTE DESACTIVADO PARA DEPURACIÓN ---
+/*
 // 1. Obtiene la zona horaria actual de PHP (definida en config.php, ej: 'Australia/Sydney')
 $php_timezone_name = date_default_timezone_get();
 
@@ -31,5 +31,6 @@ $utc_offset = $datetime->format('P');
 if ($utc_offset) {
     $conn->query("SET time_zone = '" . $conn->real_escape_string($utc_offset) . "'");
 }
-// --- FIN DEL NUEVO CÓDIGO ---
+*/
+// --- FIN DEL CÓDIGO DESACTIVADO ---
 ?>

@@ -2658,46 +2658,46 @@ startAlertPolling(15);
 // Función Polling Alertas
 async function pollAlerts() {
   try {
-    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`; // Construir URL
-    console.log("Polling URL:", urlToFetch); // <-- AÑADIDO: Ver URL
-
+    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`;
     const r = await fetch(urlToFetch, { headers: { 'Accept': 'application/json' } });
-
-    // --- AÑADIDO: Ver respuesta cruda ---
-    const rawResponseText = await r.text(); // Obtener texto crudo
-    console.log("Raw Response:", rawResponseText);
-    // --- FIN AÑADIDO ---
+    const rawResponseText = await r.text();
 
     if (!r.ok) {
-        console.error("HTTP Error Status:", r.status, r.statusText); // <-- AÑADIDO: Log de error HTTP
-        throw new Error('HTTP ' + r.status);
+        console.error("--- ERROR DEL SERVIDOR (pollAlerts) ---");
+        console.error("Status:", r.status, r.statusText);
+        console.error("Respuesta cruda:", rawResponseText);
+        console.error("--- FIN DEL ERROR ---");
+        showToast('Error del servidor al buscar alertas. Revise la consola.', 'error');
+        return; // Detener la ejecución si hay un error HTTP
     }
 
-    // Intentar parsear el texto crudo
-    const data = JSON.parse(rawResponseText);
-    console.log("Parsed Data:", data); // <-- AÑADIDO: Ver datos parseados
+    let data;
+    try {
+        data = JSON.parse(rawResponseText);
+    } catch (e) {
+        console.error("--- ERROR DE PARSEO JSON (pollAlerts) ---");
+        console.error("La respuesta del servidor no es un JSON válido. Esto usualmente indica un error fatal de PHP.");
+        console.error("Respuesta cruda del servidor:", rawResponseText);
+        console.error("--- FIN DEL ERROR ---");
+        showToast('Respuesta inválida del servidor. Revise la consola.', 'error');
+        return; // Detener la ejecución
+    }
 
     if (data && data.timestamp) {
         lastCheckedAlertTime = data.timestamp;
-    } else {
-        console.warn("No timestamp received from API."); // <-- AÑADIDO: Aviso si falta timestamp
     }
 
     const alerts = Array.isArray(data?.alerts) ? data.alerts : [];
+    if (alerts.length > 0) {
+        console.log("Nuevas alertas recibidas:", alerts);
+    }
     updateAlertsDisplay(alerts);
 
-    // --- AÑADIDO: Limpiar el flag de error si el polling tuvo éxito ---
-    window._pollToastShown = false;
-    // --- FIN AÑADIDO ---
-
   } catch (err) {
-    // --- MODIFICADO: Mostrar error solo una vez y loguear detalles ---
-    if (!window._pollToastShown) {
-        showToast('Fallo el polling de alertas. Verifica tu conexión y la consola (F12).', 'error', 7000);
-        window._pollToastShown = true; // Evitar spam de errores de polling
-    }
-    console.error('pollAlerts error:', err); // Mostrar el error específico en consola
-    // --- FIN MODIFICADO ---
+    console.error("--- ERROR DE RED O CONEXIÓN (pollAlerts) ---");
+    console.error(err);
+    console.error("--- FIN DEL ERROR ---");
+    showToast('Error de red al buscar alertas. Revise la consola.', 'error');
   }
 }
 
