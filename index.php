@@ -1599,10 +1599,18 @@ async function handleCheckinSubmit(event) {
                     const historyResult = await historyResponse.json();
                     if (historyResult.success && historyResult.history) {
                         populateOperatorHistoryTable(historyResult.history);
-                        // Adicionalmente, actualizar la tabla del digitador si está visible
                         if(document.getElementById('digitador-operator-history-tbody')) {
                            populateDigitadorOperatorHistoryTable(historyResult.history);
                         }
+
+                        // --- NUEVO: Eliminar la fila de la tabla de pendientes ---
+                        const checkInId = payload.check_in_id;
+                        const pendingRow = document.getElementById(`operator-pending-row-${checkInId}`);
+                        if (pendingRow) {
+                            pendingRow.remove();
+                            console.log(`Fila de pendiente (ID: ${checkInId}) eliminada de la vista.`);
+                        }
+                        // --- FIN NUEVO ---
                     }
                 } catch (historyError) {
                     console.error('Error actualizando el historial dinámicamente:', historyError);
@@ -2552,17 +2560,33 @@ function updateAlertsDisplay(newAlerts) {
 
         // 2. Lógica específica para Toasts de Discrepancia
         const isDiscrepancy = (alert.title || '').startsWith("Discrepancia en Planilla:");
-        if (isDiscrepancy && !seenIds.has(alertId)) {
-            const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
 
-            // Mostrar toast solo si el rol es correcto y la pestaña está activa
-            if (canNotify && !document.hidden) {
-                showToast(alert.title, 'critica', 8000);
-                newDiscrepanciesFound = true; // Marcar para reproducir sonido
+        // --- INICIO: NUEVOS LOGS DE DEPURACIÓN ---
+        if (isDiscrepancy) {
+            console.log(`[DEBUG] Discrepancia encontrada (ID: ${alert.id}): ${alert.title}`);
+            const alreadySeen = seenIds.has(alert.id);
+            if (alreadySeen) {
+                console.log(`[DEBUG] ID ${alert.id} ya ha sido visto. Omitiendo toast.`);
+                // No usamos 'continue' porque no estamos en un bucle nativo, sino en forEach
+            } else {
+                const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
+                console.log(`[DEBUG] ¿Puede notificar? (Rol correcto): ${canNotify}`);
+
+                const isTabActive = !document.hidden;
+                console.log(`[DEBUG] ¿Pestaña activa?: ${isTabActive}`);
+
+                if (canNotify && isTabActive) {
+                    console.log(`[DEBUG] ¡MOSTRANDO TOAST PARA ID ${alert.id}!`);
+                    showToast(alert.title, 'critica', 8000);
+                    newDiscrepanciesFound = true;
+                } else {
+                    console.log(`[DEBUG] Condiciones no cumplidas. No se muestra toast para ID ${alert.id}.`);
+                }
+
+                seenIds.add(alert.id);
             }
-
-            seenIds.add(alertId); // Marcar como vista para no repetirla
         }
+        // --- FIN: NUEVOS LOGS DE DEPURACIÓN ---
     });
 
     // Reproducir sonido una sola vez si se encontraron nuevas discrepancias
