@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <title>Carousel Test</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .digitador-carousel-item { display: none; }
+        .digitador-carousel-item.active { display: block; }
+    </style>
+</head>
+<body class="bg-gray-100 p-8">
+    <div id="digitador-priority-carousel-container" class="mb-8">
+        <div class="mx-auto bg-white rounded-xl shadow-lg p-4" style="max-width: 80%;">
+            <div class="flex justify-between items-center mb-2">
+                <h2 class="text-xl font-bold text-gray-900">Alertas y Tareas Prioritarias</h2>
+                <div class="flex items-center space-x-2">
+                    <button id="digitador-carousel-prev" class="p-2 rounded-full bg-gray-200 hover:bg-gray-300 disabled:opacity-50">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+                    </button>
+                    <span id="digitador-carousel-counter" class="text-sm font-semibold text-gray-600"></span>
+                    <button id="digitador-carousel-next" class="p-2 rounded-full bg-gray-200 hover:bg-gray-300 disabled:opacity-50">
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+                    </button>
+                </div>
+            </div>
+            <div id="digitador-priority-carousel" class="relative">
+                <div class="digitador-carousel-item bg-white rounded-lg overflow-hidden task-card">
+                    <div class="p-4 bg-red-100 border-l-8 border-red-500">
+                        <p class="font-semibold text-red-800 text-lg">Tarea: URGENTE <span class="ml-2 bg-red-200 text-red-800 text-xs font-bold px-2 py-0.5 rounded-full">CRITICA</span></p>
+                        <p class="text-sm mt-1">Descripción de la primera tarea urgente.</p>
+                    </div>
+                </div>
+                <div class="digitador-carousel-item bg-white rounded-lg overflow-hidden task-card">
+                    <div class="p-4 bg-orange-100 border-l-8 border-orange-500">
+                        <p class="font-semibold text-orange-800 text-lg">Tarea: ALTA PRIORIDAD <span class="ml-2 bg-orange-200 text-orange-800 text-xs font-bold px-2 py-0.5 rounded-full">ALTA</span></p>
+                        <p class="text-sm mt-1">Descripción de la segunda tarea importante.</p>
+                    </div>
+                </div>
+                <div class="digitador-carousel-item bg-white rounded-lg overflow-hidden task-card">
+                    <div class="p-4 bg-orange-100 border-l-8 border-orange-500">
+                        <p class="font-semibold text-orange-800 text-lg">Tarea: OTRA TAREA <span class="ml-2 bg-orange-200 text-orange-800 text-xs font-bold px-2 py-0.5 rounded-full">ALTA</span></p>
+                        <p class="text-sm mt-1">Descripción de la tercera tarea.</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    const carouselContainer = document.getElementById('digitador-priority-carousel-container');
+    if (carouselContainer) {
+        const carousel = document.getElementById('digitador-priority-carousel');
+        const items = carousel.querySelectorAll('.digitador-carousel-item');
+        const prevButton = document.getElementById('digitador-carousel-prev');
+        const nextButton = document.getElementById('digitador-carousel-next');
+        const counter = document.getElementById('digitador-carousel-counter');
+        let currentIndex = 0;
+
+        function updateCarousel() {
+            if (items.length === 0) {
+                counter.textContent = '0/0';
+                prevButton.disabled = true;
+                nextButton.disabled = true;
+                return;
+            }
+
+            items.forEach((item, index) => {
+                item.style.display = index === currentIndex ? 'block' : 'none';
+            });
+
+            counter.textContent = `${currentIndex + 1}/${items.length}`;
+            prevButton.disabled = currentIndex === 0;
+            nextButton.disabled = currentIndex === items.length - 1;
+        }
+
+        if (items.length > 0) {
+            prevButton.addEventListener('click', () => {
+                if (currentIndex > 0) {
+                    currentIndex--;
+                    updateCarousel();
+                }
+            });
+
+            nextButton.addEventListener('click', () => {
+                if (currentIndex < items.length - 1) {
+                    currentIndex++;
+                    updateCarousel();
+                }
+            });
+        }
+
+        updateCarousel();
+    }
+});
+</script>
+</body>
+</html>
