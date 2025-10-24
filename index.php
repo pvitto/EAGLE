@@ -349,7 +349,7 @@ $conn->close();
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        
+        /* ... (Estilos CSS idénticos al original) ... */
         html { font-size: 12px; }
         body { font-family: 'Inter', sans-serif; }
         .nav-tab { cursor: pointer; padding: 0.25rem 1rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
@@ -400,64 +400,20 @@ $conn->close();
         .notification-list { max-height: 16rem; overflow-y: auto; }
         .badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
         /* Toast Notification Styles */
-.toast {
-    background-color: white;
-    color: #333;
-    padding: 1rem 1.5rem;
-    border-radius: 0.375rem; /* rounded-md */
-    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); /* shadow-md */
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    min-width: 250px;
-    max-width: 400px;
-    opacity: 0;
-    transform: translateX(100%);
-    transition: all 0.5s ease-in-out;
-    border-left: 4px solid; /* Placeholder for priority color */
-}
-
-.toast.show {
-    opacity: 1;
-    transform: translateX(0);
-}
-
-.toast .toast-content {
-    margin-right: 1rem;
-}
-
-.toast .toast-title {
-    font-weight: 600; /* font-semibold */
-    margin-bottom: 0.25rem;
-}
-
-.toast .toast-body {
-    font-size: 0.875rem; /* text-sm */
-    color: #6b7280; /* text-gray-500 */
-}
-
-.toast .toast-close {
-    background: none;
-    border: none;
-    color: #9ca3af; /* text-gray-400 */
-    font-size: 1.5rem;
-    line-height: 1;
-    cursor: pointer;
-    padding: 0 0.5rem;
-}
-.toast .toast-close:hover {
-    color: #374151; /* text-gray-700 */
-}
-
-
-/* Priority Colors */
-.toast.toast-critica { border-left-color: #ef4444; /* red-500 */ }
-.toast.toast-alta { border-left-color: #f97316; /* orange-500 */ }
-.toast.toast-media { border-left-color: #eab308; /* yellow-500 */ }
-.toast.toast-baja { border-left-color: #6b7280; /* gray-500 */ }
-.toast.toast-success { border-left-color: #22c55e; } /* green-500 */
-.toast.toast-error { border-left-color: #ef4444; } /* red-500 */
-    
+        .toast { background-color: white; color: #333; padding: 1rem 1.5rem; border-radius: 0.375rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); display: flex; align-items: center; justify-content: space-between; min-width: 250px; max-width: 400px; opacity: 0; transform: translateX(100%); transition: all 0.5s ease-in-out; border-left: 4px solid; }
+        .toast.show { opacity: 1; transform: translateX(0); }
+        .toast .toast-content { margin-right: 1rem; }
+        .toast .toast-title { font-weight: 600; margin-bottom: 0.25rem; }
+        .toast .toast-body { font-size: 0.875rem; color: #6b7280; }
+        .toast .toast-close { background: none; border: none; color: #9ca3af; font-size: 1.5rem; line-height: 1; cursor: pointer; padding: 0 0.5rem; }
+        .toast .toast-close:hover { color: #374151; }
+        /* Priority Colors */
+        .toast.toast-critica { border-left-color: #ef4444; }
+        .toast.toast-alta { border-left-color: #f97316; }
+        .toast.toast-media { border-left-color: #eab308; }
+        .toast.toast-baja { border-left-color: #6b7280; }
+        .toast.toast-success { border-left-color: #22c55e; }
+        .toast.toast-error { border-left-color: #ef4444; }
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -849,38 +805,35 @@ $can_complete = $user_can_act && $task_is_active;
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión de Cierre e Informes</h2>
                 </div>
-                            <div class="mb-8 flex space-x-2">
-    <button id="btn-supervision-operador" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Abrir llegadas de Operador</button>
-    
-    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
-    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
-    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
-</div>
-<div id="panel-supervision-operador" class="hidden">
-    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
-    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
-        <div class="overflow-auto max-h-[400px]">
-            <table class="w-full text-sm text-left">
-                <thead class="bg-gray-50 sticky top-0">
-                    <tr>
-                        <th class="p-3">Planilla</th>
-                        <th class="p-3">Cliente</th>
-                        <th class="p-3">Valor Declarado</th>
-                        <th class="p-3">Valor Contado</th>
-                        <th class="p-3">Discrep.</th>
-                        <th class="p-3">Operador</th>
-                        <th class="p-3">Fecha Conteo</th>
-                        <th class="p-3">Obs. Operador</th>
-                    </tr>
-                </thead>
-                <tbody id="digitador-operator-history-tbody">
-                    </tbody>
-            </table>
-        </div>
-    </div>
-</div>
-   
-
+                <div class="mb-8 flex space-x-2">
+                    <button id="btn-supervision-operador" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Abrir llegadas de Operador</button>
+                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
+                    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
+                    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
+                </div>
+                <div id="panel-supervision-operador" class="hidden">
+                    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
+                    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+                        <div class="overflow-auto max-h-[400px]">
+                            <table class="w-full text-sm text-left">
+                                <thead class="bg-gray-50 sticky top-0">
+                                    <tr>
+                                        <th class="p-3">Planilla</th>
+                                        <th class="p-3">Cliente</th>
+                                        <th class="p-3">Valor Declarado</th>
+                                        <th class="p-3">Valor Contado</th>
+                                        <th class="p-3">Discrep.</th>
+                                        <th class="p-3">Operador</th>
+                                        <th class="p-3">Fecha Conteo</th>
+                                        <th class="p-3">Obs. Operador</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="digitador-operator-history-tbody">
+                                    </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </div>
                 <div id="panel-cierre">
                      <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre por Fondo</h2>
                      <div class="bg-white p-6 rounded-xl shadow-lg"><h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre</h3><p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas ('Conforme') y proceder con el cierre.</p><div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div><h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4><div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto"></div></div><div><h4 class="font-semibold mb-2">2. Planillas a incluir</h4><div id="services-list-container" class="space-y-3"><p class="text-gray-500 text-sm">Seleccione un fondo.</p></div><button id="close-fund-button" onclick="closeFund()" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-teal-600 mt-4 hidden">Cerrar Fondo</button></div></div></div>
