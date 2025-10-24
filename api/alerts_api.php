@@ -132,22 +132,20 @@ if ($method === 'POST') {
         case 'Asignacion':
             $is_update = false;
             if ($task_id) {
-                // REASIGNACIÓN: Preservar la prioridad original si no se envía una nueva.
-                $final_priority = $priority; // Usar prioridad de la solicitud o default 'Media' como base.
-                if (!isset($data['priority'])) {
-                    // Si no se envió una prioridad, buscar la original en la BD.
-                    $stmt_get_prio = $conn->prepare("SELECT priority FROM tasks WHERE id = ?");
-                    if ($stmt_get_prio) {
-                        $stmt_get_prio->bind_param("i", $task_id);
-                        if ($stmt_get_prio->execute()) {
-                            $result = $stmt_get_prio->get_result();
-                            if ($row = $result->fetch_assoc()) {
-                                $final_priority = $row['priority']; // Sobrescribir con la prioridad original.
-                            }
+                // REASIGNACIÓN: Forzar siempre el uso de la prioridad original.
+                $original_priority = 'Media'; // Valor por defecto.
+                $stmt_get_prio = $conn->prepare("SELECT priority FROM tasks WHERE id = ?");
+                if ($stmt_get_prio) {
+                    $stmt_get_prio->bind_param("i", $task_id);
+                    if ($stmt_get_prio->execute()) {
+                        $result = $stmt_get_prio->get_result();
+                        if ($row = $result->fetch_assoc()) {
+                            $original_priority = $row['priority'];
                         }
-                        $stmt_get_prio->close();
                     }
+                    $stmt_get_prio->close();
                 }
+                $final_priority = $original_priority;
 
                 $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL, status = 'Pendiente', priority = ?, start_datetime = ?, end_datetime = ? WHERE id = ?");
                 if ($stmt) $stmt->bind_param("issssi", $user_id, $instruction, $final_priority, $start_datetime, $end_datetime, $task_id);
@@ -168,7 +166,7 @@ if ($method === 'POST') {
             if (!$title) { http_response_code(400); echo json_encode(['success' => false, 'error' => 'El título es requerido para tareas manuales individuales.']); break; }
             $stmt = $conn->prepare("INSERT INTO tasks (title, instruction, priority, assigned_to_user_id, type, start_datetime, end_datetime, created_by_user_id) VALUES (?, ?, ?, ?, 'Manual', ?, ?, ?)");
             if (!$stmt) { http_response_code(500); echo json_encode(['success' => false, 'error' => 'Error interno.']); break; }
-            $stmt->bind_param("sssissii", $title, $instruction, $priority, $user_id, $start_datetime, $end_datetime, $creator_id);
+            $stmt->bind_param("sssissi", $title, $instruction, $priority, $user_id, $start_datetime, $end_datetime, $creator_id);
             if ($stmt->execute()) { echo json_encode(['success' => true, 'message' => 'Tarea manual creada.']); } else { http_response_code(500); echo json_encode(['success' => false, 'error' => 'Error al ejecutar la consulta.']); }
             $stmt->close();
             break;
