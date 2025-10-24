@@ -349,7 +349,7 @@ $conn->close();
 
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
     <style>
-        /* ... (Estilos CSS idénticos al original) ... */
+
         html { font-size: 12px; }
         body { font-family: 'Inter', sans-serif; }
         .nav-tab { cursor: pointer; padding: 0.25rem 1rem; font-weight: 600; border-bottom: 3px solid transparent; transition: all 0.2s; white-space: nowrap; }
@@ -400,20 +400,64 @@ $conn->close();
         .notification-list { max-height: 16rem; overflow-y: auto; }
         .badge-count { display: flex; align-items: center; justify-content: center; height: 1.25rem; width: 1.25rem; border-radius: 9999px; color: white; font-size: 0.75rem; font-weight: 700; position: absolute; top: -0.5rem; right: -0.5rem; }
         /* Toast Notification Styles */
-        .toast { background-color: white; color: #333; padding: 1rem 1.5rem; border-radius: 0.375rem; box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); display: flex; align-items: center; justify-content: space-between; min-width: 250px; max-width: 400px; opacity: 0; transform: translateX(100%); transition: all 0.5s ease-in-out; border-left: 4px solid; }
-        .toast.show { opacity: 1; transform: translateX(0); }
-        .toast .toast-content { margin-right: 1rem; }
-        .toast .toast-title { font-weight: 600; margin-bottom: 0.25rem; }
-        .toast .toast-body { font-size: 0.875rem; color: #6b7280; }
-        .toast .toast-close { background: none; border: none; color: #9ca3af; font-size: 1.5rem; line-height: 1; cursor: pointer; padding: 0 0.5rem; }
-        .toast .toast-close:hover { color: #374151; }
-        /* Priority Colors */
-        .toast.toast-critica { border-left-color: #ef4444; }
-        .toast.toast-alta { border-left-color: #f97316; }
-        .toast.toast-media { border-left-color: #eab308; }
-        .toast.toast-baja { border-left-color: #6b7280; }
-        .toast.toast-success { border-left-color: #22c55e; }
-        .toast.toast-error { border-left-color: #ef4444; }
+.toast {
+    background-color: white;
+    color: #333;
+    padding: 1rem 1.5rem;
+    border-radius: 0.375rem; /* rounded-md */
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06); /* shadow-md */
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-width: 250px;
+    max-width: 400px;
+    opacity: 0;
+    transform: translateX(100%);
+    transition: all 0.5s ease-in-out;
+    border-left: 4px solid; /* Placeholder for priority color */
+}
+
+.toast.show {
+    opacity: 1;
+    transform: translateX(0);
+}
+
+.toast .toast-content {
+    margin-right: 1rem;
+}
+
+.toast .toast-title {
+    font-weight: 600; /* font-semibold */
+    margin-bottom: 0.25rem;
+}
+
+.toast .toast-body {
+    font-size: 0.875rem; /* text-sm */
+    color: #6b7280; /* text-gray-500 */
+}
+
+.toast .toast-close {
+    background: none;
+    border: none;
+    color: #9ca3af; /* text-gray-400 */
+    font-size: 1.5rem;
+    line-height: 1;
+    cursor: pointer;
+    padding: 0 0.5rem;
+}
+.toast .toast-close:hover {
+    color: #374151; /* text-gray-700 */
+}
+
+
+/* Priority Colors */
+.toast.toast-critica { border-left-color: #ef4444; /* red-500 */ }
+.toast.toast-alta { border-left-color: #f97316; /* orange-500 */ }
+.toast.toast-media { border-left-color: #eab308; /* yellow-500 */ }
+.toast.toast-baja { border-left-color: #6b7280; /* gray-500 */ }
+.toast.toast-success { border-left-color: #22c55e; } /* green-500 */
+.toast.toast-error { border-left-color: #ef4444; } /* red-500 */
+
     </style>
 </head>
 <body class="bg-gray-100 text-gray-800">
@@ -472,7 +516,7 @@ $conn->close();
                             <div id="task-notifications-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
                                 <?php if(empty($panel_high_priority_items)): ?> <p class="text-sm text-gray-500">No hay alertas prioritarias.</p>
                                 <?php else: foreach($panel_high_priority_items as $item): $color_class = $item['current_priority'] === 'Critica' ? 'red' : 'orange'; ?>
-                                <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm" data-alert-id="<?php echo $item['id']; ?>">
+                                <div class="p-2 bg-<?php echo $color_class; ?>-50 rounded-md border border-<?php echo $color_class; ?>-200 text-sm">
                                     <p class="font-semibold text-<?php echo $color_class; ?>-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
                                     <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
                                     <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-<?php echo $color_class; ?>-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
@@ -491,7 +535,7 @@ $conn->close();
                             <div id="medium-priority-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
                                <?php if(empty($panel_medium_priority_items)): ?> <p class="text-sm text-gray-500">No hay alertas de prioridad media.</p>
                                <?php else: foreach($panel_medium_priority_items as $item): ?>
-                                    <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm" data-alert-id="<?php echo $item['id']; ?>">
+                                    <div class="p-2 bg-yellow-50 rounded-md border border-yellow-200 text-sm">
                                         <p class="font-semibold text-yellow-800"><?php echo htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?><?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span><?php endif; ?></p>
                                         <p class="text-gray-700 text-xs mt-1"><?php echo htmlspecialchars($item['item_type'] === 'manual_task' ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
                                         <?php if ($_SESSION['user_role'] === 'Admin'): if (!empty($item['assigned_to_group'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></p><?php elseif (!empty($item['assigned_names'])): ?><p class="text-xs text-blue-700 font-bold mt-1 pt-1 border-t border-yellow-200">Asignada a: <?php echo htmlspecialchars($item['assigned_names']); ?></p><?php endif; endif; ?>
@@ -502,42 +546,42 @@ $conn->close();
                    </div>
                    <div class="relative">
                             <button id="reminders-button" onclick="togglePanel('reminders-panel')" class="relative text-gray-500 hover:text-gray-700">
-                                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
-                                <span id="reminders-badge" class="absolute -top-2 -right-2 flex items-center justify-content: center; h-5 w-5 rounded-full bg-blue-500 text-white text-xs font-bold hidden"></span>
-                            </button>
-                            <div id="reminders-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
-                                <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
-                                <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
-                                   <?php if(empty($user_reminders)): ?>
-                                       <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
-                                   <?php else: ?>
-                                       <?php foreach($user_reminders as $reminder): ?>
-                                            <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
-                                                <div class="flex justify-between items-start">
-                                                    <div>
-                                                        <p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p>
-                                                        <p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p>
-                                                        <p class="text-xs text-blue-600 mt-1">Enviado por: <?php echo htmlspecialchars($reminder['creator_name'] ?? 'Desconocido'); ?></p>
-                                                    </div>
-                                                    <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
-                                                </div>
-                                            </div>
-                                       <?php endforeach; ?>
-                                   <?php endif; ?>
-                                </div>
-                            </div>
+    <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6 6 0 10-12 0v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"></path></svg>
+    <span id="reminders-badge" class="absolute -top-2 -right-2 flex items-center justify-center h-5 w-5 rounded-full bg-blue-500 text-white text-xs font-bold hidden"></span>
+</button>
+<div id="reminders-panel" class="absolute right-0 mt-2 w-80 bg-white rounded-lg shadow-xl p-4 hidden z-20">
+    <h4 class="font-bold text-gray-800 mb-2">Tus Recordatorios</h4>
+    <div id="reminders-list" class="space-y-2 max-h-64 overflow-y-auto notification-list">
+       <?php if(empty($user_reminders)): ?>
+           <p class="text-sm text-gray-500">No tienes recordatorios pendientes.</p>
+       <?php else: ?>
+           <?php foreach($user_reminders as $reminder): ?>
+                <div class="reminder-item p-2 bg-blue-50 rounded-md border border-blue-200 text-sm">
+                    <div class="flex justify-between items-start">
+                        <div>
+                            <p class="text-gray-700"><?php echo htmlspecialchars($reminder['message']); ?></p>
+                            <p class="text-xs text-gray-400 mt-1"><?php echo date('d M, h:i a', strtotime($reminder['created_at'])); ?></p>
+                            <p class="text-xs text-blue-600 mt-1">Enviado por: <?php echo htmlspecialchars($reminder['creator_name'] ?? 'Desconocido'); ?></p>
+                        </div>
+                        <button onclick="deleteReminder(<?php echo $reminder['id']; ?>, this)" class="text-red-400 hover:text-red-600 font-bold text-lg">&times;</button>
+                    </div>
+                </div>
+           <?php endforeach; ?>
+       <?php endif; // <--- ¡Añade esta línea! ?>
+    </div>
+</div>
                    </div>
                </div>
                <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                <div class="mt-2 flex flex-wrap justify-start sm:justify-end space-x-2 sm:space-x-4">
-                   <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?><button id="tab-checkinero-btn" class="header-panel-button nav-checkinero shadow-sm" onclick="switchTab('checkinero')">Panel Check-in</button><?php endif; ?>
-                   <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?><button id="tab-operador-btn" class="header-panel-button nav-operador shadow-sm" onclick="switchTab('operador')">Panel Operador</button><?php endif; ?>
-                   <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?><button id="tab-digitador-btn" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button><?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Checkinero', 'Admin'])): ?><button id="tab-checkinero" class="header-panel-button nav-checkinero shadow-sm" onclick="switchTab('checkinero')">Panel Check-in</button><?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Operador', 'Admin'])): ?><button id="tab-operador" class="header-panel-button nav-operador shadow-sm" onclick="switchTab('operador')">Panel Operador</button><?php endif; ?>
+                   <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?><button id="tab-digitador" class="header-panel-button nav-digitador shadow-sm" onclick="switchTab('digitador')">Panel Digitador</button><?php endif; ?>
                </div>
                <?php endif; ?>
                <div class="mt-2 text-sm font-mono text-blue-700 font-semibold p-2 bg-blue-100 border border-blue-300 rounded-md">
-                   Hora del Servidor (Prueba): <?php echo date('Y-m-d H:i:s T'); ?>
-               </div>
+    Hora del Servidor (Prueba): <?php echo date('Y-m-d H:i:s T'); ?>
+</div>
                </div>
        </header>
 
@@ -577,41 +621,49 @@ $conn->close();
                                 $is_manual = $item['item_type'] === 'manual_task';
                                 $is_group_task = !empty($item['assigned_to_group']);
                                 $assigned_names = $item['assigned_names'] ?? null;
-                                $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id'];
+                                $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                 $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
-                                $form_id_prefix = $task_id_to_use; // <- Prefijo original (número)
-                                // --- Lógica $can_complete original ---
-                                $is_admin = $current_user_role === 'Admin';
-                                $is_assigned_individually = !empty($item['user_task_id']);
-                                $is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
-                                $user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
-                                $task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica']))
-                                                   || !isset($item['task_status']);
-                                $can_complete = $user_can_act && $task_is_active;
-                                // --- Fin Lógica $can_complete original ---
+                                $form_id_prefix = $task_id_to_use;
+                                // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
+                                // --- INICIO: Lógica Corregida para $can_complete ---
+// --- INICIO: Lógica Corregida para $can_complete (v2) ---
+$is_admin = $current_user_role === 'Admin';
+$is_assigned_individually = !empty($item['user_task_id']);
+$is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
+
+// El usuario puede completar si es Admin O la tarea es suya (individual o grupo)
+$user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
+
+// La tarea se considera "activa" si:
+// 1. Es una tarea nueva con estado Pendiente
+// 2. Es una alerta vieja sin tarea (task_status es NULL), la cual tratamos como pendiente
+$task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica']))
+                   || !isset($item['task_status']);
+
+$can_complete = $user_can_act && $task_is_active;
+// --- FIN: Lógica Corregida para $can_complete (v2) ---
+// --- FIN: Lógica Corregida para $can_complete ---
+                                // --- FIN CAMBIO ---
                                 $priority_to_use = $item['current_priority'];
                                 $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
                                 $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
                             ?>
                             <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
                                 <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
-                                     <div class="flex justify-between items-start">
+                                    <div class="flex justify-between items-start">
                                         <p class="font-semibold <?php echo $color['text']; ?> text-lg">
                                             <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?>
                                             <?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span> <?php endif; ?>
                                             <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
                                         </p>
                                         <?php if ($can_complete): ?>
-                                            {/* Original */}
                                             <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300 ml-auto" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
                                          <?php endif; ?>
                                     </div>
                                     <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
                                     <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
-                                         {/* Original */}
                                          <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                         {/* Original */}
                                         <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
                                         <div class="flex-grow text-right text-sm">
                                             <?php if($is_group_task): ?> <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
@@ -620,7 +672,6 @@ $conn->close();
                                         </div>
                                     </div>
                                 </div>
-                                {/* Formularios desplegables Originales */}
                                 <div id="complete-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                     <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
                                     <textarea id="resolution-note-<?php echo $form_id_prefix; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
@@ -639,7 +690,8 @@ $conn->close();
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
-                        <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
+
+                       <div class="bg-white p-6 rounded-xl shadow-sm mt-8">
                          <h2 class="text-lg font-semibold mb-4 text-gray-900">Recaudos del Día</h2>
                          <div class="overflow-x-auto"><table class="w-full text-sm text-left"><thead class="text-xs text-gray-500 uppercase bg-gray-50"><tr><th class="px-6 py-3">Planilla</th><th class="px-6 py-3">Fondo</th><th class="px-6 py-3">Cliente</th><th class="px-6 py-3">Operador</th><th class="px-6 py-3">Digitador</th><th class="px-6 py-3">Hora</th><th class="px-6 py-3">Monto</th><th class="px-6 py-3">Estado</th><th class="px-6 py-3"></th></tr></thead><tbody id="recaudos-tbody"><?php if (empty($today_collections)): ?><tr><td colspan="9" class="px-6 py-4 text-center text-gray-500">No hay recaudos hoy.</td></tr><?php else: ?><?php foreach ($today_collections as $recaudo): ?><?php $status_badge = ''; switch ($recaudo['final_status']) { case 'Conforme': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-green-100 text-green-800">Conforme</span>'; break; case 'Cerrado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-blue-100 text-blue-800">Cerrado</span>'; break; case 'Rechazado': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-red-100 text-red-800">Rechazado</span>'; break; case 'En Revisión (Digitador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-yellow-100 text-yellow-800">En Revisión</span>'; break; case 'Pendiente (Operador)': $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">Pendiente</span>'; break; default: $status_badge = '<span class="text-xs font-medium px-2.5 py-1 rounded-full bg-gray-100 text-gray-800">' . htmlspecialchars($recaudo['final_status']) . '</span>'; break; } ?><tr class="border-b"><td class="px-6 py-4 font-mono"><?php echo htmlspecialchars($recaudo['invoice_number']); ?></td><td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['fund_name'] ?? 'N/A'); ?></td><td class="px-6 py-4 font-medium"><?php echo htmlspecialchars($recaudo['client_name']); ?></td><td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['operator_name']); ?></td><td class="px-6 py-4"><?php echo htmlspecialchars($recaudo['digitador_name'] ?? 'N/A'); ?></td><td class="px-6 py-4 text-xs"><?php echo date('h:i a', strtotime($recaudo['created_at'])); ?></td><td class="px-6 py-4 font-mono"><?php echo '$' . number_format($recaudo['total_counted'], 0, ',', '.'); ?></td><td class="px-6 py-4"><?php echo $status_badge; ?></td><td class="px-6 py-4 text-right"><button onclick="toggleBreakdown(<?php echo $recaudo['id']; ?>)" class="text-blue-600 text-xs font-semibold">Desglose</button></td></tr><tr class="details-row hidden" id="breakdown-row-<?php echo $recaudo['id']; ?>"><td colspan="9" class="p-0"><div id="breakdown-content-<?php echo $recaudo['id']; ?>" class="cash-breakdown bg-gray-50"><div class="p-4 grid grid-cols-3 sm:grid-cols-4 md:grid-cols-7 gap-x-8 gap-y-2 text-xs"><span><strong>$100.000:</strong> <?php echo number_format($recaudo['bills_100k'] ?? 0); ?></span><span><strong>$50.000:</strong> <?php echo number_format($recaudo['bills_50k'] ?? 0); ?></span><span><strong>$20.000:</strong> <?php echo number_format($recaudo['bills_20k'] ?? 0); ?></span><span><strong>$10.000:</strong> <?php echo number_format($recaudo['bills_10k'] ?? 0); ?></span><span><strong>$5.000:</strong> <?php echo number_format($recaudo['bills_5k'] ?? 0); ?></span><span><strong>$2.000:</strong> <?php echo number_format($recaudo['bills_2k'] ?? 0); ?></span><span class="font-bold">Monedas: <?php echo '$' . number_format($recaudo['coins'] ?? 0, 0, ',', '.'); ?></span></div></div></td></tr><?php endforeach; ?><?php endif; ?></tbody></table></div>
                     </div>
@@ -664,15 +716,23 @@ $conn->close();
                                         $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                         $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
                                         $form_id_prefix = "np-" . $task_id_to_use;
-                                        // --- Lógica $can_complete (idéntica a la original) ---
-                                        $is_admin = $current_user_role === 'Admin';
-                                        $is_assigned_individually = !empty($item['user_task_id']);
-                                        $is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
-                                        $user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
-                                        $task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica']))
-                                                           || !isset($item['task_status']);
-                                        $can_complete = $user_can_act && $task_is_active;
-                                        // --- Fin Lógica $can_complete ---
+                                        // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
+// --- INICIO: Lógica Corregida para $can_complete (v2) ---
+$is_admin = $current_user_role === 'Admin';
+$is_assigned_individually = !empty($item['user_task_id']);
+$is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
+
+// El usuario puede completar si es Admin O la tarea es suya (individual o grupo)
+$user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
+
+// La tarea se considera "activa" si:
+// 1. Es una tarea nueva con estado Pendiente
+// 2. Es una alerta vieja sin tarea (task_status es NULL), la cual tratamos como pendiente
+$task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica']))
+                   || !isset($item['task_status']);
+
+$can_complete = $user_can_act && $task_is_active;
+// --- FIN: Lógica Corregida para $can_complete (v2) ---                                        // --- FIN CAMBIO ---
                                         $priority_to_use = $item['current_priority'];
                                         $color_map = ['Media' => ['bg' => 'bg-yellow-100', 'border' => 'border-yellow-400', 'text' => 'text-yellow-800', 'badge' => 'bg-yellow-200'],'Baja'  => ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200']];
                                         $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
@@ -723,7 +783,9 @@ $conn->close();
                         </div>
                     </div>
                 </div>
-           </div> <div id="content-checkinero" class="hidden">
+           </div>
+
+            <div id="content-checkinero" class="hidden">
                 <h2 class="text-2xl font-bold text-gray-900 mb-6">Módulo de Check-in</h2>
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-8">
                     <div class="bg-white p-6 rounded-xl shadow-lg">
@@ -732,24 +794,39 @@ $conn->close();
                              <input type="hidden" id="check_in_id_field">
                             <div class="grid grid-cols-1 md:grid-cols-2 gap-4"><div><label for="invoice_number" class="block text-sm font-medium">Nro Planilla</label><input type="text" id="invoice_number" required class="mt-1 w-full p-2 border rounded-md"></div><div><label for="seal_number" class="block text-sm font-medium">Nro Sello</label><input type="text" id="seal_number" required class="mt-1 w-full p-2 border rounded-md"></div></div>
                             <div><label for="client_id" class="block text-sm font-medium">Cliente</label><select id="client_id" required class="mt-1 w-full p-2 border rounded-md"><option value="">Seleccione...</option><?php foreach($all_clients as $client): ?><option value="<?php echo $client['id']; ?>"><?php echo htmlspecialchars($client['name']) . ' (NIT: ' . htmlspecialchars($client['nit'] ?? 'N/A') . ')'; ?></option><?php endforeach; ?></select></div>
-                            <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                <div><label for="route_id" class="block text-sm font-medium">Ruta</label><select id="route_id" required class="mt-1 w-full p-2 border rounded-md"><option value="">Seleccione...</option><?php foreach($all_routes as $route): ?><option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option><?php endforeach; ?></select></div>
-                                <div><label class="block text-sm font-medium text-gray-700">Fondo</label><span id="fund_display" class="mt-1 block w-full p-2 border border-gray-300 rounded-md bg-gray-100 text-gray-600 italic">Seleccione un cliente...</span><input type="hidden" id="fund_id_hidden" name="fund_id"></div>
-                            </div>
-                            <div><label for="declared_value" class="block text-sm font-medium">Valor Declarado</label><input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md"></div>
+
+<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+    <div>
+        <label for="route_id" class="block text-sm font-medium">Ruta</label>
+        <select id="route_id" required class="mt-1 w-full p-2 border rounded-md">
+            <option value="">Seleccione...</option>
+            <?php foreach($all_routes as $route): ?>
+                <option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option>
+            <?php endforeach; ?>
+        </select>
+    </div>
+    <div>
+        <label class="block text-sm font-medium text-gray-700">Fondo</label>
+        <span id="fund_display" class="mt-1 block w-full p-2 border border-gray-300 rounded-md bg-gray-100 text-gray-600 italic">
+            Seleccione un cliente...
+        </span>
+        <input type="hidden" id="fund_id_hidden" name="fund_id">
+    </div>
+</div>
+
+                                <div><label for="declared_value" class="block text-sm font-medium">Valor Declarado</label><input type="number" step="0.01" id="declared_value" required class="mt-1 w-full p-2 border rounded-md"></div>
                              <div id="checkin-form-buttons" class="flex space-x-4 pt-4">
                                 <button type="submit" id="checkin-submit-button" class="w-full bg-green-600 text-white font-bold py-3 rounded-md hover:bg-green-700">Agregar Check-in</button>
                             </div>
                         </form>
                     </div>
+
                     <div class="bg-white p-6 rounded-xl shadow-lg">
                         <h3 class="text-xl font-semibold mb-4">Últimos Check-ins Registrados</h3>
                         <div class="overflow-auto max-h-[600px]">
                             <table class="w-full text-sm text-left">
                              <thead class="bg-gray-50 sticky top-0">
-                                 </thead>
-                             <tbody id="checkins-table-body">
-                                </tbody>
+                                <tbody id="checkins-table-body"></tbody>
                             </table>
                         </div>
                     </div>
@@ -769,125 +846,56 @@ $conn->close();
 
             <?php if (in_array($_SESSION['user_role'], ['Digitador', 'Admin'])): ?>
             <div id="content-digitador" class="hidden">
-
-                <div class="max-w-4xl mx-auto mb-8 space-y-4"> {/* Contenedor para centrar y espaciar */}
-                    <h2 class="text-xl font-bold text-gray-900 text-center">Alertas y Tareas Prioritarias (Digitador)</h2> {/* Título centrado */}
-                    <?php if (empty($main_priority_items)): ?>
-                        <p class="text-sm text-gray-500 bg-white p-4 rounded-lg shadow-sm">No hay items prioritarios pendientes.</p>
-                    <?php else: foreach ($main_priority_items as $item): ?>
-                        <?php
-                            // ... (lógica PHP idéntica a la original para obtener datos del item) ...
-                            $is_manual = $item['item_type'] === 'manual_task';
-                            $is_group_task = !empty($item['assigned_to_group']);
-                            $assigned_names = $item['assigned_names'] ?? null;
-                            $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id'];
-                            $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
-                            $form_id_prefix = $task_id_to_use; // <- Prefijo original (número)
-                            // --- Lógica $can_complete (idéntica a la original) ---
-                            $is_admin = $current_user_role === 'Admin';
-                            $is_assigned_individually = !empty($item['user_task_id']);
-                            $is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
-                            $user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
-                            $task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica']))
-                                               || !isset($item['task_status']);
-                            $can_complete = $user_can_act && $task_is_active;
-                            // --- Fin Lógica $can_complete ---
-                            $priority_to_use = $item['current_priority'];
-                            $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
-                            $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
-                        ?>
-                        <div class="bg-white rounded-lg shadow-md overflow-hidden task-card" data-task-id="<?php echo $task_id_to_use; ?>">
-                            <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
-                                <div class="flex justify-between items-start">
-                                    <p class="font-semibold <?php echo $color['text']; ?> text-lg">
-                                        <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?>
-                                        <?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span> <?php endif; ?>
-                                        <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
-                                    </p>
-                                    <?php if ($can_complete): ?>
-                                         {/* MODIFICADO */}
-                                        <button onclick="toggleForm('complete-form-digitador-<?php echo $form_id_prefix; ?>', this)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300 ml-auto" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
-                                     <?php endif; ?>
-                                </div>
-                                <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
-                                <div class="mt-4 flex items-center space-x-4 border-t pt-3">
-                                      {/* MODIFICADO */}
-                                     <button onclick="toggleForm('assign-form-digitador-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
-                                      {/* MODIFICADO */}
-                                    <button onclick="toggleForm('reminder-form-digitador-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
-                                    <div class="flex-grow text-right text-sm">
-                                        <?php if($is_group_task): ?> <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
-                                        <?php elseif (!empty($assigned_names)): ?> <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
-                                        <?php else: ?> <span class="font-semibold text-gray-500">Pendiente de Asignación</span> <?php endif; ?>
-                                    </div>
-                                </div>
-                            </div>
-                            {/* Formularios desplegables con IDs MODIFICADOS */}
-                            <div id="complete-form-digitador-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
-                                <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
-                                <textarea id="resolution-note-digitador-<?php echo $form_id_prefix; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
-                                <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, 'digitador-<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
-                            </div>
-                            <div id="assign-form-digitador-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
-                                 <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
-                                 <select id="assign-user-digitador-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><optgroup label="Grupos"><option value="group-todos">Todos</option><option value="group-Operador">Operadores</option><option value="group-Checkinero">Checkineros</option><option value="group-Digitador">Digitadores</option></optgroup><optgroup label="Individuales"><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option><?php endforeach; ?></optgroup></select>
-                                 <textarea id="task-instruction-digitador-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                 <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, 'digitador-<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
-                            </div>
-                            <div id="reminder-form-digitador-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
-                                 <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
-                                 <select id="reminder-user-digitador-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><option value="">Seleccione usuario...</option><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option><?php endforeach; ?></select>
-                                 <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, 'digitador-<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
-                            </div>
-                        </div>
-                    <?php endforeach; endif; ?>
-                </div>
                 <div class="flex justify-between items-center mb-6">
                     <h2 class="text-2xl font-bold text-gray-900">Módulo de Digitador: Gestión de Cierre e Informes</h2>
                 </div>
-                <div class="mb-8 flex space-x-2">
-                    <button id="btn-supervision-operador" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Abrir llegadas de Operador</button>
-                    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
-                    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
-                    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
-                </div>
-                <div id="panel-supervision-operador" class="hidden">
-                    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
-                    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
-                        <div class="overflow-auto max-h-[400px]">
-                            <table class="w-full text-sm text-left">
-                                <thead class="bg-gray-50 sticky top-0">
-                                    <tr>
-                                        <th class="p-3">Planilla</th>
-                                        <th class="p-3">Cliente</th>
-                                        <th class="p-3">Valor Declarado</th>
-                                        <th class="p-3">Valor Contado</th>
-                                        <th class="p-3">Discrep.</th>
-                                        <th class="p-3">Operador</th>
-                                        <th class="p-3">Fecha Conteo</th>
-                                        <th class="p-3">Obs. Operador</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="digitador-operator-history-tbody">
-                                    </tbody>
-                            </table>
-                        </div>
-                    </div>
-                </div>
+                            <div class="mb-8 flex space-x-2">
+    <button id="btn-supervision-operador" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Abrir llegadas de Operador</button>
+
+    <button id="btn-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-blue-600 text-white">Gestión de Cierre</button>
+    <button id="btn-historial-cierre" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Historial de Cierres</button>
+    <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
+</div>
+<div id="panel-supervision-operador" class="hidden">
+    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
+    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
+        <div class="overflow-auto max-h-[400px]">
+            <table class="w-full text-sm text-left">
+                <thead class="bg-gray-50 sticky top-0">
+                    <tr>
+                        <th class="p-3">Planilla</th>
+                        <th class="p-3">Cliente</th>
+                        <th class="p-3">Valor Declarado</th>
+                        <th class="p-3">Valor Contado</th>
+                        <th class="p-3">Discrep.</th>
+                        <th class="p-3">Operador</th>
+                        <th class="p-3">Fecha Conteo</th>
+                        <th class="p-3">Obs. Operador</th>
+                    </tr>
+                </thead>
+                <tbody id="digitador-operator-history-tbody">
+                    </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+
                 <div id="panel-cierre">
                      <h2 class="text-2xl font-bold text-gray-900 mb-6">Gestión de Cierre por Fondo</h2>
                      <div class="bg-white p-6 rounded-xl shadow-lg"><h3 class="text-xl font-semibold mb-4 text-gray-900">Proceso de Cierre</h3><p class="text-sm text-gray-500 mb-4">Seleccione un fondo para ver las planillas aprobadas ('Conforme') y proceder con el cierre.</p><div class="grid grid-cols-1 md:grid-cols-2 gap-6"><div><h4 class="font-semibold mb-2">1. Fondos listos para cerrar</h4><div id="funds-list-container" class="space-y-2 max-h-96 overflow-y-auto"></div></div><div><h4 class="font-semibold mb-2">2. Planillas a incluir</h4><div id="services-list-container" class="space-y-3"><p class="text-gray-500 text-sm">Seleccione un fondo.</p></div><button id="close-fund-button" onclick="closeFund()" class="w-full bg-teal-500 text-white font-semibold py-2 px-4 rounded-md hover:bg-teal-600 mt-4 hidden">Cerrar Fondo</button></div></div></div>
                 </div>
+
                  <div id="panel-historial-cierre" class="hidden">
                     <h2 class="text-2xl font-bold text-gray-900 mb-6">Historial de Planillas Revisadas/Cerradas</h2>
                     <div class="bg-white p-6 rounded-xl shadow-lg mt-8"><h3 class="text-xl font-semibold mb-4">Historial</h3><div class="overflow-auto max-h-[700px]"><table class="w-full text-sm text-left"><thead class="bg-gray-50 sticky top-0"><tr><th class="p-3">Planilla</th><th class="p-3">Fondo</th><th class="p-3">Cierre</th><th class="p-3">Total Rec.</th><th class="p-3">Discrep.</th><th class="p-3">Estado</th><th class="p-3">Obs.</th><?php if (in_array($_SESSION['user_role'], ['Admin', 'Digitador'])): ?><th class="p-3">Cerrada por</th><?php endif; ?><th class="p-3">Acciones</th></tr></thead><tbody id="digitador-closed-history-body"></tbody></table></div></div>
                 </div>
+
                 <div id="panel-informes" class="hidden">
                     <h2 class="text-2xl font-bold text-gray-900 mb-6">Generar Informes</h2>
                     <div class="bg-white p-6 rounded-xl shadow-lg"><h3 class="text-xl font-semibold mb-4 text-gray-900">Informes por Fondo (PDF)</h3><p class="text-sm text-gray-500 mb-4">Seleccione un fondo cerrado para generar el informe PDF.</p><div class="overflow-auto max-h-[500px]"><table class="w-full text-sm"><thead class="bg-gray-50 sticky top-0"><tr><th class="p-3 text-left">Fondo</th><th class="p-3 text-left">Cliente</th><th class="p-3 text-left">Fecha Cierre</th><th class="p-3 text-center">Acción</th></tr></thead><tbody id="informes-table-body"></tbody></table></div></div>
                 </div>
-                 </div>
+            </div>
             <?php endif; ?>
 
             <div id="content-mi-historial" class="hidden">
@@ -905,8 +913,6 @@ $conn->close();
             <?php endif; ?>
         </main>
     </div>
-
-  
 
     <script>
 

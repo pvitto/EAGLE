@@ -37,6 +37,9 @@ if ($method === 'DELETE') {
 // --- Manejo POST para Tareas y Recordatorios ---
 if ($method === 'POST') {
     $data = json_decode(file_get_contents('php://input'), true);
+    // --- LOGGING ---
+    error_log("alerts_api.php received data: " . print_r($data, true));
+    // --- END LOGGING ---
     if (json_last_error() !== JSON_ERROR_NONE) { http_response_code(400); echo json_encode(['success' => false, 'error' => 'JSON inválido en la solicitud: ' . json_last_error_msg()]); exit; }
 
     // Extraer datos de forma segura
@@ -132,6 +135,8 @@ if ($method === 'POST') {
         case 'Asignacion':
             // Esta lógica ahora maneja la creación de tareas desde alertas Y la reasignación de CUALQUIER tarea.
             $is_update = !empty($task_id);
+            error_log("Reassignment check: is_update = " . ($is_update ? 'true' : 'false') . ", task_id = " . $task_id);
+
 
             if ($is_update) {
                 // --- REASIGNACIÓN ---
@@ -146,11 +151,14 @@ if ($method === 'POST') {
                     }
                     $stmt_get_prio->close();
                 }
+                error_log("Reassignment: Original priority fetched as: " . $original_priority);
+
 
                 // 2. Preparar la actualización. No se toca 'created_at'.
+                error_log("Reassignment: Preparing UPDATE with user_id=$user_id, instruction=$instruction, priority=$original_priority, task_id=$task_id");
                 $stmt = $conn->prepare("UPDATE tasks SET assigned_to_user_id = ?, instruction = ?, assigned_to_group = NULL, status = 'Pendiente', priority = ? WHERE id = ?");
                 if ($stmt) {
-                    $stmt->bind_param("issii", $user_id, $instruction, $original_priority, $task_id);
+                    $stmt->bind_param("issi", $user_id, $instruction, $original_priority, $task_id);
                 }
             } else if ($alert_id) {
                 // --- CREACIÓN DESDE ALERTA (sin cambios) ---

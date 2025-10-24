@@ -39,6 +39,7 @@ try {
         LEFT JOIN check_ins ci ON a.check_in_id = ci.id
         WHERE a.status IN ('Pendiente', 'Asignada') {$alert_filter}
         GROUP BY a.id
+        ORDER BY FIELD(a.priority, 'Critica', 'Alta', 'Media', 'Baja'), a.created_at DESC
     ";
     $alerts_result = $conn->query($alerts_sql);
     if ($alerts_result) {
@@ -55,6 +56,7 @@ try {
         LEFT JOIN users u ON t.assigned_to_user_id = u.id
         WHERE t.alert_id IS NULL AND t.type = 'Manual' AND t.status = 'Pendiente' {$task_filter}
         GROUP BY IF(t.assigned_to_group IS NOT NULL, CONCAT(t.title, t.assigned_to_group, t.created_at), t.id)
+        ORDER BY FIELD(t.priority, 'Critica', 'Alta', 'Media', 'Baja'), t.created_at DESC
     ";
     $manual_tasks_result = $conn->query($manual_tasks_sql);
     if ($manual_tasks_result) {

@@ -1,5 +1,5 @@
 <?php
-
+<?php
 // api/realtime/realtime_alerts_api.php
 
 require dirname(__DIR__, 2) . '/config.php';
