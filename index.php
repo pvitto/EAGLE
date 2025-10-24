@@ -1593,15 +1593,19 @@ async function handleCheckinSubmit(event) {
                 // Forzar un sondeo inmediato de alertas para mostrar el toast de discrepancia
                 pollAlerts();
 
-                // Actualizar la tabla del historial dinámicamente
+                // Actualizar la tabla del historial dinámicamente SIN recargar
                 try {
                     const historyResponse = await fetch('api/operator_api.php?action=get_history');
                     const historyResult = await historyResponse.json();
-                    if (historyResult.success) {
+                    if (historyResult.success && historyResult.history) {
                         populateOperatorHistoryTable(historyResult.history);
+                        // Adicionalmente, actualizar la tabla del digitador si está visible
+                        if(document.getElementById('digitador-operator-history-tbody')) {
+                           populateDigitadorOperatorHistoryTable(historyResult.history);
+                        }
                     }
                 } catch (historyError) {
-                    console.error('Error actualizando el historial:', historyError);
+                    console.error('Error actualizando el historial dinámicamente:', historyError);
                 }
 
             } else {
