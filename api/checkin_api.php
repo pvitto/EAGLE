@@ -32,13 +32,13 @@ if ($method === 'POST') {
     $declared_value = isset($data['declared_value']) ? filter_var($data['declared_value'], FILTER_VALIDATE_FLOAT, ['options' => ['default' => 0]]) : 0;
     $fund_id = isset($data['fund_id']) ? filter_var($data['fund_id'], FILTER_VALIDATE_INT, ['options' => ['default' => null]]) : null;
     $client_id = isset($data['client_id']) ? filter_var($data['client_id'], FILTER_VALIDATE_INT, ['options' => ['default' => null]]) : null;
-    $route_id = isset($data['route_id']) ? filter_var($data['route_id'], FILTER_VALIDATE_INT, ['options' => ['default' => null]]) : null;
+    $client_site_id = isset($data['client_site_id']) ? filter_var($data['client_site_id'], FILTER_VALIDATE_INT, ['options' => ['default' => null]]) : null;
 
     // --- CORRECCIÓN: Se quitó check_in_id de aquí, ya no se edita ---
 
-    if (empty($invoice_number) || empty($seal_number) || empty($declared_value) || empty($client_id) || empty($route_id) || empty($fund_id)) {
+    if (empty($invoice_number) || empty($seal_number) || empty($declared_value) || empty($client_id) || empty($client_site_id) || empty($fund_id)) {
         http_response_code(400); // Bad Request
-        echo json_encode(['success' => false, 'error' => 'Todos los campos (Planilla, Sello, Valor, Cliente, Ruta, Fondo) son requeridos.']);
+        echo json_encode(['success' => false, 'error' => 'Todos los campos (Planilla, Sello, Valor, Cliente, Sede, Fondo) son requeridos.']);
         $conn->close();
         exit;
     }
@@ -76,7 +76,7 @@ if ($method === 'POST') {
 
 
     // --- LÓGICA DE CREACIÓN (Ahora es la única) ---
-    $stmt = $conn->prepare("INSERT INTO check_ins (invoice_number, seal_number, declared_value, fund_id, client_id, route_id, checkinero_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'Pendiente')");
+    $stmt = $conn->prepare("INSERT INTO check_ins (invoice_number, seal_number, declared_value, fund_id, client_id, client_site_id, checkinero_id, status) VALUES (?, ?, ?, ?, ?, ?, ?, 'Pendiente')");
     $message = 'Check-in registrado con éxito.';
     $new_checkin_id = null; // Para guardar el ID del nuevo registro
 
@@ -88,7 +88,7 @@ if ($method === 'POST') {
         exit;
     }
 
-    $stmt->bind_param("ssdiisi", $invoice_number, $seal_number, $declared_value, $fund_id, $client_id, $route_id, $checkinero_id);
+    $stmt->bind_param("ssdiisi", $invoice_number, $seal_number, $declared_value, $fund_id, $client_id, $client_site_id, $checkinero_id);
 
     if ($stmt->execute()) {
         $new_checkin_id = $stmt->insert_id; // Obtener el ID del registro recién insertado

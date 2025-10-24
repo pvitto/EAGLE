@@ -282,9 +282,6 @@ $cierres_pendientes_count = $cierres_pendientes_result->fetch_assoc()['total'] ?
 $all_clients = [];
 $clients_result = $conn->query("SELECT id, name, nit FROM clients ORDER BY name ASC");
 if ($clients_result) { while ($row = $clients_result->fetch_assoc()) { $all_clients[] = $row; } }
-$all_routes = [];
-$routes_result = $conn->query("SELECT id, name FROM routes ORDER BY name ASC");
-if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes[] = $row; } }
 
 // Checkins Iniciales (Checkinero y también base para realtime)
 
@@ -302,13 +299,14 @@ if ($routes_result) { while ($row = $routes_result->fetch_assoc()) { $all_routes
 $initial_checkins = [];
 $checkins_result = $conn->query("
     SELECT ci.id, ci.invoice_number, ci.seal_number, ci.declared_value, f.id as fund_id, f.name as fund_name,
-           ci.created_at, c.name as client_name, c.id as client_id, r.name as route_name, r.id as route_id, u.name as checkinero_name,
+           ci.created_at, c.name as client_name, c.id as client_id, u.name as checkinero_name,
+           site.name as site_name, site.address as site_address,
            ci.status, ci.correction_count, ci.digitador_status
     FROM check_ins ci
     JOIN clients c ON ci.client_id = c.id
-    JOIN routes r ON ci.route_id = r.id
     JOIN users u ON ci.checkinero_id = u.id
     LEFT JOIN funds f ON ci.fund_id = f.id
+    LEFT JOIN client_sites site ON ci.client_site_id = site.id
     WHERE ci.status IN ('Pendiente', 'Rechazado', 'Procesado', 'Discrepancia')
     ORDER BY ci.correction_count DESC, ci.created_at DESC
 ");
@@ -806,15 +804,12 @@ $can_complete = $user_can_act && $task_is_active;
                             <div><label for="client_id" class="block text-sm font-medium">Cliente</label><select id="client_id" required class="mt-1 w-full p-2 border rounded-md"><option value="">Seleccione...</option><?php foreach($all_clients as $client): ?><option value="<?php echo $client['id']; ?>"><?php echo htmlspecialchars($client['name']) . ' (NIT: ' . htmlspecialchars($client['nit'] ?? 'N/A') . ')'; ?></option><?php endforeach; ?></select></div>
 
 <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-    <div>
-        <label for="route_id" class="block text-sm font-medium">Ruta</label>
-        <select id="route_id" required class="mt-1 w-full p-2 border rounded-md">
-            <option value="">Seleccione...</option>
-            <?php foreach($all_routes as $route): ?>
-                <option value="<?php echo $route['id']; ?>"><?php echo htmlspecialchars($route['name']); ?></option>
-            <?php endforeach; ?>
-        </select>
-    </div>
+                                <div>
+                                    <label for="client_site_id" class="block text-sm font-medium">Sede</label>
+                                    <select id="client_site_id" required class="mt-1 w-full p-2 border rounded-md" disabled>
+                                        <option value="">Seleccione un cliente primero...</option>
+                                    </select>
+                                </div>
     <div>
         <label class="block text-sm font-medium text-gray-700">Fondo</label>
         <span id="fund_display" class="mt-1 block w-full p-2 border border-gray-300 rounded-md bg-gray-100 text-gray-600 italic">
@@ -1149,7 +1144,7 @@ try {
             invoice_number: document.getElementById('invoice_number').value,
             seal_number: document.getElementById('seal_number').value,
             client_id: document.getElementById('client_id').value,
-            route_id: document.getElementById('route_id').value,
+            client_site_id: document.getElementById('client_site_id').value,
             fund_id: document.getElementById('fund_id_hidden') ? document.getElementById('fund_id_hidden').value : null,
             declared_value: document.getElementById('declared_value').value
         };
@@ -1161,7 +1156,7 @@ try {
         }
         
         // Validación básica para campos vacíos
-        if (!payload.invoice_number || !payload.seal_number || !payload.client_id || !payload.route_id || !payload.declared_value) {
+        if (!payload.invoice_number || !payload.seal_number || !payload.client_id || !payload.client_site_id || !payload.declared_value) {
             showToast('Todos los campos son obligatorios.', 'error');
             return;
         }
@@ -1303,7 +1298,7 @@ function populateCheckinsTable(rows) {
       <td class="px-3 py-2 font-mono">${r.invoice_number || ''}</td>
       <td class="px-3 py-2 font-mono">${r.seal_number || ''}</td>
       <td class="px-3 py-2 font-mono">${Number(r.declared_value || 0).toLocaleString('es-CO')}</td>
-      <td class="px-3 py-2">${r.route_name || ''}</td>
+      <td class="px-3 py-2">${r.site_name || 'N/A'}</td>
       <td class="px-3 py-2 text-xs">${fecha}</td>
       <td class="px-3 py-2">${r.checkinero_name || ''}</td>
       <td class="px-3 py-2">${r.client_name || ''}</td>
@@ -1340,7 +1335,7 @@ tbody.innerHTML = `<tr><td colspan="${colspan}"class="px-6 py-4 text-center text
       <tr class="border-b">
         <td class="p-3 font-mono">${ci.invoice_number ?? ''}</td>
         <td class="p-3">${ci.client_name ?? ''}</td>
-        <td class="p-3">${ci.route_name ?? ''}</td>
+        <td class="p-3">${ci.site_name ?? 'N/A'}</td>
         <td class="p-3">${fund}</td>
         <td class="p-3">${ci.status}</td>
         <td class="p-3 text-xs">${dateTxt}</td>
@@ -2042,7 +2037,7 @@ async function handleCheckinSubmit(event) {
         <th class="p-2">Planilla</th>
         <th class="p-2">Sello</th>
         <th class="p-2">Declarado</th>
-        <th class="p-2">Ruta</th>
+        <th class="p-2">Sede</th>
         <th class="p-2">Fecha de Registro</th>
         <th class="p-2">Checkinero</th>
         <th class="p-2">Cliente</th>
@@ -2827,6 +2822,12 @@ async function pollAlerts() {
                      if (!clientSelect.hasAttribute('data-listener-added')) {
                         clientSelect.addEventListener('change', async () => {
                             const clientId = clientSelect.value;
+                            const siteSelect = document.getElementById('client_site_id');
+
+                            // Resetear y deshabilitar sedes al cambiar de cliente
+                            siteSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
+                            siteSelect.disabled = true;
+
                             fundDisplay.textContent = 'Cargando...';
                             fundDisplay.classList.add('italic');
                             if (fundIdHidden) fundIdHidden.value = '';
@@ -2834,6 +2835,27 @@ async function pollAlerts() {
                             if (!clientId) {
                                 fundDisplay.textContent = 'Seleccione un cliente...';
                                 return;
+                            }
+
+                            // --- Cargar Sedes ---
+                            try {
+                                const sitesResponse = await fetch(`api/sites_api.php?client_id=${clientId}`);
+                                if (!sitesResponse.ok) throw new Error('Error al cargar sedes');
+                                const sites = await sitesResponse.json();
+
+                                siteSelect.innerHTML = '<option value="">Seleccione una sede...</option>';
+                                if (sites.success && sites.data.length > 0) {
+                                    sites.data.forEach(site => {
+                                        const option = new Option(`${site.name} (${site.address})`, site.id);
+                                        siteSelect.add(option);
+                                    });
+                                    siteSelect.disabled = false;
+                                } else {
+                                    siteSelect.innerHTML = '<option value="">Este cliente no tiene sedes</option>';
+                                }
+                            } catch (e) {
+                                console.error('Error cargando sedes:', e);
+                                siteSelect.innerHTML = '<option value="">Error al cargar sedes</option>';
                             }
 
                             try {
