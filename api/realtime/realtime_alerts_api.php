@@ -1,15 +1,10 @@
 <?php
+<?php
 // api/realtime/realtime_alerts_api.php
-
-// --- RUTA DE REGISTRO LOCAL ---
-$log_file = __DIR__ . '/realtime_debug.log';
-file_put_contents($log_file, "Script start @ " . date('Y-m-d H:i:s') . "\n", FILE_APPEND);
 
 require dirname(__DIR__, 2) . '/config.php';
 require dirname(__DIR__, 2) . '/db_connection.php';
 header('Content-Type: application/json');
-
-$log_message = "--- Request @ " . date('Y-m-d H:i:s') . " ---\n";
 
 if (!isset($_SESSION['user_id'])) {
     http_response_code(401);
@@ -51,11 +46,6 @@ $sql = "
     LIMIT 10
 ";
 
-$log_message .= "Timestamp: " . $since_timestamp . " | DateTime: " . $since_datetime_string . "\n";
-$log_message .= "Role: " . $current_user_role . "\n";
-$log_message .= "SQL: " . preg_replace('/\s+/', ' ', $sql) . "\n";
-$log_message .= "Params: " . json_encode($params) . "\n";
-
 $stmt = $conn->prepare($sql);
 
 if ($stmt) {
@@ -78,21 +68,12 @@ if ($stmt) {
         }
     } else {
         error_log("Error executing realtime alerts query: " . $stmt->error);
-        $log_message .= "EXECUTION ERROR: " . $stmt->error . "\n";
     }
     $stmt->close();
 } else {
     error_log("Error preparing realtime alerts query: " . $conn->error);
-    $log_message .= "PREPARE ERROR: " . $conn->error . "\n";
 }
 $conn->close();
-
-$log_message .= "Alerts Found: " . count($new_alerts) . "\n";
-if (count($new_alerts) > 0) {
-    $log_message .= "Data: " . json_encode($new_alerts) . "\n";
-}
-$log_message .= "--------------------------------------\n\n";
-file_put_contents($log_file, $log_message, FILE_APPEND);
 
 echo json_encode([
     'success' => true,
