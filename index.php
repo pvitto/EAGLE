@@ -623,6 +623,7 @@ $conn->close();
                                 $assigned_names = $item['assigned_names'] ?? null;
                                 $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                 $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
+                                $task_id_for_reminder = $is_manual ? $task_id_to_use : ($item['task_id'] ?? 'null');
                                 $form_id_prefix = $task_id_to_use;
                                 // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
                                 // --- INICIO: Lógica Corregida para $can_complete ---
@@ -661,7 +662,7 @@ $can_complete = $user_can_act && $task_is_active;
                                          <?php endif; ?>
                                     </div>
                                     <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                    <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-priority="<?php echo htmlspecialchars($priority_to_use); ?>" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                                    <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                     <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                          <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                         <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -681,12 +682,12 @@ $can_complete = $user_can_act && $task_is_active;
                                      <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
                                      <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><optgroup label="Grupos"><option value="group-todos">Todos</option><option value="group-Operador">Operadores</option><option value="group-Checkinero">Checkineros</option><option value="group-Digitador">Digitadores</option></optgroup><optgroup label="Individuales"><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option><?php endforeach; ?></optgroup></select>
                                      <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                     <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                     <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>', <?php echo $is_manual ? 'true' : 'false'; ?>)" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                 </div>
                                 <div id="reminder-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                      <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
                                      <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><option value="">Seleccione usuario...</option><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option><?php endforeach; ?></select>
-                                     <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                                     <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_for_reminder; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
                                 </div>
                             </div>
                         <?php endforeach; endif; ?>
@@ -715,6 +716,7 @@ $can_complete = $user_can_act && $task_is_active;
                                         $assigned_names = $item['assigned_names'] ?? null;
                                         $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id']; // Usa el ID específico del usuario si existe
                                         $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
+                                        $task_id_for_reminder = $is_manual ? $task_id_to_use : ($item['task_id'] ?? 'null');
                                         $form_id_prefix = "np-" . $task_id_to_use;
                                         // --- CAMBIO: Condición para mostrar botón "Completar" (sin !$is_group_task) ---
 // --- INICIO: Lógica Corregida para $can_complete (v2) ---
@@ -750,7 +752,7 @@ $can_complete = $user_can_act && $task_is_active;
                                                  <?php endif; ?>
                                             </div>
                                             <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
-                                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-priority="<?php echo htmlspecialchars($priority_to_use); ?>" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
                                             <div class="mt-4 flex items-center space-x-4 border-t pt-3">
                                                  <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
                                                 <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
@@ -770,7 +772,7 @@ $can_complete = $user_can_act && $task_is_active;
                                             <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
                                             <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><optgroup label="Grupos"><option value="group-todos">Todos</option><option value="group-Operador">Operadores</option><option value="group-Checkinero">Checkineros</option><option value="group-Digitador">Digitadores</option></optgroup><optgroup label="Individuales"><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option><?php endforeach; ?></optgroup></select>
                                             <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
-                                            <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                                            <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>', <?php echo $is_manual ? 'true' : 'false'; ?>)" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
                                         </div>
                                         <div id="reminder-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
                                             <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
@@ -928,16 +930,33 @@ $can_complete = $user_can_act && $task_is_active;
     const digitadorClosedHistory = <?php echo json_encode($digitador_closed_history); ?>;
     const completedTasksData = <?php echo json_encode($completed_tasks); ?>;
     const userCompletedTasksData = <?php echo json_encode($user_completed_tasks); ?>;
+//let repeatingToasts = new Map(); // Guarda { intervalId, count, alertData } para toasts repetitivos
 let lastDiscrepancyIds = new Set();
 let lastDiscrepancyCount = 0;
 let discrepancySnapshotReady = false;
 
 function canSeeDiscrepancyToasts() {
   const role = (window.currentUserRole || '').toLowerCase();
-  return role === 'admin' || role === 'digitador';
+  return role === 'admin' || role === 'digitador' || role === 'digitadora';
 }
-// ===== Discrepancias: control anti-spam (simplificado para sesión actual) =====
-let seenDiscrepancyIdsThisSession = new Set();
+// ===== Discrepancias: control anti-spam / multi-pestaña (PÉGALO AQUÍ) =====
+// ===== Discrepancias: control anti-spam / multi-pestaña =====
+const DISCREP_LS_KEY = 'seen_discrepancy_ids_v1';
+const DISCREP_TTL_MS = 5 * 60 * 1000; // “olvida” IDs después de 5 minutos
+
+function loadSeenDiscrepFromLS() {
+  try {
+    const raw = localStorage.getItem(DISCREP_LS_KEY);
+    if (!raw) return { ids: [], ts: Date.now() };
+    const data = JSON.parse(raw);
+    // TTL: si expiró, resetea
+    if (!data.ts || (Date.now() - data.ts) > DISCREP_TTL_MS) return { ids: [], ts: Date.now() };
+    return data;
+  } catch { return { ids: [], ts: Date.now() }; }
+}
+function saveSeenDiscrepToLS(ids) {
+  try { localStorage.setItem(DISCREP_LS_KEY, JSON.stringify({ ids: Array.from(ids), ts: Date.now() })); } catch {}
+}
 
 // Sonido corto de alerta (WebAudio, no bloquea)
 function beepOnce() {
@@ -958,6 +977,14 @@ function beepOnce() {
 
 
 // (opcional, recomendado) hidratar estado al cargar
+try {
+  const boot = loadSeenDiscrepFromLS();
+  if (boot?.ids?.length) {
+    lastDiscrepancyIds = new Set(boot.ids);
+    lastDiscrepancyCount = boot.ids.length;
+  }
+} catch {}
+// Inicializa memoria desde localStorage al cargar
 try {
   const boot = loadSeenDiscrepFromLS();
   if (boot?.ids?.length) {
@@ -1324,7 +1351,7 @@ async function completeTask(taskId, formIdPrefix) {
         } catch (error) { console.error('Error completing task:', error); alert('Error de conexión.'); }
     }
 
-    async function submitAssignment(alertId, taskId, formIdPrefix) {
+    async function submitAssignment(alertId, taskId, formIdPrefix, isManualTask = false) {
         const assignSelect = document.getElementById(`assign-user-${formIdPrefix}`);
         const instructionTextarea = document.getElementById(`task-instruction-${formIdPrefix}`);
 
@@ -1342,17 +1369,12 @@ async function completeTask(taskId, formIdPrefix) {
              return;
         }
 
-        // --- CORRECCIÓN DEFINITIVA ---
-        // Si no hay alertId (es una tarea manual), se pasa null.
-        // El tipo SIEMPRE debe ser 'Asignacion' para esta función.
         let payload = {
             instruction: instruction,
-            type: 'Asignacion',
+            type: 'Asignacion', // Forzar siempre 'Asignacion' para este formulario.
             task_id: taskId,
-            alert_id: alertId || null // Asegurarse de que se envíe null si no hay alertId
+            alert_id: alertId
         };
-        // --- FIN CORRECIÓN ---
-
         if (selectedValue.startsWith('group-')) {
              payload.assign_to_group = selectedValue.replace('group-', '');
              delete payload.assign_to; // Asegurar que no se envíe asignación individual
@@ -1564,44 +1586,15 @@ async function handleCheckinSubmit(event) {
             const response = await fetch('api/operator_api.php', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
             const result = await response.json();
             if (result.success) {
-                showToast(result.message || 'Conteo guardado correctamente.', 'success');
-
-                // Ocultar panel y resetear formulario
-                document.getElementById('operator-panel').classList.add('hidden');
-                document.getElementById('consultation-form').reset();
-
-                // Forzar un sondeo inmediato de alertas para mostrar el toast de discrepancia
-                pollAlerts();
-
-                // Actualizar la tabla del historial dinámicamente SIN recargar
-                try {
-                    const historyResponse = await fetch('api/operator_api.php?action=get_history');
-                    const historyResult = await historyResponse.json();
-                    if (historyResult.success && historyResult.history) {
-                        populateOperatorHistoryTable(historyResult.history);
-                        if(document.getElementById('digitador-operator-history-tbody')) {
-                           populateDigitadorOperatorHistoryTable(historyResult.history);
-                        }
-
-                        // --- NUEVO: Eliminar la fila de la tabla de pendientes ---
-                        const checkInId = payload.check_in_id;
-                        const pendingRow = document.getElementById(`operator-pending-row-${checkInId}`);
-                        if (pendingRow) {
-                            pendingRow.remove();
-                        }
-                        // --- FIN NUEVO ---
-                    }
-                } catch (historyError) {
-                    console.error('Error actualizando el historial dinámicamente:', historyError);
-                }
-
-            } else {
-                showToast(result.error || 'Error al guardar el conteo', 'error');
-            }
-        } catch (error) {
-            console.error('Error al guardar conteo:', error);
-            showToast('Error de conexión al guardar conteo', 'error');
+                 showToast(result.message || 'Conteo guardado correctamente.', 'success');
+                 pollAlerts();
+                 setTimeout(() => {
+                    location.reload();
+                 }, 1000); // 1000ms = 1 segundo (para que el toast se alcance a leer)
+                }else {showToast(result.error || 'Error al guardar el conteo', 'error'); // ...por esto.
         }
+        } catch (error) { console.error('Error al guardar conteo:', error);
+             showToast('Error de conexión al guardar conteo', 'error'); }
     }
 
 
@@ -2494,6 +2487,7 @@ function closeToast(toastId) {
     // Función para Notificaciones
   // Función para actualizar Paneles/Badges de Alertas
 function updateAlertsDisplay(newAlerts) {
+    console.log('updateAlertsDisplay recibió:', JSON.stringify(newAlerts)); // <-- MODIFICADO: Ver todo el array
     const highPriorityList = document.getElementById('task-notifications-list');
     const mediumPriorityList = document.getElementById('medium-priority-list');
     const highPriorityBadge = document.getElementById('task-notification-badge');
@@ -2505,20 +2499,32 @@ function updateAlertsDisplay(newAlerts) {
     let mediumCount = parseInt(mediumPriorityBadge.textContent || '0');
     let highUpdated = false;
     let mediumUpdated = false;
-    let newDiscrepanciesFound = false;
+    let newHighPriorityAlertsFound = false; // Para saber si tocar el sonido
+
+    // Cargar IDs ya vistos desde LocalStorage al inicio de la función
+    const seenData = loadSeenDiscrepFromLS(); // Reutilizamos esta función
+    let seenIds = new Set(seenData.ids);
+    console.log("IDs ya vistos al inicio:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs previos
+
+    newHighPriorityAlertsFound = false; // Resetear bandera
 
     newAlerts.forEach(alert => {
-        if (!alert || !alert.id) return;
-
         const isHighPriority = alert.priority === 'Critica' || alert.priority === 'Alta';
         const list = isHighPriority ? highPriorityList : mediumPriorityList;
         const colorClass = isHighPriority ? (alert.priority === 'Critica' ? 'red' : 'orange') : 'yellow';
+        const alertId = alert.id; // Usamos el ID de la tarea
 
-        // 1. Lógica para los paneles superiores (actualiza si no existe)
-        if (!list.querySelector(`[data-alert-id="${alert.id}"]`)) {
-            const alertHtml = `
-                <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alert.id}">
-                    <p class="font-semibold text-${colorClass}-800">${alert.title || 'Alerta'}</p>
+        // Solo procesar si tenemos un ID válido
+        if (!alertId) {
+            console.warn("Alerta recibida sin ID:", alert); // <-- AÑADIDO: Aviso si falta ID
+            return;
+        }
+
+        // --- Lógica de Mostrar en Paneles Superiores (sin cambios) ---
+        if (!list.querySelector(`[data-alert-id="${alertId}"]`)) {
+             const alertHtml = `
+                <div class="p-2 bg-${colorClass}-50 rounded-md border border-${colorClass}-200 text-sm" data-alert-id="${alertId}">
+                    <p class="font-semibold text-${colorClass}-800">${alert.title || ''}</p>
                     <p class="text-gray-700 text-xs mt-1">${alert.description || ''}</p>
                 </div>`;
             list.insertAdjacentHTML('afterbegin', alertHtml);
@@ -2531,41 +2537,55 @@ function updateAlertsDisplay(newAlerts) {
                 mediumUpdated = true;
             }
         }
+        // --- Fin Lógica Paneles ---
 
-        // 2. Lógica de Toast para Discrepancias (simplificada y corregida)
-        const isDiscrepancy = (alert.title || '').startsWith("Discrepancia en Planilla:");
-        if (isDiscrepancy && !seenDiscrepancyIdsThisSession.has(alert.id)) {
-            const canNotify = canSeeDiscrepancyToasts();
-            const isTabActive = !document.hidden;
 
-            if (canNotify && isTabActive) {
-                showToast(alert.title, 'critica', 8000);
-                newDiscrepanciesFound = true;
+        // --- Lógica Unificada para Toasts de Alta Prioridad ---
+        if (isHighPriority) {
+            // Verificar si ya hemos visto/notificado esta alerta específica
+            if (!seenIds.has(alertId)) {
+                console.log(`Alerta ${alertId} es nueva.`); // <-- AÑADIDO
+                const canNotify = typeof canSeeDiscrepancyToasts === 'function' && canSeeDiscrepancyToasts();
+                console.log(`Rol permite notificar: ${canNotify}, Pestaña visible: ${!document.hidden}`); // <-- AÑADIDO
+                if (canNotify && !document.hidden) { // Solo mostrar si la pestaña está visible y el rol es correcto
+                    const toastType = (alert.priority === 'Critica') ? 'error' : 'warning';
+                    console.log(`Llamando showToast para ${alertId} con tipo ${toastType}`); // <-- AÑADIDO
+                    showToast(`${alert.title || 'Alerta Importante'}`, toastType, 6000); // Usar showToast directamente
+                    newHighPriorityAlertsFound = true; // Marcar para tocar sonido una vez
+                } else {
+                    console.log(`Notificación omitida para ${alertId} (rol o visibilidad)`); // <-- AÑADIDO
+                }
+                seenIds.add(alertId); // Marcar como vista/notificada
+            } else {
+                console.log(`Alerta ${alertId} ya vista/notificada.`); // <-- AÑADIDO
             }
-            // Marcar como vista para esta sesión, independientemente de si se mostró o no
-            seenDiscrepancyIdsThisSession.add(alert.id);
         }
-    });
+        // --- Fin Lógica Toasts ---
+    }); // Fin del forEach
 
-    // Reproducir sonido una sola vez si se encontraron nuevas discrepancias
-    if (newDiscrepanciesFound) {
+    // Tocar sonido UNA VEZ si se encontraron nuevas alertas de alta prioridad
+    if (newHighPriorityAlertsFound && typeof beepOnce === 'function') {
         beepOnce();
     }
 
-    // Actualizar badges y mensajes "No hay alertas"
+    // Guardar los IDs actualizados en LocalStorage
+    console.log("IDs vistos al final:", Array.from(seenIds)); // <-- AÑADIDO: Ver IDs finales
+    saveSeenDiscrepToLS(seenIds);
+
+    // Actualizar badges y mensajes de "No hay alertas" (sin cambios)
     if (highUpdated) {
         highPriorityBadge.textContent = highCount;
         highPriorityBadge.classList.remove('hidden');
         const noAlertsMsg = highPriorityList.querySelector('.text-gray-500');
-        if (noAlertsMsg && highCount > 0) noAlertsMsg.remove();
+        if (noAlertsMsg) noAlertsMsg.remove();
     }
     if (mediumUpdated) {
         mediumPriorityBadge.textContent = mediumCount;
         mediumPriorityBadge.classList.remove('hidden');
         const noAlertsMsg = mediumPriorityList.querySelector('.text-gray-500');
-        if (noAlertsMsg && mediumCount > 0) noAlertsMsg.remove();
+        if (noAlertsMsg) noAlertsMsg.remove();
     }
-}
+} // <-- Esta es la llave de cierre que faltaba
 // --- Polling Control ---
 
 function startAlertPolling(intervalSeconds = 15) {
@@ -2637,46 +2657,47 @@ startAlertPolling(15);
 // Función Polling Alertas
 async function pollAlerts() {
   try {
-    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`;
+    const urlToFetch = `${apiRealtimeBase}/realtime_alerts_api.php?since=${lastCheckedAlertTime}`; // Construir URL
+    console.log("Polling URL:", urlToFetch); // <-- AÑADIDO: Ver URL
+
     const r = await fetch(urlToFetch, { headers: { 'Accept': 'application/json' } });
-    const rawResponseText = await r.text();
+
+    // --- AÑADIDO: Ver respuesta cruda ---
+    const rawResponseText = await r.text(); // Obtener texto crudo
+    console.log("Raw Response:", rawResponseText);
+    // --- FIN AÑADIDO ---
 
     if (!r.ok) {
-        console.error("--- ERROR DEL SERVIDOR (pollAlerts) ---");
-        console.error("Status:", r.status, r.statusText);
-        console.error("Respuesta cruda:", rawResponseText);
-        console.error("--- FIN DEL ERROR ---");
-        showToast('Error del servidor al buscar alertas. Revise la consola.', 'error');
-        return; // Detener la ejecución si hay un error HTTP
+        console.error("HTTP Error Status:", r.status, r.statusText); // <-- AÑADIDO: Log de error HTTP
+        throw new Error('HTTP ' + r.status);
     }
 
-    let data;
-    try {
-        data = JSON.parse(rawResponseText);
-    } catch (e) {
-        console.error("--- ERROR DE PARSEO JSON (pollAlerts) ---");
-        console.error("La respuesta del servidor no es un JSON válido. Esto usualmente indica un error fatal de PHP.");
-        console.error("Respuesta cruda del servidor:", rawResponseText);
-        console.error("--- FIN DEL ERROR ---");
-        showToast('Respuesta inválida del servidor. Revise la consola.', 'error');
-        return; // Detener la ejecución
-    }
+    // Intentar parsear el texto crudo
+    const data = JSON.parse(rawResponseText);
+    console.log("Parsed Data:", data); // <-- AÑADIDO: Ver datos parseados
 
     if (data && data.timestamp) {
         lastCheckedAlertTime = data.timestamp;
+    } else {
+        console.warn("No timestamp received from API."); // <-- AÑADIDO: Aviso si falta timestamp
     }
 
-    const alerts = Array.isArray(data?.alerts) ? data.alerts : [];
-    if (alerts.length > 0) {
-        console.log("Nuevas alertas recibidas:", alerts);
-    }
+    const alerts = Array.isArray(data?.alerts) ? data.alerts : []; // Asegurar que sea un array
+    console.log("Alerts to display:", alerts); // <-- AÑADIDO: Ver alertas a procesar
     updateAlertsDisplay(alerts);
 
+    // --- AÑADIDO: Limpiar el flag de error si el polling tuvo éxito ---
+    window._pollToastShown = false;
+    // --- FIN AÑADIDO ---
+
   } catch (err) {
-    console.error("--- ERROR DE RED O CONEXIÓN (pollAlerts) ---");
-    console.error(err);
-    console.error("--- FIN DEL ERROR ---");
-    showToast('Error de red al buscar alertas. Revise la consola.', 'error');
+    // --- MODIFICADO: Mostrar error solo una vez y loguear detalles ---
+    if (!window._pollToastShown) {
+        showToast('Fallo el polling de alertas. Verifica tu conexión y la consola (F12).', 'error', 7000);
+        window._pollToastShown = true; // Evitar spam de errores de polling
+    }
+    console.error('pollAlerts error:', err); // Mostrar el error específico en consola
+    // --- FIN MODIFICADO ---
   }
 }
 
@@ -2883,73 +2904,47 @@ async function pollAlerts() {
          updateReminderCount();
       // Reemplaza TODO el setInterval existente por este (mismo lugar)
 setInterval(() => {
-    document.querySelectorAll('.countdown-timer').forEach(timerEl => {
-        const priority = timerEl.dataset.priority;
-        const rawEndTime = timerEl.dataset.endTime || '';
-        const isoEndTime = rawEndTime.includes(' ') ? rawEndTime.replace(' ', 'T') : rawEndTime;
-        const endTime = new Date(isoEndTime).getTime();
+  document.querySelectorAll('.countdown-timer').forEach(timerEl => {
+    let raw = timerEl.dataset.endTime || '';
+    // Normaliza "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DDTHH:MM:SS"
+    const iso = raw.includes(' ') ? raw.replace(' ', 'T') : raw;
+    const endTime = new Date(iso).getTime();
+    if (isNaN(endTime)) return;
 
-        if (isNaN(endTime)) return;
+    const now = Date.now();
+    const distance = endTime - now;
 
-        const now = Date.now();
-        const distance = endTime - now;
+    if (distance < 0) {
+      // Ya venció -> mostrar retraso
+      const elapsed = now - endTime;
+      const days = Math.floor(elapsed / 86400000);
+      const hours = Math.floor((elapsed % 86400000) / 3600000);
+      const minutes = Math.floor((elapsed % 3600000) / 60000);
+      const seconds = Math.floor((elapsed % 60000) / 1000);
+      let elapsedTime = '';
+      if (days > 0) elapsedTime += `${days}d `;
+      if (hours > 0 || days > 0) elapsedTime += `${hours}h `;
+      elapsedTime += `${minutes}m ${seconds}s`;
+      timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTime}</span>`;
+    } else {
+      // Aún falta -> mostrar cuenta regresiva
+      const days = Math.floor(distance / 86400000);
+      const hours = Math.floor((distance % 86400000) / 3600000);
+      const minutes = Math.floor((distance % 3600000) / 60000);
+      const seconds = Math.floor((distance % 60000) / 1000);
+      let timeLeft = '';
+      if (days > 0) timeLeft += `${days}d `;
+      if (hours > 0 || days > 0) timeLeft += `${hours}h `;
+      timeLeft += `${minutes}m ${seconds}s`;
 
-        // Lógica para el contador de retraso (hacia adelante)
-        const showElapsedTime = () => {
-            const elapsed = now - endTime;
-            const days = Math.floor(elapsed / 86400000);
-            const hours = Math.floor((elapsed % 86400000) / 3600000);
-            const minutes = Math.floor((elapsed % 3600000) / 60000);
-            const seconds = Math.floor((elapsed % 60000) / 1000);
-            let elapsedTimeStr = '';
-            if (days > 0) elapsedTimeStr += `${days}d `;
-            if (hours > 0 || days > 0) elapsedTimeStr += `${hours}h `;
-            elapsedTimeStr += `${minutes}m ${seconds}s`;
-            timerEl.innerHTML = `Retraso: <span class="text-red-600 font-bold">${elapsedTimeStr}</span>`;
-        };
+      // Colores según urgencia (igual a tu lógica actual)
+      let textColor = 'text-green-600';
+      if (days === 0 && hours < 1) textColor = 'text-red-600';
+      else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
 
-        // Lógica para el cronómetro (hacia atrás)
-        const showTimeLeft = () => {
-            const days = Math.floor(distance / 86400000);
-            const hours = Math.floor((distance % 86400000) / 3600000);
-            const minutes = Math.floor((distance % 3600000) / 60000);
-            const seconds = Math.floor((distance % 60000) / 1000);
-            let timeLeftStr = '';
-            if (days > 0) timeLeftStr += `${days}d `;
-            if (hours > 0 || days > 0) timeLeftStr += `${hours}h `;
-            timeLeftStr += `${minutes}m ${seconds}s`;
-
-            let textColor = 'text-green-600';
-            if (days === 0 && hours < 1) textColor = 'text-red-600';
-            else if (days === 0 && hours < 24) textColor = 'text-yellow-700';
-
-            timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeftStr}</span>`;
-        };
-
-        // --- LÓGICA CONDICIONAL ---
-        if (priority === 'Critica' || priority === 'Alta') {
-            // Para críticas y altas, solo mostrar retraso si ya pasó el tiempo.
-            if (distance < 0) {
-                showElapsedTime();
-            } else {
-                // Si no ha vencido, no mostrar nada para prioridades altas.
-                timerEl.innerHTML = '';
-            }
-        } else if (priority === 'Media') {
-            // Para medias, mostrar "Vence en" o "Retraso" según corresponda.
-            if (distance > 0) {
-                showTimeLeft();
-            } else {
-                showElapsedTime();
-            }
-        } else { // Para 'Baja' y otras no definidas, comportamiento default
-             if (distance < 0) {
-                showElapsedTime();
-            } else {
-                showTimeLeft();
-            }
-        }
-    });
+      timerEl.innerHTML = `Vence en: <span class="${textColor}">${timeLeft}</span>`;
+    }
+  });
 }, 1000);
 
         const startDateInput = document.getElementById('manual-task-start'), endDateInput = document.getElementById('manual-task-end');
