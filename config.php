@@ -1,11 +1,11 @@
 <?php
 // config.php
 
-// 1. Inicia la sesión
+// Inicia la sesión
 session_start();
 
-// 2. Establece la zona horaria para TODO el proyecto
-// Para tu prueba:
+//Establece la zona horaria para TODO el proyecto
+// Para  prueba:
 //date_default_timezone_set('Australia/Sydney');
 
 // Para producción (cuando termines la prueba):
