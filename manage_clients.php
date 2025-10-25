@@ -58,9 +58,9 @@ if (!$isContentOnly) {
                 <div class="overflow-x-auto">
                     <table class="w-full text-sm">
                         <thead class="bg-gray-50">
-                            <tr class="text-left"><th class="px-6 py-3">Nombre</th><th class="px-6 py-3">NIT</th><th class="px-6 py-3">Dirección</th><th class="px-6 py-3">Creación</th></tr>
+                            <tr class="text-left"><th class="px-6 py-3">Nombre</th><th class="px-6 py-3">NIT</th><th class="px-6 py-3">Dirección</th><th class="px-6 py-3">Creación</th><th class="px-6 py-3 text-center">Acciones</th></tr>
                         </thead>
-                        <tbody id="clients-table-body-ajax"><tr><td colspan="4" class="p-4 text-center text-gray-400">Cargando...</td></tr></tbody>
+                        <tbody id="clients-table-body-ajax"><tr><td colspan="5" class="p-4 text-center text-gray-400">Cargando...</td></tr></tbody>
                     </table>
                 </div>
             </div>
@@ -120,24 +120,60 @@ if (!$isContentOnly) {
                     const clients = await response.json();
                     clientsTbody.innerHTML = '';
                     if (clients.length === 0) {
-                        clientsTbody.innerHTML = '<tr><td colspan="4" class="text-center p-4 text-gray-500">No hay clientes.</td></tr>';
+                        clientsTbody.innerHTML = '<tr><td colspan="5" class="text-center p-4 text-gray-500">No hay clientes.</td></tr>';
                     } else {
                         clients.forEach(client => {
                             const row = document.createElement('tr');
                             row.className = 'border-b client-row';
+                            row.dataset.clientId = client.id;
                             row.innerHTML = `
                                 <td class="px-6 py-4 font-medium">${client.name || ''}</td>
                                 <td class="px-6 py-4 font-mono">${client.nit || 'N/A'}</td>
                                 <td class="px-6 py-4">${client.address || 'N/A'}</td>
                                 <td class="px-6 py-4 text-xs">${client.created_at ? new Date(client.created_at).toLocaleString('es-CO') : ''}</td>
+                                <td class="px-6 py-4 text-center">
+                                    <button data-client-id="${client.id}" class="delete-client-btn text-red-600 hover:text-red-800 font-semibold">Eliminar</button>
+                                </td>
                             `;
-                            row.addEventListener('click', () => showSitesPanel(client));
                             clientsTbody.appendChild(row);
                         });
                     }
                 } catch (error) {
                     console.error('Error fetching clients:', error);
-                    clientsTbody.innerHTML = '<tr><td colspan="4" class="text-center p-4 text-red-500">Error al cargar clientes.</td></tr>';
+                    clientsTbody.innerHTML = '<tr><td colspan="5" class="text-center p-4 text-red-500">Error al cargar clientes.</td></tr>';
+                }
+            }
+             clientsTbody.addEventListener('click', (e) => {
+                if (e.target.classList.contains('delete-client-btn')) {
+                    handleDeleteClient(e.target.dataset.clientId);
+                } else {
+                    const row = e.target.closest('.client-row');
+                    if (row) {
+                        const clientId = row.dataset.clientId;
+                        // Encontrar los datos del cliente para pasarlos
+                        fetch(apiUrlClients).then(res => res.json()).then(clients => {
+                            const clientData = clients.find(c => c.id == clientId);
+                            if (clientData) showSitesPanel(clientData);
+                        });
+                    }
+                }
+            });
+
+            async function handleDeleteClient(clientId) {
+                if (!confirm('¿Está seguro de que desea eliminar este cliente y todas sus sedes asociadas? Esta acción no se puede deshacer.')) return;
+                try {
+                    const response = await fetch(apiUrlClients, {
+                        method: 'DELETE',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ id: clientId })
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || `Error ${response.status}`);
+
+                    fetchClientsManage(); // Refresh the client list
+                } catch (error) {
+                    console.error('Error deleting client:', error);
+                    alert(`Error: ${error.message}`);
                 }
             }
 

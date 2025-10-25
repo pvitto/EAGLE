@@ -24,7 +24,7 @@ if ($method === 'GET') {
     $sites = $result->fetch_all(MYSQLI_ASSOC);
     $stmt->close();
 
-    echo json_encode(['success' => true, 'sites' => $sites]);
+    echo json_encode(['success' => true, 'data' => $sites]);
 
 } elseif ($method === 'POST') {
     $data = json_decode(file_get_contents('php://input'), true);

@@ -74,9 +74,9 @@ try {
             <div class="overflow-x-auto">
                 <table class="w-full text-sm">
                     <thead class="bg-gray-50">
-                        <tr class="text-left"><th class="px-6 py-3">Nombre</th><th class="px-6 py-3">Descripción</th><th class="px-6 py-3">Creación</th></tr>
+                        <tr class="text-left"><th class="px-6 py-3">Nombre</th><th class="px-6 py-3">Descripción</th><th class="px-6 py-3">Creación</th><th class="px-6 py-3 text-center">Acciones</th></tr>
                     </thead>
-                    <tbody id="routes-table-body-ajax"><tr><td colspan="3" class="p-4 text-center text-gray-400">Cargando...</td></tr></tbody>
+                    <tbody id="routes-table-body-ajax"><tr><td colspan="4" class="p-4 text-center text-gray-400">Cargando...</td></tr></tbody>
                 </table>
             </div>
         </div>
@@ -117,7 +117,7 @@ if (!$isContentOnly) {
                     const routes = await response.json();
                     routesTbody.innerHTML = '';
                     if (routes.length === 0) {
-                        routesTbody.innerHTML = '<tr><td colspan="3" class="text-center p-4 text-gray-500">No hay rutas.</td></tr>';
+                        routesTbody.innerHTML = '<tr><td colspan="4" class="text-center p-4 text-gray-500">No hay rutas.</td></tr>';
                     } else {
                         routes.forEach(route => {
                              const row = `
@@ -125,16 +125,45 @@ if (!$isContentOnly) {
                                     <td class="px-6 py-4 font-medium">${route.name || ''}</td>
                                     <td class="px-6 py-4">${route.description || 'N/A'}</td>
                                     <td class="px-6 py-4 text-xs">${route.created_at ? new Date(route.created_at).toLocaleString('es-CO', { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'}) : ''}</td>
+                                    <td class="px-6 py-4 text-center">
+                                        <button data-id="${route.id}" class="text-red-600 hover:text-red-800 font-semibold delete-route-btn">Eliminar</button>
+                                    </td>
                                 </tr>`;
                             routesTbody.innerHTML += row;
                         });
                     }
                 } catch (error) {
                      console.error('Error fetching routes:', error);
-                     if (routesTbody) routesTbody.innerHTML = '<tr><td colspan="3" class="text-center p-4 text-red-500">Error al cargar.</td></tr>';
+                     if (routesTbody) routesTbody.innerHTML = '<tr><td colspan="4" class="text-center p-4 text-red-500">Error al cargar.</td></tr>';
                  }
             }
-
+             if (routesTbody && !routesTbody.hasAttribute('data-listener-added')) {
+                routesTbody.addEventListener('click', async (e) => {
+                    if (e.target.classList.contains('delete-route-btn')) {
+                        const routeId = e.target.getAttribute('data-id');
+                        if (confirm(`¿Está seguro de que desea eliminar la ruta con ID ${routeId}?`)) {
+                            try {
+                                const response = await fetch(apiUrlRoutes, {
+                                    method: 'DELETE',
+                                    headers: { 'Content-Type': 'application/json' },
+                                    body: JSON.stringify({ id: routeId })
+                                });
+                                const result = await response.json();
+                                if (!response.ok) throw new Error(result.error || `Error ${response.status}`);
+                                if (result.success) {
+                                    fetchRoutesManage(); // Refresh the list
+                                } else {
+                                    alert('Error: ' + result.error);
+                                }
+                            } catch (error) {
+                                console.error('Error deleting route:', error);
+                                alert(`Error: ${error.message}`);
+                            }
+                        }
+                    }
+                });
+                routesTbody.setAttribute('data-listener-added', 'true');
+            }
             if (addRouteForm) {
                 if (!addRouteForm.hasAttribute('data-listener-added')) { // Prevent duplicate listeners
                     addRouteForm.addEventListener('submit', async function(e) {

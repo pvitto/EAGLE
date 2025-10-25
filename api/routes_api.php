@@ -43,6 +43,33 @@ switch ($method) {
         $stmt->close();
         break;
 
+    case 'DELETE':
+        $data = json_decode(file_get_contents('php://input'), true);
+        $id = $data['id'] ?? null;
+
+        if (empty($id)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'error' => 'ID de ruta requerido.']);
+            exit;
+        }
+
+        $stmt = $conn->prepare("DELETE FROM routes WHERE id = ?");
+        $stmt->bind_param("i", $id);
+
+        if ($stmt->execute()) {
+            if ($stmt->affected_rows > 0) {
+                echo json_encode(['success' => true]);
+            } else {
+                http_response_code(404);
+                echo json_encode(['success' => false, 'error' => 'Ruta no encontrada.']);
+            }
+        } else {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'error' => 'Error al eliminar la ruta: ' . $stmt->error]);
+        }
+        $stmt->close();
+        break;
+
     default:
         http_response_code(405);
         echo json_encode(['success' => false, 'error' => 'Método no soportado.']);
