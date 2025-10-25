@@ -76,7 +76,7 @@ function initializeManageSites() {
     const selectedClientIdInput = document.getElementById('selected-client-id-sites-page');
     const addSiteForm = document.getElementById('add-site-form-sites-page');
     const sitesListDiv = document.getElementById('sites-list-sites-page');
-    const apiUrlSites = 'api/sites_api.php';
+    const apiUrlSites = '/api/sites_api.php';
 
     async function fetchSites(clientId) {
         sitesListDiv.innerHTML = '<p>Cargando...</p>';

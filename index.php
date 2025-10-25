@@ -865,27 +865,82 @@ $can_complete = $user_can_act && $task_is_active;
     <button id="btn-informes" class="px-4 py-2 text-sm font-semibold rounded-md bg-gray-200 text-gray-700">Generar Informes</button>
 </div>
 <div id="panel-supervision-operador" class="hidden">
-    <h2 class="text-2xl font-bold text-gray-900 mb-6">Llegadas recientes de Operador</h2>
-    <div class="bg-white p-6 rounded-xl shadow-lg mb-8">
-        <div class="overflow-auto max-h-[400px]">
-            <table class="w-full text-sm text-left">
-                <thead class="bg-gray-50 sticky top-0">
-                    <tr>
-                        <th class="p-3">Planilla</th>
-                        <th class="p-3">Cliente</th>
-                        <th class="p-3">Valor Declarado</th>
-                        <th class="p-3">Valor Contado</th>
-                        <th class="p-3">Discrep.</th>
-                        <th class="p-3">Operador</th>
-                        <th class="p-3">Fecha Conteo</th>
-                        <th class="p-3">Obs. Operador</th>
-                    </tr>
-                </thead>
-                <tbody id="digitador-operator-history-tbody">
-                    </tbody>
-            </table>
+    <h2 class="text-2xl font-bold text-gray-900 mb-6">Alertas y Tareas Prioritarias</h2>
+    <div class="lg:col-span-2 space-y-4">
+    <?php if (empty($main_priority_items)): ?>
+        <p class="text-sm text-gray-500 bg-white p-4 rounded-lg shadow-sm">No hay items prioritarios pendientes.</p>
+    <?php else: ?>
+        <div id="priority-carousel" class="relative">
+            <div id="carousel-items-container">
+                <?php foreach ($main_priority_items as $index => $item): ?>
+                    <?php
+                        $is_manual = $item['item_type'] === 'manual_task';
+                        $is_group_task = !empty($item['assigned_to_group']);
+                        $assigned_names = $item['assigned_names'] ?? null;
+                        $task_id_to_use = $item['user_task_id'] ?? $item['task_id'] ?? $item['id'];
+                        $alert_id_or_null = $is_manual ? 'null' : ($item['id'] ?? 'null');
+                        $form_id_prefix = 'carousel-' . $task_id_to_use . '-' . $index;
+                        $is_admin = $current_user_role === 'Admin';
+                        $is_assigned_individually = !empty($item['user_task_id']);
+                        $is_assigned_to_my_group = $is_group_task && isset($item['assigned_to_group']) && $item['assigned_to_group'] == $current_user_role;
+                        $user_can_act = $is_admin || $is_assigned_individually || $is_assigned_to_my_group;
+                        $task_is_active = (isset($item['task_status']) && in_array($item['task_status'], ['Pendiente','Media','Alta','Crítica'])) || !isset($item['task_status']);
+                        $can_complete = $user_can_act && $task_is_active;
+                        $priority_to_use = $item['current_priority'];
+                        $color_map = ['Critica' => ['bg' => 'bg-red-100', 'border' => 'border-red-500', 'text' => 'text-red-800', 'badge' => 'bg-red-200'],'Alta' => ['bg' => 'bg-orange-100', 'border' => 'border-orange-500', 'text' => 'text-orange-800', 'badge' => 'bg-orange-200']];
+                        $color = $color_map[$priority_to_use] ?? ['bg' => 'bg-gray-100', 'border' => 'border-gray-400', 'text' => 'text-gray-800', 'badge' => 'bg-gray-200'];
+                    ?>
+                    <div class="bg-white rounded-lg shadow-md overflow-hidden task-card carousel-item hidden" data-task-id="<?php echo $task_id_to_use; ?>">
+                        <div class="p-4 <?php echo $color['bg']; ?> border-l-8 <?php echo $color['border']; ?>">
+                            <div class="flex justify-between items-start">
+                                <p class="font-semibold <?php echo $color['text']; ?> text-lg">
+                                    <?php echo ($is_manual ? 'Tarea: ' : '') . htmlspecialchars($item['title'] ?? 'Alerta/Tarea'); ?>
+                                    <?php if (!empty($item['invoice_number'])): ?> <span class="font-normal text-blue-600">(Planilla: <?php echo htmlspecialchars($item['invoice_number']); ?>)</span> <?php endif; ?>
+                                    <span class="ml-2 <?php echo $color['badge'].' '.$color['text']; ?> text-xs font-bold px-2 py-0.5 rounded-full"><?php echo strtoupper($priority_to_use); ?></span>
+                                </p>
+                                <?php if ($can_complete): ?>
+                                    <button onclick="toggleForm('complete-form-<?php echo $form_id_prefix; ?>', this)" class="p-1 bg-green-200 text-green-700 rounded-full hover:bg-green-300 ml-auto" title="Marcar como completada"><svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 13l4 4L19 7"></path></svg></button>
+                                <?php endif; ?>
+                            </div>
+                            <p class="text-sm mt-1"><?php echo htmlspecialchars($is_manual ? ($item['instruction'] ?? '') : ($item['description'] ?? '')); ?></p>
+                            <?php if (!empty($item['end_datetime'])): ?> <div class="countdown-timer text-sm font-bold mt-2" data-end-time="<?php echo htmlspecialchars($item['end_datetime']); ?>"></div> <?php endif; ?>
+                            <div class="mt-4 flex items-center space-x-4 border-t pt-3">
+                                <button onclick="toggleForm('assign-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-blue-600 hover:text-blue-800"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?></button>
+                                <button onclick="toggleForm('reminder-form-<?php echo $form_id_prefix; ?>', this)" class="text-sm font-medium text-gray-600 hover:text-gray-800">Recordatorio</button>
+                                <div class="flex-grow text-right text-sm">
+                                    <?php if($is_group_task): ?> <span class="font-semibold text-purple-700">Asignada a: Grupo <?php echo htmlspecialchars(ucfirst($item['assigned_to_group'])); ?></span>
+                                    <?php elseif (!empty($assigned_names)): ?> <span class="font-semibold text-green-700">Asignada a: <?php echo htmlspecialchars($assigned_names); ?></span>
+                                    <?php else: ?> <span class="font-semibold text-gray-500">Pendiente de Asignación</span> <?php endif; ?>
+                                </div>
+                            </div>
+                        </div>
+                        <div id="complete-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
+                            <h4 class="text-sm font-semibold mb-2">Completar Tarea</h4>
+                            <textarea id="resolution-note-<?php echo $form_id_prefix; ?>" rows="3" class="w-full p-2 text-sm border rounded-md" placeholder="Añadir observación de cierre (obligatorio)..."></textarea>
+                            <button type="button" onclick="completeTask(<?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar Cierre</button>
+                        </div>
+                        <div id="assign-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
+                            <h4 class="text-sm font-semibold mb-2"><?php echo ($is_group_task || !empty($assigned_names)) ? 'Re-asignar' : 'Asignar'; ?> Tarea</h4>
+                            <select id="assign-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><optgroup label="Grupos"><option value="group-todos">Todos</option><option value="group-Operador">Operadores</option><option value="group-Checkinero">Checkineros</option><option value="group-Digitador">Digitadores</option></optgroup><optgroup label="Individuales"><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']) . " ({$user['role']})"; ?></option><?php endforeach; ?></optgroup></select>
+                            <textarea id="task-instruction-<?php echo $form_id_prefix; ?>" rows="2" class="w-full p-2 text-sm border rounded-md mt-2" placeholder="Instrucción"><?php echo htmlspecialchars($item['instruction'] ?? ''); ?></textarea>
+                            <button type="button" onclick="submitAssignment(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-blue-600 text-white font-semibold py-2 mt-2 rounded-md">Confirmar</button>
+                        </div>
+                        <div id="reminder-form-<?php echo $form_id_prefix; ?>" class="task-form bg-gray-50 px-4">
+                            <h4 class="text-sm font-semibold mb-2">Crear Recordatorio</h4>
+                            <select id="reminder-user-<?php echo $form_id_prefix; ?>" class="w-full p-2 text-sm border rounded-md"><option value="">Seleccione usuario...</option><?php foreach ($all_users as $user): ?><option value="<?php echo $user['id']; ?>"><?php echo htmlspecialchars($user['name']); ?></option><?php endforeach; ?></select>
+                            <button type="button" onclick="setReminder(<?php echo $alert_id_or_null; ?>, <?php echo $task_id_to_use; ?>, '<?php echo $form_id_prefix; ?>')" class="w-full bg-green-600 text-white font-semibold py-2 mt-2 rounded-md">Crear</button>
+                        </div>
+                    </div>
+                <?php endforeach; ?>
+            </div>
+            <div id="carousel-controls" class="flex justify-center items-center mt-4">
+                <button id="prev-item" class="px-4 py-2 bg-gray-200 rounded-md">&lt; Ant</button>
+                <span id="carousel-counter" class="mx-4 font-semibold">1 / <?php echo count($main_priority_items); ?></span>
+                <button id="next-item" class="px-4 py-2 bg-gray-200 rounded-md">Sig &gt;</button>
+            </div>
         </div>
-    </div>
+    <?php endif; ?>
+</div>
 </div>
    
 
@@ -2992,9 +3047,37 @@ setInterval(() => {
                        endDateInput.value = startDateInput.value;
                   }
              });
-        } // Cierre del if(startDateInput && endDateInput)
+        }
+        let currentCarouselIndex = 0;
+const carouselItems = document.querySelectorAll('.carousel-item');
+const totalCarouselItems = carouselItems.length;
+const counterElement = document.getElementById('carousel-counter');
+
+function showCarouselItem(index) {
+    carouselItems.forEach(item => item.classList.add('hidden'));
+    if (carouselItems[index]) {
+        carouselItems[index].classList.remove('hidden');
+        if (counterElement) {
+            counterElement.textContent = `${index + 1} / ${totalCarouselItems}`;
+        }
+    }
+}
+
+document.getElementById('next-item')?.addEventListener('click', () => {
+    currentCarouselIndex = (currentCarouselIndex + 1) % totalCarouselItems;
+    showCarouselItem(currentCarouselIndex);
+});
+
+document.getElementById('prev-item')?.addEventListener('click', () => {
+    currentCarouselIndex = (currentCarouselIndex - 1 + totalCarouselItems) % totalCarouselItems;
+    showCarouselItem(currentCarouselIndex);
+});
+
+if (totalCarouselItems > 0) {
+    showCarouselItem(0);
+}
     
-    }); // Cierre del addEventListener 'DOMContentLoaded'
+    });
 </script>
 
    <div id="toast-container" class="fixed bottom-4 right-4 z-[110] space-y-2">
