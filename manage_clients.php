@@ -67,51 +67,12 @@ if (!$isContentOnly) {
         </div>
     </div>
 
-    <div id="sites-management-panel" class="max-w-6xl mx-auto bg-white p-6 rounded-xl shadow-lg hidden">
-        <div class="flex justify-between items-center mb-6">
-            <div>
-                <h1 class="text-2xl font-bold text-gray-900">Gestionar Sedes</h1>
-                <p id="sites-client-name" class="text-gray-600"></p>
-            </div>
-            <button id="back-to-clients-btn" class="text-blue-600 hover:underline">Volver a Clientes</button>
-        </div>
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
-            <div class="p-4 border rounded-lg">
-                <h2 class="text-xl font-semibold mb-4">Agregar Nueva Sede</h2>
-                <form id="add-site-form" class="space-y-4">
-                    <input type="hidden" id="site-client-id">
-                    <div><label for="site-name" class="block text-sm font-medium text-gray-700">Nombre de la Sede</label><input type="text" id="site-name" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"></div>
-                    <div><label for="site-address" class="block text-sm font-medium text-gray-700">Dirección (Opcional)</label><input type="text" id="site-address" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2"></div>
-                    <button type="submit" class="w-full bg-green-600 text-white font-semibold py-2 px-4 rounded-md hover:bg-green-700">Agregar Sede</button>
-                </form>
-            </div>
-            <div>
-                <h2 class="text-xl font-semibold mb-4">Sedes Existentes</h2>
-                <div id="sites-list" class="space-y-2 max-h-96 overflow-y-auto">
-                    <p class="text-center text-gray-400">Cargando sedes...</p>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <script>
         function initializeManageClients() {
             const apiUrlClients = 'api/clients_api.php';
-            const apiUrlSites = 'api/sites_api.php';
-
-            const mainContainer = document.getElementById('main-clients-container');
-            const sitesContainer = document.getElementById('sites-management-panel');
 
             const clientsTbody = document.getElementById('clients-table-body-ajax');
             const addClientForm = document.getElementById('add-client-form-ajax');
-
-            const sitesClientName = document.getElementById('sites-client-name');
-            const siteClientIdInput = document.getElementById('site-client-id');
-            const sitesListDiv = document.getElementById('sites-list');
-            const addSiteForm = document.getElementById('add-site-form');
-            const backToClientsBtn = document.getElementById('back-to-clients-btn');
-
-            let currentClientId = null;
 
             async function fetchClientsManage() {
                 if (!clientsTbody) return;
@@ -146,16 +107,6 @@ if (!$isContentOnly) {
              clientsTbody.addEventListener('click', (e) => {
                 if (e.target.classList.contains('delete-client-btn')) {
                     handleDeleteClient(e.target.dataset.clientId);
-                } else {
-                    const row = e.target.closest('.client-row');
-                    if (row) {
-                        const clientId = row.dataset.clientId;
-                        // Encontrar los datos del cliente para pasarlos
-                        fetch(apiUrlClients).then(res => res.json()).then(clients => {
-                            const clientData = clients.find(c => c.id == clientId);
-                            if (clientData) showSitesPanel(clientData);
-                        });
-                    }
                 }
             });
 
@@ -177,55 +128,6 @@ if (!$isContentOnly) {
                 }
             }
 
-            function showSitesPanel(client) {
-                currentClientId = client.id;
-                mainContainer.classList.add('hidden');
-                sitesContainer.classList.remove('hidden');
-                sitesClientName.textContent = `Para: ${client.name}`;
-                siteClientIdInput.value = client.id;
-                addSiteForm.reset();
-                fetchSitesForClient(client.id);
-            }
-
-            function showClientsPanel() {
-                currentClientId = null;
-                mainContainer.classList.remove('hidden');
-                sitesContainer.classList.add('hidden');
-            }
-
-            async function fetchSitesForClient(clientId) {
-                sitesListDiv.innerHTML = '<p class="text-center text-gray-400">Cargando sedes...</p>';
-                try {
-                    const response = await fetch(`${apiUrlSites}?client_id=${clientId}`);
-                    const data = await response.json();
-                    if (!data.success) throw new Error(data.error);
-
-                    sitesListDiv.innerHTML = '';
-                    if (data.data.length === 0) {
-                        sitesListDiv.innerHTML = '<p class="text-center text-gray-500">Este cliente no tiene sedes registradas.</p>';
-                    } else {
-                        data.data.forEach(site => {
-                            const siteEl = document.createElement('div');
-                            siteEl.className = 'p-3 border rounded-md flex justify-between items-center';
-                            siteEl.innerHTML = `
-                                <div>
-                                    <p class="font-semibold">${site.name}</p>
-                                    <p class="text-xs text-gray-500">${site.address || 'Sin dirección'}</p>
-                                </div>
-                                <button data-site-id="${site.id}" class="delete-site-btn text-red-500 hover:text-red-700 font-semibold text-xs">Eliminar</button>
-                            `;
-                            sitesListDiv.appendChild(siteEl);
-                        });
-                        document.querySelectorAll('.delete-site-btn').forEach(btn => {
-                            btn.addEventListener('click', handleDeleteSite);
-                        });
-                    }
-                } catch (error) {
-                    console.error('Error fetching sites:', error);
-                    sitesListDiv.innerHTML = '<p class="text-center text-red-500">Error al cargar las sedes.</p>';
-                }
-            }
-
             async function handleAddClient(e) {
                 e.preventDefault();
                 const name = document.getElementById('client-name-ajax').value;
@@ -243,49 +145,10 @@ if (!$isContentOnly) {
                 }
             }
 
-            async function handleAddSite(e) {
-                e.preventDefault();
-                const name = document.getElementById('site-name').value;
-                const address = document.getElementById('site-address').value;
-                const clientId = siteClientIdInput.value;
-                try {
-                    const response = await fetch(apiUrlSites, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ client_id: clientId, name, address }) });
-                    const result = await response.json();
-                    if (!result.success) throw new Error(result.error);
-                    this.reset();
-                    fetchSitesForClient(clientId);
-                } catch (error) {
-                    console.error('Error adding site:', error);
-                    alert(`Error: ${error.message}`);
-                }
-            }
-
-            async function handleDeleteSite(e) {
-                const siteId = e.target.dataset.siteId;
-                if (!confirm('¿Está seguro de que desea eliminar esta sede?')) return;
-                try {
-                    const response = await fetch(`${apiUrlSites}?site_id=${siteId}`, { method: 'DELETE' });
-                    const result = await response.json();
-                    if (!result.success) throw new Error(result.error);
-                    fetchSitesForClient(currentClientId);
-                } catch (error) {
-                    console.error('Error deleting site:', error);
-                    alert(`Error: ${error.message}`);
-                }
-            }
-
             // Attach event listeners
             if (addClientForm && !addClientForm.hasAttribute('data-listener-added')) {
                 addClientForm.addEventListener('submit', handleAddClient);
                 addClientForm.setAttribute('data-listener-added', 'true');
-            }
-            if (addSiteForm && !addSiteForm.hasAttribute('data-listener-added')) {
-                addSiteForm.addEventListener('submit', handleAddSite);
-                addSiteForm.setAttribute('data-listener-added', 'true');
-            }
-            if (backToClientsBtn && !backToClientsBtn.hasAttribute('data-listener-added')) {
-                backToClientsBtn.addEventListener('click', showClientsPanel);
-                backToClientsBtn.setAttribute('data-listener-added', 'true');
             }
 
             fetchClientsManage();

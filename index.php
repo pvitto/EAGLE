@@ -595,6 +595,7 @@ $conn->close();
                <?php if ($_SESSION['user_role'] === 'Admin'): ?>
                    <button id="tab-roles" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('roles')">Gestión de Roles</button>
                    <button id="tab-manage-clients" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-clients')">Gestionar Clientes</button>
+                   <button id="tab-manage-sites" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-sites')">Gestionar Sedes</button>
                    <button id="tab-manage-routes" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-routes')">Gestionar Rutas</button>
                    <button id="tab-manage-funds" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('manage-funds')">Gestionar Fondos</button>
                    <button id="tab-trazabilidad" class="nav-tab <?php echo $role_nav_class; ?>" onclick="switchTab('trazabilidad')">Trazabilidad</button>
@@ -1436,7 +1437,7 @@ async function handleCheckinSubmit(event) {
             seal_number: document.getElementById('seal_number').value,
             client_id: document.getElementById('client_id').value,
             route_id: document.getElementById('route_id').value,
-            // Corregido para leer el input oculto
+            client_site_id: document.getElementById('client_site_id').value,
             fund_id: document.getElementById('fund_id_hidden') ? document.getElementById('fund_id_hidden').value : null,
             declared_value: document.getElementById('declared_value').value
         };
@@ -2749,88 +2750,6 @@ async function pollAlerts() {
             if (tabName === 'checkinero' || (tabName === 'operador' && currentUserRole === 'Admin')) {
                  startCheckinPolling(10);
             }
-// ***** PEGA ESTE BLOQUE NUEVO AQUÍ *****
-            if (tabName === 'checkinero') {
-                const clientSelect = document.getElementById('client_id');
-                const fundDisplay = document.getElementById('fund_display');
-                const fundIdHidden = document.getElementById('fund_id_hidden');
-
-                if (clientSelect && fundDisplay) {
-                     // --- Evitar añadir el listener múltiples veces ---
-                     if (!clientSelect.hasAttribute('data-listener-added')) {
-                        clientSelect.addEventListener('change', async () => {
-                            const clientId = clientSelect.value;
-                            const siteSelect = document.getElementById('client_site_id');
-
-                            // Resetear y deshabilitar sedes al cambiar de cliente
-                            siteSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
-                            siteSelect.disabled = true;
-
-                            fundDisplay.textContent = 'Cargando...';
-                            fundDisplay.classList.add('italic');
-                            if (fundIdHidden) fundIdHidden.value = '';
-
-                            if (!clientId) {
-                                fundDisplay.textContent = 'Seleccione un cliente...';
-                                return;
-                            }
-
-                            // --- Cargar Sedes ---
-                            try {
-                                const sitesResponse = await fetch(`api/sites_api.php?client_id=${clientId}`);
-                                if (!sitesResponse.ok) throw new Error('Error al cargar sedes');
-                                const sites = await sitesResponse.json();
-
-                                siteSelect.innerHTML = '<option value="">Seleccione una sede...</option>';
-                                if (sites.success && sites.data.length > 0) {
-                                    sites.data.forEach(site => {
-                                        const option = new Option(`${site.name} (${site.address})`, site.id);
-                                        siteSelect.add(option);
-                                    });
-                                    siteSelect.disabled = false;
-                                } else {
-                                    siteSelect.innerHTML = '<option value="">Este cliente no tiene sedes</option>';
-                                }
-                            } catch (e) {
-                                console.error('Error cargando sedes:', e);
-                                siteSelect.innerHTML = '<option value="">Error al cargar sedes</option>';
-                            }
-
-                            try {
-                                const response = await fetch(`api/funds_api.php?client_id=${clientId}`);
-                                if (!response.ok) throw new Error(`Error HTTP ${response.status}`);
-                                const funds = await response.json();
-
-                                fundDisplay.textContent = '';
-                                fundDisplay.classList.remove('italic', 'text-red-500');
-
-                                if (Array.isArray(funds) && funds.length > 0) {
-                                    const firstFund = funds[0];
-                                    fundDisplay.textContent = firstFund.name;
-                                    if (fundIdHidden) fundIdHidden.value = firstFund.id;
-
-                                    if (funds.length > 1) {
-                                        console.warn(`Advertencia: Cliente ${clientId} tiene ${funds.length} fondos. Mostrando el primero.`);
-                                    }
-                                } else {
-                                    fundDisplay.textContent = 'Cliente sin fondo asignado';
-                                    fundDisplay.classList.add('italic', 'text-red-500');
-                                }
-                            } catch (e) {
-                                console.error('Error cargando fondos:', e);
-                                fundDisplay.textContent = 'Error al cargar fondos';
-                                fundDisplay.classList.add('italic', 'text-red-500');
-                            }
-                        });
-                        clientSelect.setAttribute('data-listener-added', 'true'); // Marcar que ya tiene listener
-                     } // --- Fin del if !hasAttribute ---
-                } else {
-                    if (!clientSelect) console.error("Error: No se encontró 'client_id' al cambiar a la pestaña checkinero.");
-                    if (!fundDisplay) console.error("Error: No se encontró 'fund_display' al cambiar a la pestaña checkinero.");
-                }
-            }
-            // ***** FIN DEL BLOQUE NUEVO *****
-        // ***** FIN CÓDIGO PEGADO *****
 
             if (dynamicContentPanels.includes(tabName) && !loadedContent[tabName]) {
                 activeContent.innerHTML = '<div class="loader"></div><p class="text-center text-gray-500">Cargando...</p>';
@@ -2930,6 +2849,63 @@ async function pollAlerts() {
             populateDigitadorOperatorHistoryTable(operatorHistoryData);
             // populateOperatorHistoryForDigitador(operatorHistoryData);
             populateDigitadorClosedHistory(digitadorClosedHistory);
+        }
+        if (document.getElementById('content-checkinero')) {
+            const clientSelect = document.getElementById('client_id');
+            const fundDisplay = document.getElementById('fund_display');
+            const fundIdHidden = document.getElementById('fund_id_hidden');
+
+            if (clientSelect && fundDisplay) {
+                clientSelect.addEventListener('change', async () => {
+                    const clientId = clientSelect.value;
+                    const siteSelect = document.getElementById('client_site_id');
+
+                    siteSelect.innerHTML = '<option value="">Cargando sedes...</option>';
+                    siteSelect.disabled = true;
+                    fundDisplay.textContent = 'Cargando...';
+                    if (fundIdHidden) fundIdHidden.value = '';
+
+                    if (!clientId) {
+                        siteSelect.innerHTML = '<option value="">Seleccione un cliente primero...</option>';
+                        fundDisplay.textContent = 'Seleccione un cliente...';
+                        return;
+                    }
+
+                    try {
+                        const sitesResponse = await fetch(`api/sites_api.php?client_id=${clientId}`);
+                        const sites = await sitesResponse.json();
+
+                        siteSelect.innerHTML = '<option value="">Seleccione una sede...</option>';
+                        if (sites.success && sites.data.length > 0) {
+                            sites.data.forEach(site => {
+                                const option = new Option(`${site.name} (${site.address || 'N/A'})`, site.id);
+                                siteSelect.add(option);
+                            });
+                            siteSelect.disabled = false;
+                        } else {
+                            siteSelect.innerHTML = '<option value="">Este cliente no tiene sedes</option>';
+                        }
+                    } catch (e) {
+                        console.error('Error cargando sedes:', e);
+                        siteSelect.innerHTML = '<option value="">Error al cargar sedes</option>';
+                    }
+
+                    try {
+                        const fundsResponse = await fetch(`api/funds_api.php?client_id=${clientId}`);
+                        const funds = await fundsResponse.json();
+
+                        if (Array.isArray(funds) && funds.length > 0) {
+                            fundDisplay.textContent = funds[0].name;
+                            if (fundIdHidden) fundIdHidden.value = funds[0].id;
+                        } else {
+                            fundDisplay.textContent = 'Cliente sin fondo';
+                        }
+                    } catch (e) {
+                        console.error('Error cargando fondos:', e);
+                        fundDisplay.textContent = 'Error al cargar fondos';
+                    }
+                });
+            }
         }
 
         switchTab(savedTab); // Activa la pestaña inicial (y el polling si corresponde)
