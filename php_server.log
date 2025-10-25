@@ -1,1 +1,5 @@
+<<<<<<< HEAD
 [Sat Oct 25 03:01:12 2025] PHP 8.3.6 Development Server (http://0.0.0.0:8000) started
+=======
+[Fri Oct 24 14:09:07 2025] PHP 8.3.6 Development Server (http://localhost:8080) started
+>>>>>>> parent of 0d739d0 (Corrige la creación de recordatorios para alertas sin tareas)
