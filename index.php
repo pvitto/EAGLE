@@ -2701,7 +2701,7 @@ async function pollAlerts() {
   } catch (err) {
     // --- MODIFICADO: Mostrar error solo una vez y loguear detalles ---
     if (!window._pollToastShown) {
-        showToast('Fallo el polling de alertas. Verifica tu conexión y la consola (F12).', 'error', 7000);
+        // showToast('Fallo el polling de alertas. Verifica tu conexión y la consola (F12).', 'error', 7000);
         window._pollToastShown = true; // Evitar spam de errores de polling
     }
     console.error('pollAlerts error:', err); // Mostrar el error específico en consola

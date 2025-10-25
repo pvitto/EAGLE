@@ -1,16 +1,23 @@
 <?php
 header('Content-Type: application/json');
+
+// Start output buffering
+ob_start();
+
 require '../db_connection.php';
 require '../check_session.php';
 
-if ($_SESSION['user_role'] !== 'Admin') {
-    echo json_encode(['success' => false, 'error' => 'Acceso no autorizado.']);
-    exit;
-}
+// Clear any previous output (like warnings)
+ob_end_clean();
 
-$method = $_SERVER['REQUEST_METHOD'];
+try {
+    if (!isset($_SESSION['user_role']) || $_SESSION['user_role'] !== 'Admin') {
+        throw new Exception('Acceso no autorizado.');
+    }
 
-if ($method === 'GET') {
+    $method = $_SERVER['REQUEST_METHOD'];
+
+    if ($method === 'GET') {
     if (!isset($_GET['client_id'])) {
         echo json_encode(['success' => false, 'error' => 'Falta el ID del cliente.']);
         exit;
@@ -69,9 +76,22 @@ if ($method === 'GET') {
         echo json_encode(['success' => false, 'error' => 'Error al eliminar la sede: ' . $stmt->error]);
     }
     $stmt->close();
-} else {
-    echo json_encode(['success' => false, 'error' => 'Método no soportado.']);
-}
+    } else {
+        http_response_code(405);
+        echo json_encode(['success' => false, 'error' => 'Método no soportado.']);
+    }
 
-$conn->close();
+} catch (Exception $e) {
+    // Catch any exception and return a valid JSON error
+    http_response_code(500); // Internal Server Error
+    echo json_encode([
+        'success' => false,
+        'error' => $e->getMessage()
+    ]);
+} finally {
+    // Always ensure the database connection is closed
+    if (isset($conn) && $conn instanceof mysqli) {
+        $conn->close();
+    }
+}
 ?>

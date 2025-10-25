@@ -130,12 +130,22 @@ function initializeManageSites() {
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ client_id: clientId, name, address })
             });
+
+            if (!response.ok) {
+                // Si la respuesta no es OK, intenta leer el cuerpo como texto
+                const errorText = await response.text();
+                throw new Error(`Error del servidor: ${response.status} - ${errorText}`);
+            }
+
             const result = await response.json();
-            if (!result.success) throw new Error(result.error);
+            if (!result.success) {
+                throw new Error(result.error || 'Ocurrió un error desconocido en la API.');
+            }
 
             addSiteForm.reset();
             fetchSites(clientId);
         } catch (error) {
+            // Ahora el error.message contendrá el HTML si la respuesta no es JSON
             alert(`Error al agregar sede: ${error.message}`);
         }
     });
